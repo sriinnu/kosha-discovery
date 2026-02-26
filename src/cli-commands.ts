@@ -79,8 +79,19 @@ function printProviderSummary(providers: ProviderInfo[]): void {
 	let totalModels = 0;
 	for (const p of providers) {
 		totalModels += p.models.length;
-		const status = p.authenticated ? c(GREEN, "\u2713") : c(RED, "\u2717");
-		console.log(`  ${status} ${c(CYAN, p.name)}: ${p.models.length} models`);
+		// Three-state indicator: green ✓ if models found, yellow ○ if no creds but
+		// provider is optional (e.g. Ollama not running), red ✗ if auth required but missing
+		const status = p.models.length > 0
+			? c(GREEN, "\u2713")
+			: p.credentialSource === "none"
+				? c(YELLOW, "\u25CB")
+				: c(RED, "\u2717");
+		const hint = p.models.length === 0 && p.credentialSource !== "none" && !p.authenticated
+			? c(DIM, " (no credentials)")
+			: p.models.length === 0 && p.credentialSource === "none"
+				? c(DIM, " (not running)")
+				: "";
+		console.log(`  ${status} ${c(CYAN, p.name)}: ${p.models.length} models${hint}`);
 	}
 	console.log(c(DIM, "\n" + line("\u2500", 50)));
 	console.log(`${c(BOLD, String(totalModels))} models from ${c(BOLD, String(providers.length))} providers`);
