@@ -11,7 +11,7 @@
 import type { ModelMode, ProviderInfo } from "./types.js";
 import type { ModelRegistry } from "./registry.js";
 import {
-	BOLD, CYAN, DIM, GREEN, RED, YELLOW,
+	BOLD, CYAN, DIM, GREEN, MAGENTA, RED, YELLOW,
 	c, formatContextWindow, formatNumber, formatPrice, formatTimestamp,
 	line, renderTable,
 } from "./cli-format.js";
@@ -375,4 +375,35 @@ ${c(BOLD, "EXAMPLES")}
 /** Print the CLI version string to stdout. */
 export function showVersion(): void {
 	console.log(`kosha-discovery v${VERSION}`);
+}
+
+/**
+ * Display a branded splash screen when `kosha` is invoked with no arguments.
+ *
+ * Shows the Kosha logo, tagline, version, and quick-start commands.
+ * Uses MAGENTA branding with a clean, minimal layout.
+ */
+export function showSplash(): void {
+	console.log(`
+${c(MAGENTA, "  ╔═══════════════════════════════════════════════════╗")}
+${c(MAGENTA, "  ║")}                                                   ${c(MAGENTA, "║")}
+${c(MAGENTA, "  ║")}   ${c(BOLD, c(MAGENTA, "  █▄▀ █▀█ █▀ █ █ ▄▀█"))}                         ${c(MAGENTA, "║")}
+${c(MAGENTA, "  ║")}   ${c(BOLD, c(MAGENTA, "  █ █ █▄█ ▄█ █▀█ █▀█"))}    ${c(DIM, "कोश — treasury")}        ${c(MAGENTA, "║")}
+${c(MAGENTA, "  ║")}                                                   ${c(MAGENTA, "║")}
+${c(MAGENTA, "  ║")}   ${c(DIM, "AI Model & Provider Discovery Registry")}          ${c(MAGENTA, "║")}
+${c(MAGENTA, "  ║")}   ${c(DIM, `v${VERSION}`)}                                          ${c(MAGENTA, "║")}
+${c(MAGENTA, "  ║")}                                                   ${c(MAGENTA, "║")}
+${c(MAGENTA, "  ╚═══════════════════════════════════════════════════╝")}
+
+  ${c(BOLD, "Quick start:")}
+
+    ${c(CYAN, "kosha discover")}       Scan all providers for models
+    ${c(CYAN, "kosha list")}           List all discovered models
+    ${c(CYAN, "kosha search")} ${c(DIM, "<q>")}     Search by name or ID
+    ${c(CYAN, "kosha model")} ${c(DIM, "<id>")}     Detailed info for one model
+    ${c(CYAN, "kosha providers")}      Show provider status
+    ${c(CYAN, "kosha serve")}          Start the HTTP API server
+
+  ${c(DIM, "Run")} ${c(CYAN, "kosha --help")} ${c(DIM, "for full usage.")}
+`);
 }

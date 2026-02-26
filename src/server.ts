@@ -120,9 +120,10 @@ export function createServer(registry: ModelRegistry): Hono {
 				models: totalModels,
 				refreshedAt: Date.now(),
 			});
-		} catch (err: any) {
+		} catch (err: unknown) {
+			const message = err instanceof Error ? err.message : String(err);
 			return ctx.json(
-				{ error: "Refresh failed", message: err.message },
+				{ error: "Refresh failed", message },
 				500,
 			);
 		}
