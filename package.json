@@ -1,0 +1,61 @@
+{
+	"name": "kosha-discovery",
+	"version": "0.1.0",
+	"description": "AI Model & Provider Discovery Registry -- kosha (कोश) treasury of models",
+	"type": "module",
+	"license": "MIT",
+	"author": "sriinnu",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/sriinnu/kosha-discovery.git"
+	},
+	"engines": {
+		"node": ">=22"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"bin": {
+		"kosha": "dist/cli.js"
+	},
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./server": {
+			"types": "./dist/server.d.ts",
+			"import": "./dist/server.js"
+		},
+		"./cli": {
+			"types": "./dist/cli.d.ts",
+			"import": "./dist/cli.js"
+		}
+	},
+	"scripts": {
+		"build": "tsc -p tsconfig.json",
+		"dev": "tsc -p tsconfig.json --watch",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"clean": "rm -rf dist",
+		"start": "node dist/server.js",
+		"kosha": "node dist/cli.js"
+	},
+	"files": [
+		"dist",
+		"README.md",
+		"LICENSE"
+	],
+	"dependencies": {
+		"hono": "^4.7.0",
+		"@hono/node-server": "^1.13.0"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.3.14",
+		"@types/node": "^22.0.0",
+		"typescript": "^5.7.0",
+		"vitest": "^4.0.18"
+	}
+}
