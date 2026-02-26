@@ -24,6 +24,7 @@ import {
 	cmdSearch,
 	cmdServe,
 	showHelp,
+	showSplash,
 	showVersion,
 } from "./cli-commands.js";
 
@@ -109,7 +110,7 @@ async function main(): Promise<void> {
 	}
 
 	if (!command) {
-		showHelp();
+		showSplash();
 		return;
 	}
 

@@ -49,8 +49,8 @@ export abstract class BaseDiscoverer implements ProviderDiscoverer {
 			}
 
 			return (await response.json()) as T;
-		} catch (error: any) {
-			if (error?.name === "AbortError") {
+		} catch (error: unknown) {
+			if (error instanceof DOMException && error.name === "AbortError") {
 				throw new Error(`${this.providerName} API request timed out after ${timeoutMs}ms`);
 			}
 			throw error;

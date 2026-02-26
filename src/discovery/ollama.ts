@@ -85,7 +85,7 @@ export class OllamaDiscoverer extends BaseDiscoverer {
 		let response: OllamaTagsResponse;
 		try {
 			response = await this.fetchJSON<OllamaTagsResponse>(`${this.baseUrl}/api/tags`, undefined, timeoutMs);
-		} catch (error: any) {
+		} catch (error: unknown) {
 			// Gracefully return empty when Ollama is not installed or not running,
 			// rather than propagating connection errors up to the registry
 			if (this.isConnectionError(error)) {
@@ -179,8 +179,8 @@ export class OllamaDiscoverer extends BaseDiscoverer {
 	}
 
 	/** Check whether an error represents a network connectivity failure. */
-	private isConnectionError(error: any): boolean {
-		const message = String(error?.message ?? error ?? "").toLowerCase();
+	private isConnectionError(error: unknown): boolean {
+		const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
 		return (
 			message.includes("econnrefused") ||
 			message.includes("enotfound") ||
