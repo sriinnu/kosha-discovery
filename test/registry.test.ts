@@ -22,7 +22,12 @@ function makeModel(overrides: Partial<ModelCard> & { id: string; provider: strin
 }
 
 /** Helper to create a minimal ProviderInfo for testing. */
-function makeProvider(id: string, name: string, models: ModelCard[]): ProviderInfo {
+function makeProvider(
+	id: string,
+	name: string,
+	models: ModelCard[],
+	overrides?: Partial<ProviderInfo>,
+): ProviderInfo {
 	return {
 		id,
 		name,
@@ -31,6 +36,7 @@ function makeProvider(id: string, name: string, models: ModelCard[]): ProviderIn
 		credentialSource: "env",
 		models,
 		lastRefreshed: Date.now(),
+		...overrides,
 	};
 }
 
@@ -199,6 +205,123 @@ describe("ModelRegistry", () => {
 		});
 	});
 
+	describe("providerRoles()", () => {
+		it("returns provider -> model -> roles projection", () => {
+			const chatModel = makeModel({
+				id: "claude-sonnet-4-20250514",
+				provider: "anthropic",
+				mode: "chat",
+				capabilities: ["chat", "vision", "function_calling"],
+			});
+
+			const embedModel = makeModel({
+				id: "text-embedding-3-small",
+				provider: "openai",
+				mode: "embedding",
+				capabilities: ["embedding"],
+			});
+
+			const registry = ModelRegistry.fromJSON({
+				providers: [
+					makeProvider("anthropic", "Anthropic", [chatModel]),
+					makeProvider("openai", "OpenAI", [embedModel]),
+				],
+				aliases: {},
+				discoveredAt: Date.now(),
+			});
+
+			const roles = registry.providerRoles();
+			expect(roles).toHaveLength(2);
+			expect(roles[0].models[0].roles).toContain("chat");
+			expect(roles[0].models[0].roles).toContain("vision");
+			expect(roles[1].models[0].roles).toContain("embedding");
+		});
+
+		it("filters roles using flexible role aliases", () => {
+			const embedModel = makeModel({
+				id: "text-embedding-3-small",
+				provider: "openai",
+				mode: "embedding",
+				capabilities: ["embedding"],
+			});
+			const chatModel = makeModel({
+				id: "gpt-4o",
+				provider: "openai",
+				mode: "chat",
+				capabilities: ["chat", "vision"],
+			});
+
+			const registry = ModelRegistry.fromJSON({
+				providers: [makeProvider("openai", "OpenAI", [embedModel, chatModel])],
+				aliases: {},
+				discoveredAt: Date.now(),
+			});
+
+			const embeddingRoles = registry.providerRoles({ role: "embeddings" });
+			expect(embeddingRoles).toHaveLength(1);
+			expect(embeddingRoles[0].models).toHaveLength(1);
+			expect(embeddingRoles[0].models[0].id).toBe("text-embedding-3-small");
+		});
+	});
+
+	describe("cheapestModels()", () => {
+		it("picks cheapest embedding model using input pricing", () => {
+			const cheapEmbedding = makeModel({
+				id: "text-embedding-3-small",
+				provider: "openai",
+				mode: "embedding",
+				capabilities: ["embedding"],
+				pricing: { inputPerMillion: 0.02, outputPerMillion: 0 },
+			});
+			const expensiveEmbedding = makeModel({
+				id: "embed-ultra",
+				provider: "google",
+				mode: "embedding",
+				capabilities: ["embedding"],
+				pricing: { inputPerMillion: 0.11, outputPerMillion: 0 },
+			});
+
+			const registry = ModelRegistry.fromJSON({
+				providers: [
+					makeProvider("openai", "OpenAI", [cheapEmbedding]),
+					makeProvider("google", "Google", [expensiveEmbedding]),
+				],
+				aliases: {},
+				discoveredAt: Date.now(),
+			});
+
+			const result = registry.cheapestModels({ role: "embeddings", limit: 1 });
+			expect(result.priceMetric).toBe("input");
+			expect(result.candidates).toBe(2);
+			expect(result.pricedCandidates).toBe(2);
+			expect(result.matches).toHaveLength(1);
+			expect(result.matches[0].model.id).toBe("text-embedding-3-small");
+			expect(result.matches[0].score).toBe(0.02);
+		});
+
+		it("reports missing credentials for providers without required keys", () => {
+			const registry = ModelRegistry.fromJSON({
+				providers: [
+					makeProvider("openai", "OpenAI", [], {
+						authenticated: false,
+						credentialSource: "none",
+					}),
+					makeProvider("ollama", "Ollama", [], {
+						authenticated: false,
+						credentialSource: "none",
+					}),
+				],
+				aliases: {},
+				discoveredAt: Date.now(),
+			});
+
+			const prompts = registry.missingCredentialPrompts();
+			expect(prompts).toHaveLength(1);
+			expect(prompts[0].providerId).toBe("openai");
+			expect(prompts[0].envVars).toEqual(["OPENAI_API_KEY"]);
+		});
+	});
+
 	describe("provider() and providers_list()", () => {
 		it("returns provider by ID", () => {
 			const anthropic = makeProvider("anthropic", "Anthropic", []);
@@ -230,6 +353,50 @@ describe("ModelRegistry", () => {
 			const list = registry.providers_list();
 			expect(list).toHaveLength(2);
 			expect(list.map((p) => p.id).sort()).toEqual(["anthropic", "openai"]);
+		});
+	});
+
+	describe("modelRouteInfo()", () => {
+		it("marks direct origin routes as preferred and exposes baseUrl/version", () => {
+			const directOpenAI = makeModel({
+				id: "gpt-5.3-codex",
+				provider: "openai",
+				originProvider: "openai",
+				mode: "chat",
+				capabilities: ["chat", "code"],
+				pricing: { inputPerMillion: 2.5, outputPerMillion: 10 },
+			});
+			const proxiedOpenRouter = makeModel({
+				id: "openai/gpt-5.3-codex",
+				provider: "openrouter",
+				originProvider: "openai",
+				mode: "chat",
+				capabilities: ["chat", "code"],
+				pricing: { inputPerMillion: 1.75, outputPerMillion: 14 },
+			});
+
+			const registry = ModelRegistry.fromJSON({
+				providers: [
+					makeProvider("openai", "OpenAI", [directOpenAI], { baseUrl: "https://api.openai.com" }),
+					makeProvider("openrouter", "OpenRouter", [proxiedOpenRouter], { baseUrl: "https://openrouter.ai" }),
+				],
+				aliases: {},
+				discoveredAt: Date.now(),
+			});
+
+			const routes = registry.modelRouteInfo("gpt-5.3-codex");
+			expect(routes).toHaveLength(2);
+			expect(routes[0].provider).toBe("openai");
+			expect(routes[0].isDirect).toBe(true);
+			expect(routes[0].isPreferred).toBe(true);
+			expect(routes[0].baseUrl).toBe("https://api.openai.com");
+			expect(routes[0].version).toBe("5.3");
+
+			const proxy = routes.find((r) => r.provider === "openrouter");
+			expect(proxy).toBeDefined();
+			expect(proxy!.originProvider).toBe("openai");
+			expect(proxy!.isDirect).toBe(false);
+			expect(proxy!.isPreferred).toBe(false);
 		});
 	});
 

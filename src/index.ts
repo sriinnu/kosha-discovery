@@ -9,14 +9,23 @@
 export { ModelRegistry } from "./registry.js";
 export { AliasResolver, DEFAULT_ALIASES } from "./aliases.js";
 export { KoshaCache } from "./cache.js";
-export { extractOriginProvider, normalizeModelId } from "./normalize.js";
+export { extractModelVersion, extractOriginProvider, normalizeModelId } from "./normalize.js";
 export type {
 	ModelCard,
 	ProviderInfo,
+	ProviderRoleInfo,
 	DiscoveryOptions,
 	KoshaConfig,
 	ModelMode,
 	ModelPricing,
+	ModelRoleCard,
+	RoleQueryOptions,
+	CheapestModelOptions,
+	CheapestModelMatch,
+	CheapestModelResult,
+	ProviderCredentialPrompt,
+	PricingMetric,
+	ModelRouteInfo,
 	CredentialResult,
 	ProviderDiscoverer,
 	Enricher,

@@ -136,3 +136,46 @@ export function normalizeModelId(modelId: string): string {
 
 	return id;
 }
+
+/**
+ * Extract a best-effort model version hint from an identifier.
+ *
+ * Supported patterns (in priority order):
+ * 1. Provider suffix versions like `-v1:0` (Bedrock style)
+ * 2. Date suffixes `YYYY-MM-DD` or `YYYYMMDD`
+ * 3. Semantic fragments like `gpt-5.3-codex` -> `5.3`
+ *
+ * Returns `undefined` when no clear version-like segment is detected.
+ */
+export function extractModelVersion(modelId: string): string | undefined {
+	if (!modelId) return undefined;
+
+	const slashIdx = modelId.indexOf("/");
+	const id = slashIdx !== -1 ? modelId.slice(slashIdx + 1) : modelId;
+
+	// Bedrock/provider style suffixes, e.g. "...-v1:0"
+	const providerSuffix = id.match(/-(v\d+(?::\d+)?)$/i);
+	if (providerSuffix) {
+		return providerSuffix[1];
+	}
+
+	// ISO date suffixes: ...-2024-11-20
+	const isoDate = id.match(/-(\d{4}-\d{2}-\d{2})$/);
+	if (isoDate) {
+		return isoDate[1];
+	}
+
+	// Compact date suffixes: ...-20251001
+	const compactDate = id.match(/-(\d{8})$/);
+	if (compactDate) {
+		return compactDate[1];
+	}
+
+	// Semantic version fragments like gpt-5.3-codex or model-v2.1
+	const semverFragment = id.match(/(?:^|[-_])v?(\d+\.\d+(?:\.\d+)?)(?=$|[-_])/i);
+	if (semverFragment) {
+		return semverFragment[1];
+	}
+
+	return undefined;
+}

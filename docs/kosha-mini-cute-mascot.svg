@@ -1,0 +1,71 @@
+<svg width="960" height="520" viewBox="0 0 960 520" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bgMasc" x1="60" y1="40" x2="900" y2="500" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFF1DB"/>
+      <stop offset="1" stop-color="#E3F2FF"/>
+    </linearGradient>
+    <linearGradient id="cardMasc" x1="110" y1="90" x2="640" y2="430" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#FFFDF9"/>
+    </linearGradient>
+    <filter id="shadowMasc" x="78" y="58" width="610" height="402" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="12"/>
+      <feGaussianBlur stdDeviation="14"/>
+      <feComposite in2="hardAlpha" operator="out"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.38 0 0 0 0 0.22 0 0 0 0 0.04 0 0 0 0.22 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_1_1"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_1_1" result="shape"/>
+    </filter>
+  </defs>
+
+  <rect x="20" y="20" width="920" height="480" rx="38" fill="url(#bgMasc)"/>
+
+  <g filter="url(#shadowMasc)">
+    <rect x="106" y="88" width="554" height="346" rx="28" fill="url(#cardMasc)"/>
+    <rect x="106" y="88" width="554" height="58" rx="28" fill="#FFEAC8"/>
+    <circle cx="146" cy="117" r="7" fill="#F28B82"/>
+    <circle cx="170" cy="117" r="7" fill="#FDCB6E"/>
+    <circle cx="194" cy="117" r="7" fill="#7ED6A4"/>
+
+    <rect x="150" y="172" width="250" height="16" rx="8" fill="#F7D9A4"/>
+    <rect x="150" y="202" width="390" height="12" rx="6" fill="#F7EEE3"/>
+    <rect x="150" y="224" width="340" height="12" rx="6" fill="#F7EEE3"/>
+    <rect x="150" y="246" width="300" height="12" rx="6" fill="#F7EEE3"/>
+
+    <rect x="150" y="290" width="220" height="100" rx="18" fill="#FFF6E8" stroke="#F2DFC1"/>
+    <text x="172" y="328" fill="#7F4E17" font-size="25" font-family="Menlo, Monaco, Consolas, monospace">kosha</text>
+    <text x="172" y="354" fill="#9A6B36" font-size="13" font-family="Menlo, Monaco, Consolas, monospace">orchestrate providers</text>
+
+    <rect x="392" y="290" width="224" height="100" rx="18" fill="#F0F8FF" stroke="#D8E9F7"/>
+    <text x="410" y="322" fill="#23537B" font-size="13" font-family="Menlo, Monaco, Consolas, monospace">if no key -> prompt user</text>
+    <text x="410" y="346" fill="#23537B" font-size="13" font-family="Menlo, Monaco, Consolas, monospace">if task=image -> rank models</text>
+    <text x="410" y="370" fill="#4A7396" font-size="12" font-family="Menlo, Monaco, Consolas, monospace">with cheapest selector</text>
+  </g>
+
+  <g>
+    <ellipse cx="782" cy="330" rx="118" ry="24" fill="#CFE6F9" opacity="0.45"/>
+
+    <circle cx="782" cy="248" r="88" fill="#87C9FF"/>
+    <circle cx="735" cy="212" r="26" fill="#87C9FF"/>
+    <circle cx="829" cy="212" r="26" fill="#87C9FF"/>
+
+    <circle cx="758" cy="242" r="9" fill="#0D3A61"/>
+    <circle cx="806" cy="242" r="9" fill="#0D3A61"/>
+    <circle cx="754" cy="236" r="3" fill="#FFFFFF"/>
+    <circle cx="802" cy="236" r="3" fill="#FFFFFF"/>
+
+    <ellipse cx="782" cy="267" rx="14" ry="10" fill="#1A4F7C"/>
+    <path d="M748 286C758 302 806 302 816 286" stroke="#1A4F7C" stroke-width="7" stroke-linecap="round"/>
+
+    <path d="M700 266C686 258 679 249 678 236" stroke="#4F96CE" stroke-width="8" stroke-linecap="round"/>
+    <path d="M864 266C878 258 885 249 886 236" stroke="#4F96CE" stroke-width="8" stroke-linecap="round"/>
+
+    <path d="M752 172L736 152" stroke="#4F96CE" stroke-width="8" stroke-linecap="round"/>
+    <path d="M812 172L828 152" stroke="#4F96CE" stroke-width="8" stroke-linecap="round"/>
+  </g>
+
+  <text x="58" y="450" fill="#6B4517" font-size="40" font-weight="700" font-family="Avenir Next, Segoe UI, Arial, sans-serif">Kosha Discovery</text>
+  <text x="58" y="480" fill="#7F5D30" font-size="18" font-family="Avenir Next, Segoe UI, Arial, sans-serif">Mascot concept for friendly model orchestration UX</text>
+</svg>

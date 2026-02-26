@@ -7,22 +7,73 @@
  */
 
 import type {
+	CheapestModelMatch,
+	CheapestModelOptions,
+	CheapestModelResult,
 	CredentialResult,
 	DiscoveryOptions,
 	Enricher,
 	KoshaConfig,
 	ModelCard,
 	ModelMode,
+	ModelRouteInfo,
+	PricingMetric,
+	ProviderCredentialPrompt,
 	ProviderDiscoverer,
 	ProviderInfo,
+	ProviderRoleInfo,
+	RoleQueryOptions,
 } from "./types.js";
 import { AliasResolver } from "./aliases.js";
 import { KoshaCache } from "./cache.js";
-import { normalizeModelId } from "./normalize.js";
+import { extractModelVersion, extractOriginProvider, normalizeModelId } from "./normalize.js";
 
 const DEFAULT_CACHE_TTL_MS = 86_400_000; // 24 hours
 const DEFAULT_TIMEOUT_MS = 10_000;
 const CACHE_KEY_PREFIX = "provider_";
+
+const ROLE_ALIASES: Record<string, string> = {
+	embeddings: "embedding",
+	vector: "embedding",
+	vectors: "embedding",
+	images: "image_generation",
+	imagegen: "image_generation",
+	image_generation: "image_generation",
+	image_generation_model: "image_generation",
+	stt: "speech_to_text",
+	transcription: "speech_to_text",
+	tts: "text_to_speech",
+	speech: "audio",
+	tool_use: "function_calling",
+	tools: "function_calling",
+	functions: "function_calling",
+	functioncalling: "function_calling",
+	prompt_cache: "prompt_caching",
+};
+
+const MODE_ALIASES: Record<string, ModelMode> = {
+	chat: "chat",
+	completion: "chat",
+	completions: "chat",
+	embedding: "embedding",
+	image: "image",
+	image_generation: "image",
+	audio: "audio",
+	speech_to_text: "audio",
+	text_to_speech: "audio",
+	moderation: "moderation",
+	safety: "moderation",
+};
+
+const PROVIDER_CREDENTIAL_REQUIREMENTS: Record<string, { required: boolean; envVars: string[] }> = {
+	anthropic: { required: true, envVars: ["ANTHROPIC_API_KEY"] },
+	openai: { required: true, envVars: ["OPENAI_API_KEY"] },
+	google: { required: true, envVars: ["GOOGLE_API_KEY", "GEMINI_API_KEY"] },
+	openrouter: { required: false, envVars: ["OPENROUTER_API_KEY"] },
+	ollama: { required: false, envVars: [] },
+	bedrock: { required: true, envVars: ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"] },
+	vertex: { required: true, envVars: ["GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT"] },
+};
 
 /**
  * The main orchestrating registry for AI model discovery.
@@ -190,6 +241,165 @@ export class ModelRegistry {
 	}
 
 	/**
+	 * Return a provider -> models -> roles matrix suitable for assistant routing.
+	 *
+	 * Roles are derived from `mode + capabilities` so consumers can ask for
+	 * high-level intents like "embeddings" or "image generation".
+	 */
+	providerRoles(filter?: RoleQueryOptions): ProviderRoleInfo[] {
+		const normalizedCapability = filter?.capability ? this.normalizeRoleToken(filter.capability) : undefined;
+		const providers: ProviderRoleInfo[] = [];
+
+		for (const providerInfo of this.providerMap.values()) {
+			if (filter?.provider && providerInfo.id !== filter.provider) {
+				continue;
+			}
+
+			const models = providerInfo.models.filter((model) => {
+				if (filter?.originProvider && model.originProvider !== filter.originProvider) return false;
+				if (filter?.mode && model.mode !== filter.mode) return false;
+				if (normalizedCapability && !this.modelSupportsRole(model, normalizedCapability)) return false;
+				if (filter?.role && !this.modelSupportsRole(model, filter.role)) return false;
+				return true;
+			}).map((model) => ({
+				id: model.id,
+				name: model.name,
+				provider: model.provider,
+				originProvider: model.originProvider,
+				mode: model.mode,
+				roles: this.modelRoles(model),
+				pricing: model.pricing,
+			}));
+
+			if (models.length === 0) continue;
+
+			providers.push({
+				id: providerInfo.id,
+				name: providerInfo.name,
+				authenticated: providerInfo.authenticated,
+				credentialSource: providerInfo.credentialSource,
+				models,
+			});
+		}
+
+		providers.sort((a, b) => a.id.localeCompare(b.id));
+		for (const provider of providers) {
+			provider.models.sort((a, b) => a.id.localeCompare(b.id));
+		}
+
+		return providers;
+	}
+
+	/**
+	 * Return prompt metadata for providers that are currently missing required
+	 * credentials (API keys, cloud auth config, etc.).
+	 */
+	missingCredentialPrompts(providerIds?: string[]): ProviderCredentialPrompt[] {
+		const prompts: ProviderCredentialPrompt[] = [];
+
+		for (const provider of this.providerMap.values()) {
+			if (providerIds && providerIds.length > 0 && !providerIds.includes(provider.id)) {
+				continue;
+			}
+
+			const requirement = PROVIDER_CREDENTIAL_REQUIREMENTS[provider.id];
+			if (!requirement || !requirement.required) {
+				continue;
+			}
+
+			if (provider.authenticated) {
+				continue;
+			}
+
+			const envHint = requirement.envVars.length > 0
+				? `Set ${requirement.envVars.join(" or ")}`
+				: "Configure credentials";
+
+			prompts.push({
+				providerId: provider.id,
+				providerName: provider.name,
+				required: true,
+				envVars: requirement.envVars,
+				message: `${envHint} to enable ${provider.name} model discovery.`,
+			});
+		}
+
+		prompts.sort((a, b) => a.providerId.localeCompare(b.providerId));
+		return prompts;
+	}
+
+	/**
+	 * Return a ranked list of cheapest models for the requested role/mode.
+	 *
+	 * Models missing pricing are excluded by default so callers can safely route
+	 * without accidentally treating unknown prices as zero-cost.
+	 */
+	cheapestModels(options?: CheapestModelOptions): CheapestModelResult {
+		const filters = {
+			provider: options?.provider,
+			originProvider: options?.originProvider,
+			mode: options?.mode,
+		};
+		const role = options?.role;
+		const capability = options?.capability ? this.normalizeRoleToken(options.capability) : undefined;
+		const includeUnpriced = options?.includeUnpriced ?? false;
+		const limit = this.normalizeLimit(options?.limit);
+
+		const candidates = this.models(filters).filter((model) => {
+			if (capability && !this.modelSupportsRole(model, capability)) return false;
+			if (!role) return true;
+			return this.modelSupportsRole(model, role);
+		});
+
+		const priceMetric = options?.priceMetric ?? this.defaultPricingMetric(options);
+		const inputWeight = options?.inputWeight ?? 1;
+		const outputWeight = options?.outputWeight ?? 1;
+
+		const ranked: CheapestModelMatch[] = [];
+		const unpriced: CheapestModelMatch[] = [];
+
+		for (const model of candidates) {
+			const score = this.computeModelScore(model, priceMetric, inputWeight, outputWeight);
+			if (score === undefined) {
+				if (includeUnpriced) {
+					unpriced.push({ model, score: undefined, priceMetric });
+				}
+				continue;
+			}
+			ranked.push({ model, score, priceMetric });
+		}
+
+		ranked.sort((a, b) => {
+			const aScore = a.score ?? Number.POSITIVE_INFINITY;
+			const bScore = b.score ?? Number.POSITIVE_INFINITY;
+			if (aScore !== bScore) return aScore - bScore;
+			const providerOrder = a.model.provider.localeCompare(b.model.provider);
+			if (providerOrder !== 0) return providerOrder;
+			return a.model.id.localeCompare(b.model.id);
+		});
+
+		unpriced.sort((a, b) => {
+			const providerOrder = a.model.provider.localeCompare(b.model.provider);
+			if (providerOrder !== 0) return providerOrder;
+			return a.model.id.localeCompare(b.model.id);
+		});
+
+		const matches = [...ranked, ...unpriced].slice(0, limit);
+		const scopedProviderIds = options?.provider
+			? [options.provider]
+			: this.providers_list().map((provider) => provider.id);
+
+		return {
+			matches,
+			candidates: candidates.length,
+			pricedCandidates: ranked.length,
+			skippedNoPricing: candidates.length - ranked.length,
+			priceMetric,
+			missingCredentials: this.missingCredentialPrompts(scopedProviderIds),
+		};
+	}
+
+	/**
 	 * Find all provider routes through which a given model can be accessed.
 	 *
 	 * A "route" is a {@link ModelCard} whose normalized model ID matches the
@@ -235,6 +445,63 @@ export class ModelRegistry {
 	}
 
 	/**
+	 * Return enriched route metadata including direct/preferred flags, provider
+	 * base URLs, and version hints for each serving path.
+	 */
+	modelRouteInfo(modelId: string): ModelRouteInfo[] {
+		const routes = this.modelRoutes(modelId);
+		if (routes.length === 0) return [];
+
+		const info: ModelRouteInfo[] = routes.map((model) => {
+			const resolvedOrigin = model.originProvider ?? extractOriginProvider(model.id) ?? model.provider;
+			const providerInfo = this.provider(model.provider);
+			return {
+				model,
+				provider: model.provider,
+				originProvider: resolvedOrigin,
+				baseUrl: providerInfo?.baseUrl,
+				version: extractModelVersion(model.id),
+				isDirect: model.provider === resolvedOrigin,
+				isPreferred: false,
+			};
+		});
+
+		// Prefer direct-origin routes whenever available.
+		const directRoutes = info.filter((route) => route.isDirect);
+		if (directRoutes.length > 0) {
+			for (const route of directRoutes) {
+				route.isPreferred = true;
+			}
+		} else {
+			// Fall back to cheapest priced route, then deterministic lexical order.
+			const priced = info.filter((route) =>
+				route.model.pricing &&
+				Number.isFinite(route.model.pricing.inputPerMillion) &&
+				Number.isFinite(route.model.pricing.outputPerMillion),
+			);
+			if (priced.length > 0) {
+				priced.sort((a, b) => {
+					const aScore = (a.model.pricing?.inputPerMillion ?? 0) + (a.model.pricing?.outputPerMillion ?? 0);
+					const bScore = (b.model.pricing?.inputPerMillion ?? 0) + (b.model.pricing?.outputPerMillion ?? 0);
+					if (aScore !== bScore) return aScore - bScore;
+					return a.provider.localeCompare(b.provider);
+				});
+				priced[0].isPreferred = true;
+			} else {
+				info[0].isPreferred = true;
+			}
+		}
+
+		info.sort((a, b) => {
+			if (a.isPreferred !== b.isPreferred) return a.isPreferred ? -1 : 1;
+			if (a.isDirect !== b.isDirect) return a.isDirect ? -1 : 1;
+			return a.provider.localeCompare(b.provider);
+		});
+
+		return info;
+	}
+
+	/**
 	 * Find a single model by ID or alias.
 	 * Resolves aliases first, then searches all providers.
 	 */
@@ -269,6 +536,81 @@ export class ModelRegistry {
 	 */
 	providers_list(): ProviderInfo[] {
 		return Array.from(this.providerMap.values());
+	}
+
+	// ---------------------------------------------------------------------------
+	// Query helpers
+	// ---------------------------------------------------------------------------
+
+	private normalizeRoleToken(value: string): string {
+		const token = value.trim().toLowerCase().replace(/[\s-]+/g, "_");
+		return ROLE_ALIASES[token] ?? token;
+	}
+
+	private modelRoles(model: ModelCard): string[] {
+		const roles = [model.mode, ...model.capabilities.map((capability) => this.normalizeRoleToken(capability))];
+		return Array.from(new Set(roles));
+	}
+
+	private modelSupportsRole(model: ModelCard, roleOrCapability: string): boolean {
+		const token = this.normalizeRoleToken(roleOrCapability);
+		const modelRoles = this.modelRoles(model);
+		if (modelRoles.includes(token)) return true;
+
+		const mode = MODE_ALIASES[token];
+		if (mode && model.mode === mode) return true;
+
+		// Image mode models are eligible when asked for "image_generation".
+		if (token === "image_generation" && model.mode === "image") return true;
+
+		return false;
+	}
+
+	private defaultPricingMetric(options?: CheapestModelOptions): PricingMetric {
+		const mode = options?.mode;
+		const capability = options?.capability ? this.normalizeRoleToken(options.capability) : undefined;
+		const role = options?.role ? this.normalizeRoleToken(options.role) : undefined;
+		const effective = role ?? capability;
+
+		if (mode === "embedding" || effective === "embedding") {
+			return "input";
+		}
+		if (mode === "audio" && (effective === "speech_to_text" || effective === "text_to_speech")) {
+			return "input";
+		}
+		return "blended";
+	}
+
+	private computeModelScore(
+		model: ModelCard,
+		metric: PricingMetric,
+		inputWeight: number,
+		outputWeight: number,
+	): number | undefined {
+		if (!model.pricing) return undefined;
+
+		const input = model.pricing.inputPerMillion;
+		const output = model.pricing.outputPerMillion;
+
+		if (metric === "input") {
+			return Number.isFinite(input) ? input : undefined;
+		}
+		if (metric === "output") {
+			return Number.isFinite(output) ? output : undefined;
+		}
+
+		if (!Number.isFinite(input) || !Number.isFinite(output)) {
+			return undefined;
+		}
+		return input * inputWeight + output * outputWeight;
+	}
+
+	private normalizeLimit(limit: number | undefined): number {
+		if (limit === undefined) return 5;
+		if (!Number.isFinite(limit)) return 5;
+		const normalized = Math.floor(limit);
+		if (normalized <= 0) return 1;
+		return normalized;
 	}
 
 	// ---------------------------------------------------------------------------

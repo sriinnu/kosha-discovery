@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { extractOriginProvider, normalizeModelId } from "../src/normalize.js";
+import { extractModelVersion, extractOriginProvider, normalizeModelId } from "../src/normalize.js";
 
 // ---------------------------------------------------------------------------
 // extractOriginProvider
@@ -180,5 +180,31 @@ describe("normalizeModelId", () => {
 		it("returns empty string unchanged", () => {
 			expect(normalizeModelId("")).toBe("");
 		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// extractModelVersion
+// ---------------------------------------------------------------------------
+
+describe("extractModelVersion", () => {
+	it("extracts provider suffix version from Bedrock-style IDs", () => {
+		expect(extractModelVersion("anthropic.claude-opus-4-20250514-v1:0")).toBe("v1:0");
+	});
+
+	it("extracts date-based version suffixes", () => {
+		expect(extractModelVersion("claude-sonnet-4-20250514")).toBe("20250514");
+		expect(extractModelVersion("gpt-4o-2024-11-20")).toBe("2024-11-20");
+	});
+
+	it("extracts semantic version fragments from model IDs", () => {
+		expect(extractModelVersion("openai/gpt-5.3-codex")).toBe("5.3");
+		expect(extractModelVersion("my-model-v2.1-beta")).toBe("2.1");
+	});
+
+	it("returns undefined when no clear version token exists", () => {
+		expect(extractModelVersion("gpt-4o")).toBeUndefined();
+		expect(extractModelVersion("llama3.3:latest")).toBeUndefined();
+		expect(extractModelVersion("")).toBeUndefined();
 	});
 });

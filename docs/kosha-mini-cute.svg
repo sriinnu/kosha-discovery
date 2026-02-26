@@ -1,0 +1,62 @@
+<svg width="960" height="520" viewBox="0 0 960 520" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="80" y1="40" x2="860" y2="500" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFEFD5"/>
+      <stop offset="1" stop-color="#F7D4FF"/>
+    </linearGradient>
+    <linearGradient id="card" x1="220" y1="110" x2="740" y2="420" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#FFF8FF"/>
+    </linearGradient>
+    <linearGradient id="bubble" x1="660" y1="250" x2="860" y2="380" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7EE0FF"/>
+      <stop offset="1" stop-color="#6EB6FF"/>
+    </linearGradient>
+    <filter id="shadow" x="120" y="40" width="720" height="420" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="12"/>
+      <feGaussianBlur stdDeviation="18"/>
+      <feComposite in2="hardAlpha" operator="out"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.53 0 0 0 0 0.18 0 0 0 0 0.59 0 0 0 0.2 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_1_1"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_1_1" result="shape"/>
+    </filter>
+  </defs>
+
+  <rect x="24" y="24" width="912" height="472" rx="38" fill="url(#bg)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="180" y="86" width="600" height="360" rx="28" fill="url(#card)"/>
+    <rect x="180" y="86" width="600" height="62" rx="28" fill="#F3E6FF"/>
+    <circle cx="224" cy="117" r="8" fill="#FF8A80"/>
+    <circle cx="252" cy="117" r="8" fill="#FFD180"/>
+    <circle cx="280" cy="117" r="8" fill="#B9F6CA"/>
+
+    <rect x="232" y="176" width="314" height="18" rx="9" fill="#E8D2FF"/>
+    <rect x="232" y="212" width="380" height="14" rx="7" fill="#EEE3FA"/>
+    <rect x="232" y="236" width="332" height="14" rx="7" fill="#EEE3FA"/>
+    <rect x="232" y="260" width="288" height="14" rx="7" fill="#EEE3FA"/>
+
+    <rect x="232" y="308" width="216" height="88" rx="18" fill="#F8F1FF" stroke="#E5D5FA"/>
+    <text x="252" y="338" fill="#7C4D9D" font-size="22" font-family="Menlo, Monaco, Consolas, monospace">kosha</text>
+    <text x="252" y="366" fill="#9166AF" font-size="14" font-family="Menlo, Monaco, Consolas, monospace">discover • rank • route</text>
+
+    <path d="M601 316H654C665.046 316 674 324.954 674 336V357C674 368.046 665.046 377 654 377H616L601 390V316Z" fill="#FCE7FF" stroke="#E9C5F5"/>
+    <circle cx="623" cy="347" r="4" fill="#C586D4"/>
+    <circle cx="640" cy="347" r="4" fill="#C586D4"/>
+    <circle cx="657" cy="347" r="4" fill="#C586D4"/>
+  </g>
+
+  <g>
+    <path d="M751 240H846C861.464 240 874 252.536 874 268V334C874 349.464 861.464 362 846 362H792L770 382V362H751C735.536 362 723 349.464 723 334V268C723 252.536 735.536 240 751 240Z" fill="url(#bubble)"/>
+    <circle cx="773" cy="300" r="8" fill="#0C4A6E"/>
+    <circle cx="824" cy="300" r="8" fill="#0C4A6E"/>
+    <path d="M770 327C780 340 818 340 828 327" stroke="#0C4A6E" stroke-width="6" stroke-linecap="round"/>
+    <path d="M787 227L796 211" stroke="#2B6CB0" stroke-width="6" stroke-linecap="round"/>
+    <path d="M814 227L823 211" stroke="#2B6CB0" stroke-width="6" stroke-linecap="round"/>
+  </g>
+
+  <text x="70" y="454" fill="#5A366D" font-size="42" font-weight="700" font-family="Avenir Next, Segoe UI, Arial, sans-serif">Kosha Discovery</text>
+  <text x="70" y="484" fill="#7A4F90" font-size="18" font-family="Avenir Next, Segoe UI, Arial, sans-serif">A tiny treasury for AI provider and model routing</text>
+</svg>
