@@ -2,6 +2,8 @@
 
 **AI Model & Provider Discovery Registry**
 
+![Kosha mini cute app](docs/kosha-mini-cute-mascot.svg)
+
 Kosha (कोश — treasury/repository) automatically discovers AI models across providers, resolves credentials from CLI tools and environment variables, enriches models with pricing data, and exposes the catalog via library, CLI, and HTTP API.
 
 ## Why
@@ -12,6 +14,9 @@ AI applications hardcode model IDs, pricing, and provider configs. When provider
 - **Smart credentials** — finds API keys from env vars, CLI tools (Claude, Copilot, Gemini CLI), and config files
 - **Pricing enrichment** — fills in costs and context windows from litellm's community-maintained dataset
 - **Model aliases** — `sonnet` → `claude-sonnet-4-20250514`, updated as models evolve
+- **Role matrix** — query provider -> model -> roles (`chat`, `embedding`, `image_generation`, etc.)
+- **Cheapest routing** — rank cheapest eligible models for tasks like embeddings or image generation
+- **Credential prompts** — returns provider-specific API key hints when required credentials are missing
 - **Local LLM scanning** — detects Ollama models alongside cloud providers
 - **Three access patterns** — use as a library, CLI tool, or HTTP API
 
@@ -46,6 +51,13 @@ const model = kosha.model("sonnet"); // → full ModelCard for claude-sonnet-4-2
 
 // Get pricing
 console.log(model.pricing); // { inputPerMillion: 3, outputPerMillion: 15, ... }
+
+// Role matrix for assistants (provider -> models -> roles)
+const roles = kosha.providerRoles({ role: "embeddings" });
+
+// Cheapest model ranking for a task
+const cheapest = kosha.cheapestModels({ role: "image", limit: 3 });
+console.log(cheapest.matches[0]);
 ```
 
 ### CLI
@@ -64,6 +76,14 @@ kosha search gemini
 
 # Model details
 kosha model sonnet
+
+# Role matrix
+kosha roles
+kosha roles --role embeddings
+
+# Cheapest routing candidates
+kosha cheapest --role embeddings
+kosha cheapest --role image --limit 3
 
 # Providers status
 kosha providers
@@ -85,13 +105,56 @@ kosha serve --port 3000
 GET /api/models                    — All models
 GET /api/models?provider=anthropic — Filter by provider
 GET /api/models?mode=embedding     — Filter by mode
+GET /api/models/cheapest           — Cheapest ranked models for a role/capability
 GET /api/models/:idOrAlias         — Single model
+GET /api/models/:idOrAlias/routes  — All provider routes for one model
+GET /api/roles                     — Provider → model → roles matrix
 GET /api/providers                 — All providers
 GET /api/providers/:id             — Single provider
 POST /api/refresh                  — Re-discover
 GET /api/resolve/:alias            — Resolve alias
 GET /health                        — Health check
 ```
+
+## Assistant Routing Flow
+
+Kosha is designed to answer routing questions from assistants like Vaayu and Takumi:
+
+1. Ask for capabilities: call `GET /api/roles?role=embeddings`.
+2. Rank by cost: call `GET /api/models/cheapest?role=embeddings`.
+3. If `missingCredentials` is non-empty, prompt the user for one of the listed env vars.
+4. Route execution using the chosen provider/model pair.
+
+### Embeddings Quick Call
+
+If your task is embeddings and you want the cheapest option:
+
+```bash
+kosha cheapest --role embeddings --price-metric input --limit 1
+```
+
+API equivalent:
+
+```bash
+curl "http://localhost:3000/api/models/cheapest?role=embeddings&priceMetric=input&limit=1"
+```
+
+## Provider vs Origin
+
+Kosha distinguishes:
+
+- `provider`: where you call the model (serving layer, e.g. `openrouter`)
+- `originProvider`: who built the model (e.g. `openai`)
+
+Example:
+
+```
+provider: openrouter
+id: openai/gpt-5.3-codex
+originProvider: openai
+```
+
+If a direct OpenAI route exists, route metadata marks it as preferred so assistants can call `openai` directly instead of `openrouter`.
 
 ## CLI Reference
 
@@ -105,6 +168,21 @@ COMMANDS
     --provider <name>             Filter by provider
     --mode <mode>                 Filter by mode (chat, embedding, image, audio)
     --capability <cap>            Filter by capability (vision, function_calling, etc.)
+  roles                         Provider -> model -> roles matrix
+    --role <role>                 Filter by task role (embeddings, image, tool_use)
+    --provider <name>             Filter by serving-layer provider
+    --origin <name>               Filter by origin model provider
+    --mode <mode>                 Filter by mode
+    --capability <cap>            Filter by capability
+  cheapest                      Find cheapest eligible models
+    --role <role>                 Task role (embeddings, image, etc.)
+    --capability <cap>            Capability filter
+    --mode <mode>                 Mode filter
+    --limit <n>                   Maximum matches (default 5)
+    --price-metric <metric>       input | output | blended
+    --input-weight <n>            Blended metric input weight
+    --output-weight <n>           Blended metric output weight
+    --include-unpriced            Include models without pricing at end
   search <query>                Search models by name/ID (fuzzy match)
   model <id|alias>              Show detailed info for one model
   providers                     List all providers and their status
@@ -161,6 +239,24 @@ ollama       ✓ local              6  none (local)
 openrouter   ✗ no credentials     0  —
 ```
 
+### Example: `kosha roles --role embeddings`
+
+```
+Provider     Model                                   Mode       Roles
+──────────── ─────────────────────────────────────── ────────── ───────────────────────────────
+openai       text-embedding-3-small                  embedding  embedding
+google       text-embedding-004                      embedding  embedding
+```
+
+### Example: `kosha cheapest --role image --limit 2`
+
+```
+Provider     Model                                   Mode       Metric      Score    $/M in  $/M out
+──────────── ─────────────────────────────────────── ────────── ──────── ────────── ──────── ────────
+openrouter   openai/dall-e-3                         image      blended     $8.00    $8.00    $0.00
+openrouter   black-forest-labs/flux-1-schnell        image      blended    $10.00   $10.00    $0.00
+```
+
 ## HTTP API Reference
 
 Start the server:
@@ -194,12 +290,141 @@ curl http://localhost:3000/api/models?provider=anthropic&mode=chat
 }
 ```
 
+#### `GET /api/models/cheapest`
+
+Rank the cheapest eligible models for a role/capability.  
+Useful for assistant routers asking questions like: _"For embeddings, what is cheapest right now?"_
+
+| Parameter         | Type   | Description |
+|------------------|--------|-------------|
+| `role`           | string | Flexible role alias (e.g. `embeddings`, `image`, `tool_use`) |
+| `capability`     | string | Explicit capability (e.g. `vision`, `embedding`) |
+| `mode`           | string | Restrict by mode (`chat`, `embedding`, `image`, `audio`, `moderation`) |
+| `provider`       | string | Restrict by serving provider |
+| `originProvider` | string | Restrict by origin model provider |
+| `limit`          | number | Max ranked matches (default `5`) |
+| `priceMetric`    | string | `input`, `output`, or `blended` |
+| `inputWeight`    | number | Input weight for `blended` scoring |
+| `outputWeight`   | number | Output weight for `blended` scoring |
+| `includeUnpriced`| bool   | Include unpriced models after ranked matches |
+
+```bash
+curl "http://localhost:3000/api/models/cheapest?role=embeddings&limit=3"
+```
+
+```json
+{
+  "matches": [
+    {
+      "model": { "id": "text-embedding-3-small", "provider": "openai", "...": "..." },
+      "score": 0.02,
+      "priceMetric": "input"
+    }
+  ],
+  "candidates": 6,
+  "pricedCandidates": 4,
+  "skippedNoPricing": 2,
+  "priceMetric": "input",
+  "missingCredentials": [
+    {
+      "providerId": "google",
+      "providerName": "Google",
+      "envVars": ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+      "message": "Set GOOGLE_API_KEY or GEMINI_API_KEY to enable Google model discovery."
+    }
+  ],
+  "cheapest": {
+    "model": { "id": "text-embedding-3-small", "provider": "openai", "...": "..." },
+    "score": 0.02,
+    "priceMetric": "input"
+  }
+}
+```
+
+#### `GET /api/roles`
+
+Return a provider -> model -> roles matrix.
+
+```bash
+curl "http://localhost:3000/api/roles?role=image"
+```
+
+```json
+{
+  "providers": [
+    {
+      "id": "openrouter",
+      "name": "OpenRouter",
+      "authenticated": false,
+      "credentialSource": "none",
+      "models": [
+        {
+          "id": "openai/dall-e-3",
+          "mode": "image",
+          "roles": ["image", "image_generation"]
+        }
+      ]
+    }
+  ],
+  "count": 1,
+  "modelCount": 12,
+  "missingCredentials": []
+}
+```
+
 #### `GET /api/models/:idOrAlias`
 
-Get a single model by its full ID or alias.
+Get a single model by its full ID or alias, including resolved provider URL and version hint.
 
 ```bash
 curl http://localhost:3000/api/models/sonnet
+```
+
+```json
+{
+  "id": "claude-sonnet-4-20250514",
+  "provider": "anthropic",
+  "originProvider": "anthropic",
+  "baseUrl": "https://api.anthropic.com",
+  "version": "20250514",
+  "resolvedOriginProvider": "anthropic",
+  "isDirectProvider": true
+}
+```
+
+#### `GET /api/models/:idOrAlias/routes`
+
+Return all serving routes for one underlying model with direct/preferred flags.
+
+```bash
+curl http://localhost:3000/api/models/gpt-5.3-codex/routes
+```
+
+```json
+{
+  "model": "gpt-5.3-codex",
+  "preferredProvider": "openai",
+  "routes": [
+    {
+      "provider": "openai",
+      "originProvider": "openai",
+      "baseUrl": "https://api.openai.com",
+      "version": "5.3",
+      "isDirect": true,
+      "isPreferred": true,
+      "model": { "...": "..." }
+    },
+    {
+      "provider": "openrouter",
+      "originProvider": "openai",
+      "baseUrl": "https://openrouter.ai",
+      "version": "5.3",
+      "isDirect": false,
+      "isPreferred": false,
+      "model": { "...": "..." }
+    }
+  ]
+}
 ```
 
 #### `GET /api/providers`
@@ -220,10 +445,13 @@ curl http://localhost:3000/api/providers
       "authenticated": true,
       "credentialSource": "env",
       "modelCount": 12,
-      "lastRefreshed": 1740000000000
+      "lastRefreshed": 1740000000000,
+      "missingCredentialPrompt": null,
+      "credentialEnvVars": []
     }
   ],
-  "count": 4
+  "count": 4,
+  "missingCredentials": []
 }
 ```
 
@@ -346,8 +574,8 @@ Model pricing is sourced from [litellm's model pricing database](https://github.
 └────────────────┬────────────────────────┘
                  │
 ┌────────────────▼────────────────────────┐
-│           ModelRegistry                 │
-│  models() · model() · resolve()         │
+│            ModelRegistry                │
+│ models() · providerRoles() · cheapestModels() │
 └───┬────────────┬────────────────┬───────┘
     │            │                │
 ┌───▼──┐  ┌─────▼─────┐  ┌──────▼──────┐

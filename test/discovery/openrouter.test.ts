@@ -200,6 +200,7 @@ describe("OpenRouterDiscoverer", () => {
 
 		const cards = await discoverer.discover(noCredential);
 		expect(cards[0].mode).toBe("image");
+		expect(cards[0].capabilities).toEqual(["image_generation"]);
 	});
 
 	it("should parse pricing: per-token strings to per-million numbers", async () => {

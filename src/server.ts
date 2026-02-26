@@ -7,8 +7,10 @@
  *
  * Routes:
  *   GET  /api/models                     — List models (query: ?provider, ?originProvider, ?mode, ?capability)
- *   GET  /api/models/:idOrAlias/routes   — All provider routes for a model
- *   GET  /api/models/:idOrAlias          — Get a single model by ID or alias
+ *   GET  /api/models/cheapest            — Cheapest eligible models for a role/capability
+ *   GET  /api/models/:idOrAlias/routes   — All provider routes with preferred/direct metadata
+ *   GET  /api/models/:idOrAlias          — Get a single model by ID or alias (+ baseUrl/version)
+ *   GET  /api/roles                      — Provider->model->roles matrix
  *   GET  /api/providers                  — List all providers (summary)
  *   GET  /api/providers/:id              — Get a single provider with its models
  *   POST /api/refresh                    — Trigger re-discovery (body: { provider?: string })
@@ -19,9 +21,35 @@
 
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
-import type { ModelMode } from "./types.js";
+import type { CheapestModelOptions, ModelMode, RoleQueryOptions } from "./types.js";
 import { ModelRegistry } from "./registry.js";
-import { normalizeModelId } from "./normalize.js";
+import { extractModelVersion, normalizeModelId } from "./normalize.js";
+
+const MODEL_MODES: readonly ModelMode[] = ["chat", "embedding", "image", "audio", "moderation"];
+const PRICE_METRICS: readonly NonNullable<CheapestModelOptions["priceMetric"]>[] = ["input", "output", "blended"];
+
+function parseMode(value: string | undefined): ModelMode | undefined {
+	if (!value) return undefined;
+	if ((MODEL_MODES as readonly string[]).includes(value)) {
+		return value as ModelMode;
+	}
+	return undefined;
+}
+
+function parseNumber(value: string | undefined): number | undefined {
+	if (!value) return undefined;
+	const n = Number(value);
+	if (!Number.isFinite(n)) return undefined;
+	return n;
+}
+
+function parsePriceMetric(value: string | undefined): CheapestModelOptions["priceMetric"] | undefined {
+	if (!value) return undefined;
+	if ((PRICE_METRICS as readonly string[]).includes(value)) {
+		return value as CheapestModelOptions["priceMetric"];
+	}
+	return undefined;
+}
 
 // ---------------------------------------------------------------------------
 //  Server factory
@@ -49,7 +77,7 @@ export function createServer(registry: ModelRegistry): Hono {
 	app.get("/api/models", (ctx) => {
 		const provider = ctx.req.query("provider") ?? undefined;
 		const originProvider = ctx.req.query("originProvider") ?? undefined;
-		const mode = (ctx.req.query("mode") as ModelMode | undefined) ?? undefined;
+		const mode = parseMode(ctx.req.query("mode"));
 		const capability = ctx.req.query("capability") ?? undefined;
 
 		const models = registry.models({ provider, originProvider, mode, capability });
@@ -57,6 +85,60 @@ export function createServer(registry: ModelRegistry): Hono {
 		return ctx.json({
 			models,
 			count: models.length,
+		});
+	});
+
+	// Ranked cheapest model lookup for routing decisions. Route must be
+	// registered before dynamic /api/models/:idOrAlias.
+	app.get("/api/models/cheapest", (ctx) => {
+		const options: CheapestModelOptions = {
+			role: ctx.req.query("role") ?? undefined,
+			capability: ctx.req.query("capability") ?? undefined,
+			provider: ctx.req.query("provider") ?? undefined,
+			originProvider: ctx.req.query("originProvider") ?? undefined,
+			mode: parseMode(ctx.req.query("mode")),
+			limit: parseNumber(ctx.req.query("limit")),
+			priceMetric: parsePriceMetric(ctx.req.query("priceMetric")),
+			inputWeight: parseNumber(ctx.req.query("inputWeight")),
+			outputWeight: parseNumber(ctx.req.query("outputWeight")),
+			includeUnpriced: ctx.req.query("includeUnpriced") === "true",
+		};
+
+		const result = registry.cheapestModels(options);
+		const message = result.matches.length > 0
+			? undefined
+			: result.missingCredentials.length > 0
+				? "No priced models found. Add credentials for one of the missing providers."
+				: "No priced models found for the requested filters.";
+
+		return ctx.json({
+			...result,
+			cheapest: result.matches[0] ?? null,
+			message,
+		});
+	});
+
+	// Provider/model role matrix for assistant planners and model routers.
+	app.get("/api/roles", (ctx) => {
+		const options: RoleQueryOptions = {
+			role: ctx.req.query("role") ?? undefined,
+			capability: ctx.req.query("capability") ?? undefined,
+			provider: ctx.req.query("provider") ?? undefined,
+			originProvider: ctx.req.query("originProvider") ?? undefined,
+			mode: parseMode(ctx.req.query("mode")),
+		};
+
+		const providers = registry.providerRoles(options);
+		const providerIds = options.provider
+			? [options.provider]
+			: registry.providers_list().map((provider) => provider.id);
+		const modelCount = providers.reduce((sum, provider) => sum + provider.models.length, 0);
+
+		return ctx.json({
+			providers,
+			count: providers.length,
+			modelCount,
+			missingCredentials: registry.missingCredentialPrompts(providerIds),
 		});
 	});
 
@@ -68,7 +150,7 @@ export function createServer(registry: ModelRegistry): Hono {
 	// resolves to the same underlying model (direct, openrouter, bedrock, etc.).
 	app.get("/api/models/:idOrAlias/routes", (ctx) => {
 		const idOrAlias = ctx.req.param("idOrAlias");
-		const routes = registry.modelRoutes(idOrAlias);
+		const routes = registry.modelRouteInfo(idOrAlias);
 
 		if (routes.length === 0) {
 			return ctx.json({ error: "Model not found", id: idOrAlias }, 404);
@@ -76,6 +158,7 @@ export function createServer(registry: ModelRegistry): Hono {
 
 		return ctx.json({
 			model: normalizeModelId(idOrAlias),
+			preferredProvider: routes.find((route) => route.isPreferred)?.provider,
 			routes,
 		});
 	});
@@ -89,7 +172,14 @@ export function createServer(registry: ModelRegistry): Hono {
 			return ctx.json({ error: "Model not found", id: idOrAlias }, 404);
 		}
 
-		return ctx.json(model);
+		const provider = registry.provider(model.provider);
+		return ctx.json({
+			...model,
+			baseUrl: provider?.baseUrl,
+			version: extractModelVersion(model.id),
+			resolvedOriginProvider: model.originProvider ?? model.provider,
+			isDirectProvider: !model.originProvider || model.originProvider === model.provider,
+		});
 	});
 
 	// ── Provider listing & lookup routes ─────────────────────────────
@@ -97,19 +187,27 @@ export function createServer(registry: ModelRegistry): Hono {
 	// The list endpoint returns a lightweight summary (no full model arrays)
 	// to keep payloads small; use /api/providers/:id for the full detail.
 	app.get("/api/providers", (ctx) => {
-		const providers = registry.providers_list().map((p) => ({
-			id: p.id,
-			name: p.name,
-			baseUrl: p.baseUrl,
-			authenticated: p.authenticated,
-			credentialSource: p.credentialSource,
-			modelCount: p.models.length,
-			lastRefreshed: p.lastRefreshed,
-		}));
+		const prompts = registry.missingCredentialPrompts();
+		const promptByProvider = new Map(prompts.map((prompt) => [prompt.providerId, prompt]));
+		const providers = registry.providers_list().map((p) => {
+			const prompt = promptByProvider.get(p.id);
+			return {
+				id: p.id,
+				name: p.name,
+				baseUrl: p.baseUrl,
+				authenticated: p.authenticated,
+				credentialSource: p.credentialSource,
+				modelCount: p.models.length,
+				lastRefreshed: p.lastRefreshed,
+				missingCredentialPrompt: prompt?.message,
+				credentialEnvVars: prompt?.envVars ?? [],
+			};
+		});
 
 		return ctx.json({
 			providers,
 			count: providers.length,
+			missingCredentials: prompts,
 		});
 	});
 
@@ -122,7 +220,12 @@ export function createServer(registry: ModelRegistry): Hono {
 			return ctx.json({ error: "Provider not found", id }, 404);
 		}
 
-		return ctx.json(provider);
+		const prompt = registry.missingCredentialPrompts([provider.id])[0];
+		return ctx.json({
+			...provider,
+			missingCredentialPrompt: prompt?.message,
+			credentialEnvVars: prompt?.envVars ?? [],
+		});
 	});
 
 	// ── Mutation routes ──────────────────────────────────────────────
@@ -203,7 +306,9 @@ export async function startServer(port = 3000): Promise<void> {
 
 	console.log(`\nKosha API server listening on http://localhost:${port}`);
 	console.log(`  GET  http://localhost:${port}/api/models`);
+	console.log(`  GET  http://localhost:${port}/api/models/cheapest`);
 	console.log(`  GET  http://localhost:${port}/api/models/:id/routes`);
+	console.log(`  GET  http://localhost:${port}/api/roles`);
 	console.log(`  GET  http://localhost:${port}/api/providers`);
 	console.log(`  GET  http://localhost:${port}/health`);
 
