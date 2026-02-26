@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 120" width="400" height="120">
+  <defs>
+    <linearGradient id="wChestGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7C3AED"/>
+      <stop offset="100%" stop-color="#5B21B6"/>
+    </linearGradient>
+    <linearGradient id="wLidGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8B5CF6"/>
+      <stop offset="100%" stop-color="#7C3AED"/>
+    </linearGradient>
+    <linearGradient id="wGoldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FBBF24"/>
+      <stop offset="100%" stop-color="#F59E0B"/>
+    </linearGradient>
+    <filter id="wGlow">
+      <feGaussianBlur stdDeviation="1.5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Icon background circle -->
+  <circle cx="55" cy="60" r="50" fill="#0F0A1A" stroke="#7C3AED" stroke-width="1.5" opacity="0.95"/>
+
+  <!-- Vault / Treasure chest body -->
+  <rect x="28" y="56" width="54" height="30" rx="3" ry="3" fill="url(#wChestGrad)"/>
+
+  <!-- Chest lid (open, angled) -->
+  <path d="M28 56 L28 46 Q55 32 82 46 L82 56 Z" fill="url(#wLidGrad)"/>
+
+  <!-- Gold clasp -->
+  <rect x="50" y="53" width="10" height="7" rx="2" ry="2" fill="url(#wGoldGrad)"/>
+  <circle cx="55" cy="56.5" r="1.5" fill="#0F0A1A"/>
+
+  <!-- Chest bands -->
+  <line x1="28" y1="66" x2="82" y2="66" stroke="#F59E0B" stroke-width="1" opacity="0.6"/>
+  <line x1="28" y1="76" x2="82" y2="76" stroke="#F59E0B" stroke-width="1" opacity="0.6"/>
+
+  <!-- Neural network nodes -->
+  <circle cx="55" cy="36" r="3.5" fill="#F59E0B" filter="url(#wGlow)"/>
+  <circle cx="38" cy="27" r="2.5" fill="#A78BFA"/>
+  <circle cx="72" cy="27" r="2.5" fill="#A78BFA"/>
+  <circle cx="30" cy="18" r="2" fill="#C4B5FD"/>
+  <circle cx="80" cy="18" r="2" fill="#C4B5FD"/>
+  <circle cx="48" cy="17" r="2" fill="#DDD6FE"/>
+  <circle cx="62" cy="17" r="2" fill="#DDD6FE"/>
+  <circle cx="55" cy="12" r="2.5" fill="#F59E0B" opacity="0.8"/>
+
+  <!-- Neural connections -->
+  <line x1="55" y1="36" x2="38" y2="27" stroke="#A78BFA" stroke-width="1" opacity="0.7"/>
+  <line x1="55" y1="36" x2="72" y2="27" stroke="#A78BFA" stroke-width="1" opacity="0.7"/>
+  <line x1="38" y1="27" x2="30" y2="18" stroke="#C4B5FD" stroke-width="0.8" opacity="0.5"/>
+  <line x1="72" y1="27" x2="80" y2="18" stroke="#C4B5FD" stroke-width="0.8" opacity="0.5"/>
+  <line x1="38" y1="27" x2="48" y2="17" stroke="#C4B5FD" stroke-width="0.8" opacity="0.5"/>
+  <line x1="72" y1="27" x2="62" y2="17" stroke="#C4B5FD" stroke-width="0.8" opacity="0.5"/>
+  <line x1="48" y1="17" x2="55" y2="12" stroke="#DDD6FE" stroke-width="0.8" opacity="0.5"/>
+  <line x1="62" y1="17" x2="55" y2="12" stroke="#DDD6FE" stroke-width="0.8" opacity="0.5"/>
+
+  <!-- Provider dots inside chest -->
+  <circle cx="40" cy="63" r="1.5" fill="#F59E0B" opacity="0.7"/>
+  <circle cx="50" cy="63" r="1.5" fill="#F59E0B" opacity="0.5"/>
+  <circle cx="60" cy="63" r="1.5" fill="#F59E0B" opacity="0.5"/>
+  <circle cx="70" cy="63" r="1.5" fill="#F59E0B" opacity="0.7"/>
+
+  <!-- Separator line -->
+  <line x1="118" y1="25" x2="118" y2="95" stroke="#7C3AED" stroke-width="1" opacity="0.3"/>
+
+  <!-- Text: Kosha -->
+  <text x="140" y="62" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-weight="700" font-size="40" fill="#FFFFFF" letter-spacing="3">Kosha</text>
+
+  <!-- Devanagari subtitle -->
+  <text x="140" y="84" font-family="'Noto Sans Devanagari', 'Mangal', sans-serif" font-weight="400" font-size="14" fill="#A78BFA" letter-spacing="1">&#x0915;&#x094B;&#x0936; &middot; AI Model Discovery</text>
+
+  <!-- Tagline -->
+  <text x="140" y="100" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-weight="300" font-size="11" fill="#8B8B8B" letter-spacing="0.5">Discover models across every provider</text>
+</svg>
