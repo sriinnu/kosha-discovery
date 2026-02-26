@@ -61,6 +61,14 @@ export abstract class BaseDiscoverer implements ProviderDiscoverer {
 
 	/**
 	 * Create a ModelCard with sensible defaults for missing fields.
+	 *
+	 * - `originProvider` defaults to `partial.provider` when not explicitly set,
+	 *   which is correct for first-party providers (e.g. "anthropic" serving its
+	 *   own Claude models). Aggregators like openrouter or managed services like
+	 *   bedrock/vertex should pass an explicit `originProvider` to distinguish
+	 *   the serving layer from the original model creator.
+	 * - `region` and `projectId` are passed through unchanged when present
+	 *   (used by Bedrock and Vertex AI respectively).
 	 */
 	protected makeCard(partial: Partial<ModelCard> & { id: string; provider: string }): ModelCard {
 		return {
@@ -72,6 +80,9 @@ export abstract class BaseDiscoverer implements ProviderDiscoverer {
 			aliases: [],
 			discoveredAt: Date.now(),
 			source: "api",
+			// originProvider falls back to the serving provider when the caller
+			// does not supply a more-specific original creator.
+			originProvider: partial.originProvider ?? partial.provider,
 			...partial,
 		};
 	}

@@ -27,14 +27,27 @@ export interface ModelPricing {
  *
  * Every discoverer produces `ModelCard` instances so that consumers
  * get a uniform shape regardless of the upstream provider API.
+ * The `provider` field reflects the serving layer (e.g. "openrouter",
+ * "bedrock", "vertex"), while `originProvider` holds the original
+ * model creator (e.g. "anthropic", "openai", "google").
  */
 export interface ModelCard {
 	/** Provider's canonical model ID (e.g. "claude-opus-4-6"). */
 	id: string;
 	/** Human-readable display name (e.g. "Claude Opus 4"). */
 	name: string;
-	/** Provider identifier (e.g. "anthropic", "openai"). */
+	/**
+	 * Serving-layer provider identifier.
+	 * Examples: "anthropic", "openai", "openrouter", "bedrock", "vertex".
+	 */
 	provider: string;
+	/**
+	 * Original model creator, distinct from the serving layer when a model
+	 * is accessed through a proxy or managed service.
+	 * Examples: "anthropic" when served via "openrouter" or "bedrock";
+	 *           "google" when served via "vertex".
+	 */
+	originProvider?: string;
 	/** Primary operational mode of the model. */
 	mode: ModelMode;
 	/** Feature flags: "chat", "vision", "function_calling", "nlu", "code", "embedding", etc. */
@@ -55,6 +68,10 @@ export interface ModelCard {
 	discoveredAt: number;
 	/** How this model entry was obtained. */
 	source: "api" | "litellm" | "local" | "manual";
+	/** AWS region for Bedrock-served models (e.g. "us-east-1"). */
+	region?: string;
+	/** GCP project ID for Vertex AI-served models (e.g. "my-gcp-project"). */
+	projectId?: string;
 }
 
 /**
@@ -130,6 +147,12 @@ export interface CredentialResult {
 	source: "env" | "cli" | "config" | "oauth" | "none";
 	/** Filesystem path the credential was read from, if applicable. */
 	path?: string;
+	/**
+	 * Provider-specific metadata bag.
+	 * For AWS Bedrock: `{ region: "us-east-1" }`.
+	 * For GCP Vertex: `{ projectId: "my-project", region: "us-central1" }`.
+	 */
+	metadata?: Record<string, string>;
 }
 
 /**

@@ -104,17 +104,56 @@ export class OpenRouterDiscoverer extends BaseDiscoverer {
 		const mode = this.inferMode(model);
 		const capabilities = this.inferCapabilities(model);
 		const pricing = this.parsePricing(model.pricing);
+		const originProvider = this.extractOriginProvider(model.id);
 
 		return this.makeCard({
 			id: model.id,
 			name: model.name || model.id,
 			provider: this.providerId,
+			originProvider,
 			mode,
 			capabilities,
 			contextWindow: model.context_length ?? 0,
 			maxOutputTokens: model.top_provider?.max_completion_tokens ?? 0,
 			pricing,
 		});
+	}
+
+	/**
+	 * Extract the canonical origin-provider slug from an OpenRouter compound
+	 * model ID of the form `{vendor}/{model-name}`.
+	 *
+	 * OpenRouter uses vendor-namespaced IDs (e.g. `anthropic/claude-opus-4-6`,
+	 * `meta-llama/llama-3-70b`).  We take the prefix before the first `/` and
+	 * normalise it to our canonical slug so that downstream consumers can group
+	 * models by original creator regardless of which gateway serves them.
+	 *
+	 * @param modelId - Raw OpenRouter model ID.
+	 * @returns Canonical provider slug (e.g. `"anthropic"`, `"meta"`, `"openai"`).
+	 */
+	private extractOriginProvider(modelId: string): string {
+		const slashIndex = modelId.indexOf("/");
+		if (slashIndex === -1) {
+			// No vendor prefix — treat the whole ID as the slug
+			return modelId;
+		}
+
+		const prefix = modelId.slice(0, slashIndex);
+
+		// Map well-known OpenRouter vendor prefixes to canonical slugs.
+		// Unknown prefixes fall through and are returned as-is.
+		const vendorMap: Record<string, string> = {
+			anthropic: "anthropic",
+			openai: "openai",
+			google: "google",
+			"meta-llama": "meta",
+			mistralai: "mistral",
+			cohere: "cohere",
+			deepseek: "deepseek",
+			qwen: "qwen",
+		};
+
+		return vendorMap[prefix] ?? prefix;
 	}
 
 	/** Infer the primary {@link ModelMode} from modality and naming patterns. */

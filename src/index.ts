@@ -9,6 +9,7 @@
 export { ModelRegistry } from "./registry.js";
 export { AliasResolver, DEFAULT_ALIASES } from "./aliases.js";
 export { KoshaCache } from "./cache.js";
+export { extractOriginProvider, normalizeModelId } from "./normalize.js";
 export type {
 	ModelCard,
 	ProviderInfo,

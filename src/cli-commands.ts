@@ -121,18 +121,19 @@ export async function cmdDiscover(registry: ModelRegistry, flags: Record<string,
 
 /**
  * List all known models in a formatted table.
- * Supports filtering by `--provider`, `--mode`, and `--capability`.
+ * Supports filtering by `--provider`, `--origin`, `--mode`, and `--capability`.
  *
  * @param registry  The model registry to query.
- * @param flags     CLI flags (supports `--provider`, `--mode`, `--capability`, `--json`).
+ * @param flags     CLI flags (supports `--provider`, `--origin`, `--mode`, `--capability`, `--json`).
  */
 export async function cmdList(registry: ModelRegistry, flags: Record<string, string | boolean>): Promise<void> {
 	const provider = typeof flags.provider === "string" ? flags.provider : undefined;
+	const originProvider = typeof flags.origin === "string" ? flags.origin : undefined;
 	const mode = typeof flags.mode === "string" ? (flags.mode as ModelMode) : undefined;
 	const capability = typeof flags.capability === "string" ? flags.capability : undefined;
 
 	await ensureDiscovered(registry);
-	const models = registry.models({ provider, mode, capability });
+	const models = registry.models({ provider, originProvider, mode, capability });
 
 	if (flags.json) { console.log(JSON.stringify(models, null, 2)); return; }
 	if (models.length === 0) { console.log(c(YELLOW, "No models found matching the given filters.")); return; }
@@ -147,20 +148,21 @@ export async function cmdList(registry: ModelRegistry, flags: Record<string, str
 
 /**
  * Search for models whose id, name, or aliases contain the query string.
- * Case-insensitive substring matching.
+ * Case-insensitive substring matching. Optionally pre-filtered by `--origin`.
  *
  * @param registry  The model registry to search.
  * @param query     The search term (substring).
- * @param flags     CLI flags (supports `--json`).
+ * @param flags     CLI flags (supports `--origin`, `--json`).
  */
 export async function cmdSearch(registry: ModelRegistry, query: string, flags: Record<string, string | boolean>): Promise<void> {
 	if (!query) { console.error(c(RED, "Usage: kosha search <query>")); process.exit(1); }
 
 	await ensureDiscovered(registry);
 	const needle = query.toLowerCase();
+	const originProvider = typeof flags.origin === "string" ? flags.origin : undefined;
 
-	// Match against id, display name, and every alias
-	const matches = registry.models().filter(
+	// Apply optional origin filter first, then substring-match across id, name, and aliases
+	const matches = registry.models({ originProvider }).filter(
 		(m) =>
 			m.id.toLowerCase().includes(needle) ||
 			m.name.toLowerCase().includes(needle) ||
@@ -225,10 +227,18 @@ export async function cmdModel(registry: ModelRegistry, idOrAlias: string, flags
 		? `\nCache Pricing: ${formatPrice(model.pricing.cacheReadPerMillion)} read / ${formatPrice(model.pricing.cacheWritePerMillion)} write per million tokens`
 		: "";
 
+	// Origin provider line: only shown when distinct from the serving-layer provider
+	const originLine = model.originProvider && model.originProvider !== model.provider
+		? `\n${c(BOLD, "Origin Provider:")} ${c(CYAN, model.originProvider)}`
+		: "";
+	// Region and project ID are only shown when present (Bedrock / Vertex models)
+	const regionLine = model.region ? `\n${c(BOLD, "Region:")} ${model.region}` : "";
+	const projectLine = model.projectId ? `\n${c(BOLD, "Project ID:")} ${model.projectId}` : "";
+
 	console.log(`
 ${c(BOLD, "Model:")} ${model.id}
 ${c(BOLD, "Name:")} ${model.name}
-${c(BOLD, "Provider:")} ${providerName}
+${c(BOLD, "Provider:")} ${providerName}${originLine}${regionLine}${projectLine}
 ${c(BOLD, "Mode:")} ${model.mode}
 ${c(BOLD, "Aliases:")} ${model.aliases.length > 0 ? model.aliases.join(", ") : c(DIM, "none")}
 ${c(BOLD, "Context Window:")} ${model.contextWindow > 0 ? formatNumber(model.contextWindow) + " tokens" : c(DIM, "unknown")}
@@ -301,6 +311,56 @@ export async function cmdResolve(registry: ModelRegistry, alias: string, flags: 
 	}
 }
 
+// ── routes ───────────────────────────────────────────────────────────────
+
+/**
+ * Show every provider route through which a model can be accessed.
+ *
+ * A "route" is a serving-layer entry (ModelCard) whose normalized model ID
+ * matches the given identifier. For example, `claude-opus-4-6` may appear
+ * as a direct Anthropic route, an OpenRouter route, and an AWS Bedrock route.
+ *
+ * Pricing columns show `—` when data is unavailable.
+ *
+ * @param registry   The model registry to query.
+ * @param modelId    Canonical model ID or alias to look up.
+ * @param flags      CLI flags (supports `--json`).
+ */
+export async function cmdRoutes(registry: ModelRegistry, modelId: string, flags: Record<string, string | boolean>): Promise<void> {
+	if (!modelId) { console.error(c(RED, "Usage: kosha routes <model-id|alias>")); process.exit(1); }
+
+	await ensureDiscovered(registry);
+	const routes = registry.modelRoutes(modelId);
+
+	if (flags.json) { console.log(JSON.stringify(routes, null, 2)); return; }
+
+	if (routes.length === 0) {
+		console.error(c(RED, `No routes found for model: "${modelId}"`));
+		process.exit(1);
+	}
+
+	const columns: Column[] = [
+		{ header: "Provider", width: 14 },
+		{ header: "Model ID", width: 42 },
+		{ header: "Region", width: 14 },
+		{ header: "Origin", width: 12 },
+		{ header: "$/M in", width: 8, align: "right" },
+		{ header: "$/M out", width: 8, align: "right" },
+	];
+
+	const rows = routes.map((m) => [
+		c(CYAN, m.provider),
+		m.id,
+		m.region ?? c(DIM, "—"),
+		m.originProvider ?? c(DIM, "—"),
+		formatPrice(m.pricing?.inputPerMillion),
+		formatPrice(m.pricing?.outputPerMillion),
+	]);
+
+	console.log(`\n${c(BOLD, routes[0].name)} ${c(DIM, `(${routes.length} route${routes.length !== 1 ? "s" : ""})`)}\n`);
+	console.log(renderTable(columns, rows));
+}
+
 // ── refresh ──────────────────────────────────────────────────────────────
 
 /**
@@ -356,11 +416,14 @@ ${c(BOLD, "USAGE")}
 ${c(BOLD, "COMMANDS")}
   ${c(CYAN, "discover")}                      Discover all providers and models
   ${c(CYAN, "list")}                          List all known models
-    --provider <name>             Filter by provider
+    --provider <name>             Filter by serving-layer provider
+    --origin <name>               Filter by origin/creator provider (e.g. anthropic)
     --mode <mode>                 Filter by mode (chat, embedding, image, audio)
     --capability <cap>            Filter by capability (vision, function_calling, etc.)
   ${c(CYAN, "search")} <query>                Search models by name/ID (fuzzy match)
+    --origin <name>               Restrict search to a specific origin provider
   ${c(CYAN, "model")} <id|alias>              Show detailed info for one model
+  ${c(CYAN, "routes")} <id|alias>             Show all provider routes for a model
   ${c(CYAN, "providers")}                     List all providers and their status
   ${c(CYAN, "resolve")} <alias>               Resolve an alias to canonical model ID
   ${c(CYAN, "refresh")}                       Force re-discover all providers (bypass cache)
@@ -374,9 +437,13 @@ ${c(BOLD, "OPTIONS")}
 ${c(BOLD, "EXAMPLES")}
   ${c(DIM, "$")} kosha discover
   ${c(DIM, "$")} kosha list --provider anthropic
+  ${c(DIM, "$")} kosha list --origin anthropic
   ${c(DIM, "$")} kosha list --mode embedding --json
   ${c(DIM, "$")} kosha search gemini
+  ${c(DIM, "$")} kosha search claude --origin anthropic
   ${c(DIM, "$")} kosha model sonnet
+  ${c(DIM, "$")} kosha routes claude-opus-4-6
+  ${c(DIM, "$")} kosha routes gpt-4o --json
   ${c(DIM, "$")} kosha providers
   ${c(DIM, "$")} kosha resolve haiku
   ${c(DIM, "$")} kosha serve --port 8080
@@ -412,6 +479,7 @@ ${c(MAGENTA, "  ╚════════════════════�
     ${c(CYAN, "kosha list")}           List all discovered models
     ${c(CYAN, "kosha search")} ${c(DIM, "<q>")}     Search by name or ID
     ${c(CYAN, "kosha model")} ${c(DIM, "<id>")}     Detailed info for one model
+    ${c(CYAN, "kosha routes")} ${c(DIM, "<id>")}    All provider routes for a model
     ${c(CYAN, "kosha providers")}      Show provider status
     ${c(CYAN, "kosha serve")}          Start the HTTP API server
 
