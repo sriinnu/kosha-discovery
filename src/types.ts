@@ -10,6 +10,9 @@
 /** Supported model operational modes. */
 export type ModelMode = "chat" | "embedding" | "image" | "audio" | "moderation";
 
+/** Price scoring metric for cheapest-model selection. */
+export type PricingMetric = "input" | "output" | "blended";
+
 /** Token pricing in USD per million tokens. */
 export interface ModelPricing {
 	/** USD cost per 1 million input tokens. */
@@ -72,6 +75,129 @@ export interface ModelCard {
 	region?: string;
 	/** GCP project ID for Vertex AI-served models (e.g. "my-gcp-project"). */
 	projectId?: string;
+}
+
+/**
+ * A model projection used for role/capability matrix views.
+ *
+ * `roles` is a union of the model's primary mode plus all declared capability
+ * flags, deduplicated and normalized for routing use-cases.
+ */
+export interface ModelRoleCard {
+	/** Provider's canonical model ID. */
+	id: string;
+	/** Human-readable display name. */
+	name: string;
+	/** Serving-layer provider slug. */
+	provider: string;
+	/** Original model creator (if different from serving provider). */
+	originProvider?: string;
+	/** Primary model mode. */
+	mode: ModelMode;
+	/** Deduplicated role/capability list (e.g. ["chat", "vision", "function_calling"]). */
+	roles: string[];
+	/** Optional pricing copied from the base model card. */
+	pricing?: ModelPricing;
+}
+
+/** Provider-level role matrix view used by assistants and routing clients. */
+export interface ProviderRoleInfo {
+	/** Unique provider slug. */
+	id: string;
+	/** Human-readable provider name. */
+	name: string;
+	/** Whether an auth credential was resolved for this provider. */
+	authenticated: boolean;
+	/** How credential was sourced, if available. */
+	credentialSource?: "env" | "cli" | "config" | "oauth" | "none";
+	/** Role-augmented model projections for this provider. */
+	models: ModelRoleCard[];
+}
+
+/** Query options for role-based model/provider views. */
+export interface RoleQueryOptions {
+	/** Restrict to one serving-layer provider. */
+	provider?: string;
+	/** Restrict by model creator/provider. */
+	originProvider?: string;
+	/** Restrict by primary mode. */
+	mode?: ModelMode;
+	/** Restrict by normalized capability tag (e.g. "vision", "embedding"). */
+	capability?: string;
+	/** Flexible role query alias (e.g. "embeddings", "image", "tool_use"). */
+	role?: string;
+}
+
+/** Prompt metadata for providers missing required credentials. */
+export interface ProviderCredentialPrompt {
+	/** Provider slug. */
+	providerId: string;
+	/** Provider display name. */
+	providerName: string;
+	/** Whether this provider requires credentials to discover/use models. */
+	required: boolean;
+	/** Environment variable names that satisfy the credential requirement. */
+	envVars: string[];
+	/** Human-readable prompt text suitable for assistant UX. */
+	message: string;
+}
+
+/** Query options for cheapest-model selection. */
+export interface CheapestModelOptions extends RoleQueryOptions {
+	/** Maximum number of ranked matches to return (default: 5). */
+	limit?: number;
+	/** Pricing comparator metric (default inferred from role/mode). */
+	priceMetric?: PricingMetric;
+	/** Weight applied to input-token price when using `blended` metric (default: 1). */
+	inputWeight?: number;
+	/** Weight applied to output-token price when using `blended` metric (default: 1). */
+	outputWeight?: number;
+	/** Include unpriced models at the end of results with undefined score. */
+	includeUnpriced?: boolean;
+}
+
+/** A ranked cheapest-model match with its computed score. */
+export interface CheapestModelMatch {
+	/** Ranked model candidate. */
+	model: ModelCard;
+	/** Computed cost score (undefined when model has no usable pricing). */
+	score?: number;
+	/** Metric used for scoring this result set. */
+	priceMetric: PricingMetric;
+}
+
+/** Full cheapest-model query response with diagnostics for callers. */
+export interface CheapestModelResult {
+	/** Ranked matches sorted by ascending score. */
+	matches: CheapestModelMatch[];
+	/** Total models matching non-price filters before pricing checks. */
+	candidates: number;
+	/** Models with usable pricing for the selected metric. */
+	pricedCandidates: number;
+	/** Matching models excluded due to missing/invalid pricing. */
+	skippedNoPricing: number;
+	/** Metric actually used to compute scores. */
+	priceMetric: PricingMetric;
+	/** Providers that are likely missing required API keys. */
+	missingCredentials: ProviderCredentialPrompt[];
+}
+
+/** Detailed provider route info for a model across serving layers. */
+export interface ModelRouteInfo {
+	/** Original model card for this route. */
+	model: ModelCard;
+	/** Serving provider ID (same as `model.provider`). */
+	provider: string;
+	/** Resolved model creator/provider (origin). */
+	originProvider: string;
+	/** Base URL of the serving provider API, when known. */
+	baseUrl?: string;
+	/** Parsed model version hint (date, semantic version, or provider suffix). */
+	version?: string;
+	/** True when the model is served directly by its origin provider. */
+	isDirect: boolean;
+	/** True when this route is recommended for invocation. */
+	isPreferred: boolean;
 }
 
 /**

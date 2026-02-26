@@ -16,11 +16,13 @@ import { ModelRegistry } from "./registry.js";
 import { DIM, RED, c } from "./cli-format.js";
 import {
 	cmdDiscover,
+	cmdCheapest,
 	cmdList,
 	cmdModel,
 	cmdProviders,
 	cmdRefresh,
 	cmdResolve,
+	cmdRoles,
 	cmdRoutes,
 	cmdSearch,
 	cmdServe,
@@ -137,6 +139,14 @@ async function main(): Promise<void> {
 		case "search":
 		case "find":
 			await cmdSearch(registry, positional[1] ?? "", flags);
+			break;
+
+		case "roles":
+			await cmdRoles(registry, flags);
+			break;
+
+		case "cheapest":
+			await cmdCheapest(registry, flags);
 			break;
 
 		case "model":

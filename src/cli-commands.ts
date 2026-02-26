@@ -74,6 +74,13 @@ function modelRow(m: { provider: string; id: string; mode: string; contextWindow
 	];
 }
 
+function parseNumberFlag(value: string | boolean | undefined): number | undefined {
+	if (typeof value !== "string") return undefined;
+	const n = Number(value);
+	if (!Number.isFinite(n)) return undefined;
+	return n;
+}
+
 /** Print a provider summary line (used by discover & refresh). */
 function printProviderSummary(providers: ProviderInfo[]): void {
 	let totalModels = 0;
@@ -142,6 +149,140 @@ export async function cmdList(registry: ModelRegistry, flags: Record<string, str
 	const providerCount = new Set(models.map((m) => m.provider)).size;
 	console.log(c(DIM, line("\u2500", 90)));
 	console.log(`${c(BOLD, String(models.length))} models from ${c(BOLD, String(providerCount))} providers`);
+}
+
+// ── roles ────────────────────────────────────────────────────────────────
+
+/**
+ * Show a provider -> model -> roles matrix.
+ *
+ * Useful for assistants that need to answer: "which providers/models can do X?"
+ */
+export async function cmdRoles(registry: ModelRegistry, flags: Record<string, string | boolean>): Promise<void> {
+	const provider = typeof flags.provider === "string" ? flags.provider : undefined;
+	const originProvider = typeof flags.origin === "string" ? flags.origin : undefined;
+	const mode = typeof flags.mode === "string" ? (flags.mode as ModelMode) : undefined;
+	const capability = typeof flags.capability === "string" ? flags.capability : undefined;
+	const role = typeof flags.role === "string" ? flags.role : undefined;
+
+	await ensureDiscovered(registry);
+	const providers = registry.providerRoles({ provider, originProvider, mode, capability, role });
+
+	if (flags.json) {
+		console.log(JSON.stringify({
+			providers,
+			count: providers.length,
+			modelCount: providers.reduce((sum, p) => sum + p.models.length, 0),
+			missingCredentials: registry.missingCredentialPrompts(providers.map((p) => p.id)),
+		}, null, 2));
+		return;
+	}
+
+	if (providers.length === 0) {
+		console.log(c(YELLOW, "No provider/model roles found for the given filters."));
+		return;
+	}
+
+	const columns: Column[] = [
+		{ header: "Provider", width: 12 },
+		{ header: "Model", width: 40 },
+		{ header: "Mode", width: 10 },
+		{ header: "Roles", width: 56 },
+	];
+
+	const rows = providers.flatMap((providerInfo) =>
+		providerInfo.models.map((model) => [
+			c(CYAN, providerInfo.id),
+			model.id,
+			model.mode,
+			model.roles.join(", "),
+		]));
+
+	console.log(renderTable(columns, rows));
+
+	const missing = registry.missingCredentialPrompts(providers.map((p) => p.id));
+	if (missing.length > 0) {
+		console.log(c(DIM, "\nMissing provider credentials:"));
+		for (const prompt of missing) {
+			console.log(`  ${c(YELLOW, prompt.providerId)}: ${prompt.message}`);
+		}
+	}
+}
+
+// ── cheapest ─────────────────────────────────────────────────────────────
+
+/**
+ * Return cheapest model candidates for a requested role/capability.
+ */
+export async function cmdCheapest(registry: ModelRegistry, flags: Record<string, string | boolean>): Promise<void> {
+	const provider = typeof flags.provider === "string" ? flags.provider : undefined;
+	const originProvider = typeof flags.origin === "string" ? flags.origin : undefined;
+	const mode = typeof flags.mode === "string" ? (flags.mode as ModelMode) : undefined;
+	const capability = typeof flags.capability === "string" ? flags.capability : undefined;
+	const role = typeof flags.role === "string" ? flags.role : undefined;
+
+	await ensureDiscovered(registry);
+
+	const result = registry.cheapestModels({
+		provider,
+		originProvider,
+		mode,
+		capability,
+		role,
+		limit: parseNumberFlag(flags.limit),
+		priceMetric: typeof flags["price-metric"] === "string"
+			? flags["price-metric"] as "input" | "output" | "blended"
+			: undefined,
+		inputWeight: parseNumberFlag(flags["input-weight"]),
+		outputWeight: parseNumberFlag(flags["output-weight"]),
+		includeUnpriced: flags["include-unpriced"] === true,
+	});
+
+	if (flags.json) {
+		console.log(JSON.stringify(result, null, 2));
+		return;
+	}
+
+	if (result.matches.length === 0) {
+		console.log(c(YELLOW, "No priced models found for the requested filters."));
+		if (result.missingCredentials.length > 0) {
+			console.log(c(DIM, "\nMissing provider credentials:"));
+			for (const prompt of result.missingCredentials) {
+				console.log(`  ${c(YELLOW, prompt.providerId)}: ${prompt.message}`);
+			}
+		}
+		return;
+	}
+
+	const columns: Column[] = [
+		{ header: "Provider", width: 12 },
+		{ header: "Model", width: 38 },
+		{ header: "Mode", width: 10 },
+		{ header: "Metric", width: 8 },
+		{ header: "Score", width: 10, align: "right" },
+		{ header: "$/M in", width: 8, align: "right" },
+		{ header: "$/M out", width: 8, align: "right" },
+	];
+
+	const rows = result.matches.map((match) => [
+		c(CYAN, match.model.provider),
+		match.model.id,
+		match.model.mode,
+		match.priceMetric,
+		match.score === undefined ? "\u2014" : formatPrice(match.score),
+		formatPrice(match.model.pricing?.inputPerMillion),
+		formatPrice(match.model.pricing?.outputPerMillion),
+	]);
+
+	console.log(renderTable(columns, rows));
+	console.log(c(DIM, `\n${result.pricedCandidates}/${result.candidates} candidates had usable pricing.`));
+
+	if (result.missingCredentials.length > 0) {
+		console.log(c(DIM, "\nMissing provider credentials:"));
+		for (const prompt of result.missingCredentials) {
+			console.log(`  ${c(YELLOW, prompt.providerId)}: ${prompt.message}`);
+		}
+	}
 }
 
 // ── search ───────────────────────────────────────────────────────────────
@@ -316,9 +457,9 @@ export async function cmdResolve(registry: ModelRegistry, alias: string, flags: 
 /**
  * Show every provider route through which a model can be accessed.
  *
- * A "route" is a serving-layer entry (ModelCard) whose normalized model ID
- * matches the given identifier. For example, `claude-opus-4-6` may appear
- * as a direct Anthropic route, an OpenRouter route, and an AWS Bedrock route.
+ * A "route" is a serving-layer entry whose normalized model ID matches the
+ * given identifier. Output includes direct/preferred markers, origin provider,
+ * model version hint, and serving base URL.
  *
  * Pricing columns show `—` when data is unavailable.
  *
@@ -330,7 +471,7 @@ export async function cmdRoutes(registry: ModelRegistry, modelId: string, flags:
 	if (!modelId) { console.error(c(RED, "Usage: kosha routes <model-id|alias>")); process.exit(1); }
 
 	await ensureDiscovered(registry);
-	const routes = registry.modelRoutes(modelId);
+	const routes = registry.modelRouteInfo(modelId);
 
 	if (flags.json) { console.log(JSON.stringify(routes, null, 2)); return; }
 
@@ -340,25 +481,35 @@ export async function cmdRoutes(registry: ModelRegistry, modelId: string, flags:
 	}
 
 	const columns: Column[] = [
+		{ header: "Pref", width: 4 },
 		{ header: "Provider", width: 14 },
 		{ header: "Model ID", width: 42 },
 		{ header: "Region", width: 14 },
 		{ header: "Origin", width: 12 },
+		{ header: "Ver", width: 12 },
+		{ header: "Base URL", width: 34 },
 		{ header: "$/M in", width: 8, align: "right" },
 		{ header: "$/M out", width: 8, align: "right" },
 	];
 
-	const rows = routes.map((m) => [
-		c(CYAN, m.provider),
-		m.id,
-		m.region ?? c(DIM, "—"),
-		m.originProvider ?? c(DIM, "—"),
-		formatPrice(m.pricing?.inputPerMillion),
-		formatPrice(m.pricing?.outputPerMillion),
+	const rows = routes.map((route) => [
+		route.isPreferred ? c(GREEN, "*") : route.isDirect ? c(CYAN, "\u00B7") : " ",
+		c(CYAN, route.provider),
+		route.model.id,
+		route.model.region ?? c(DIM, "—"),
+		route.originProvider ?? c(DIM, "—"),
+		route.version ?? c(DIM, "—"),
+		route.baseUrl ?? c(DIM, "—"),
+		formatPrice(route.model.pricing?.inputPerMillion),
+		formatPrice(route.model.pricing?.outputPerMillion),
 	]);
 
-	console.log(`\n${c(BOLD, routes[0].name)} ${c(DIM, `(${routes.length} route${routes.length !== 1 ? "s" : ""})`)}\n`);
+	console.log(`\n${c(BOLD, routes[0].model.name)} ${c(DIM, `(${routes.length} route${routes.length !== 1 ? "s" : ""})`)}\n`);
 	console.log(renderTable(columns, rows));
+	const preferred = routes.find((route) => route.isPreferred);
+	if (preferred) {
+		console.log(c(DIM, `\nPreferred route: ${preferred.provider} (${preferred.baseUrl ?? "base URL unknown"})`));
+	}
 }
 
 // ── refresh ──────────────────────────────────────────────────────────────
@@ -423,6 +574,21 @@ ${c(BOLD, "COMMANDS")}
   ${c(CYAN, "search")} <query>                Search models by name/ID (fuzzy match)
     --origin <name>               Restrict search to a specific origin provider
   ${c(CYAN, "model")} <id|alias>              Show detailed info for one model
+  ${c(CYAN, "roles")}                         Show provider -> model -> roles matrix
+    --role <role>                 Filter by task role (e.g. embeddings, image, tool_use)
+    --provider <name>             Filter by serving-layer provider
+    --origin <name>               Filter by model creator provider
+    --mode <mode>                 Filter by mode (chat, embedding, image, audio, moderation)
+    --capability <cap>            Filter by capability tag
+  ${c(CYAN, "cheapest")}                      Find cheapest eligible models
+    --role <role>                 Task role, e.g. embeddings or image
+    --capability <cap>            Capability filter (vision, embedding, function_calling)
+    --mode <mode>                 Mode filter
+    --limit <n>                   Maximum matches to return (default 5)
+    --price-metric <metric>       input | output | blended
+    --input-weight <n>            Weight for blended metric input price
+    --output-weight <n>           Weight for blended metric output price
+    --include-unpriced            Include unpriced models after ranked matches
   ${c(CYAN, "routes")} <id|alias>             Show all provider routes for a model
   ${c(CYAN, "providers")}                     List all providers and their status
   ${c(CYAN, "resolve")} <alias>               Resolve an alias to canonical model ID
@@ -442,6 +608,8 @@ ${c(BOLD, "EXAMPLES")}
   ${c(DIM, "$")} kosha search gemini
   ${c(DIM, "$")} kosha search claude --origin anthropic
   ${c(DIM, "$")} kosha model sonnet
+  ${c(DIM, "$")} kosha roles --role embeddings
+  ${c(DIM, "$")} kosha cheapest --role image --limit 3
   ${c(DIM, "$")} kosha routes claude-opus-4-6
   ${c(DIM, "$")} kosha routes gpt-4o --json
   ${c(DIM, "$")} kosha providers
@@ -462,14 +630,23 @@ export function showVersion(): void {
  * Uses MAGENTA branding with a clean, minimal layout.
  */
 export function showSplash(): void {
+	const brandWord =
+		`${c(CYAN, "k")}${c(GREEN, "o")}${c(YELLOW, "s")}${c(MAGENTA, "h")}${c(RED, "a")}`;
+	const mascot1 = `${c(CYAN, " /\\_/\\ ")} ${c(DIM, "assistant mascot")}`;
+	const mascot2 = `${c(CYAN, "( o.o )")} ${c(DIM, "ready to route")}`;
+	const mascot3 = `${c(CYAN, " > ^ < ")} ${c(DIM, "providers + models")}`;
+
 	console.log(`
 ${c(MAGENTA, "  ╔═══════════════════════════════════════════════════╗")}
 ${c(MAGENTA, "  ║")}                                                   ${c(MAGENTA, "║")}
-${c(MAGENTA, "  ║")}   ${c(BOLD, c(MAGENTA, "  █▄▀ █▀█ █▀ █ █ ▄▀█"))}                         ${c(MAGENTA, "║")}
-${c(MAGENTA, "  ║")}   ${c(BOLD, c(MAGENTA, "  █ █ █▄█ ▄█ █▀█ █▀█"))}    ${c(DIM, "कोश — treasury")}        ${c(MAGENTA, "║")}
+${c(MAGENTA, "  ║")}   ${c(BOLD, "  █▄▀ █▀█ █▀ █ █ ▄▀█")}                         ${c(MAGENTA, "║")}
+${c(MAGENTA, "  ║")}   ${c(BOLD, "  █ █ █▄█ ▄█ █▀█ █▀█")}    ${c(DIM, "कोश — treasury")}        ${c(MAGENTA, "║")}
 ${c(MAGENTA, "  ║")}                                                   ${c(MAGENTA, "║")}
-${c(MAGENTA, "  ║")}   ${c(DIM, "AI Model & Provider Discovery Registry")}          ${c(MAGENTA, "║")}
+${c(MAGENTA, "  ║")}   ${brandWord} ${c(DIM, "AI Model & Provider Discovery Registry")}  ${c(MAGENTA, "║")}
 ${c(MAGENTA, "  ║")}   ${c(DIM, `v${VERSION}`)}                                          ${c(MAGENTA, "║")}
+${c(MAGENTA, "  ║")}   ${mascot1}                                ${c(MAGENTA, "║")}
+${c(MAGENTA, "  ║")}   ${mascot2}                                ${c(MAGENTA, "║")}
+${c(MAGENTA, "  ║")}   ${mascot3}                                ${c(MAGENTA, "║")}
 ${c(MAGENTA, "  ║")}                                                   ${c(MAGENTA, "║")}
 ${c(MAGENTA, "  ╚═══════════════════════════════════════════════════╝")}
 
@@ -479,6 +656,8 @@ ${c(MAGENTA, "  ╚════════════════════�
     ${c(CYAN, "kosha list")}           List all discovered models
     ${c(CYAN, "kosha search")} ${c(DIM, "<q>")}     Search by name or ID
     ${c(CYAN, "kosha model")} ${c(DIM, "<id>")}     Detailed info for one model
+    ${c(CYAN, "kosha roles")}          Provider -> model -> roles matrix
+    ${c(CYAN, "kosha cheapest")}       Cheapest models for a role
     ${c(CYAN, "kosha routes")} ${c(DIM, "<id>")}    All provider routes for a model
     ${c(CYAN, "kosha providers")}      Show provider status
     ${c(CYAN, "kosha serve")}          Start the HTTP API server

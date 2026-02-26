@@ -187,6 +187,11 @@ export class OpenRouterDiscoverer extends BaseDiscoverer {
 			return ["embedding"];
 		}
 
+		// Image-generation-only models should advertise image capability.
+		if (modality.includes("image") && !modality.includes("text")) {
+			return ["image_generation"];
+		}
+
 		capabilities.push("chat");
 
 		// Vision from modality: "text+image" means multimodal input
