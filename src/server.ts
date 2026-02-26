@@ -6,13 +6,14 @@
  * models without importing the library directly.
  *
  * Routes:
- *   GET  /api/models              — List models (query params: ?provider, ?mode, ?capability)
- *   GET  /api/models/:idOrAlias   — Get a single model by ID or alias
- *   GET  /api/providers           — List all providers (summary)
- *   GET  /api/providers/:id       — Get a single provider with its models
- *   POST /api/refresh             — Trigger re-discovery (body: { provider?: string })
- *   GET  /api/resolve/:alias      — Resolve an alias to its canonical model ID
- *   GET  /health                  — Health check
+ *   GET  /api/models                     — List models (query: ?provider, ?originProvider, ?mode, ?capability)
+ *   GET  /api/models/:idOrAlias/routes   — All provider routes for a model
+ *   GET  /api/models/:idOrAlias          — Get a single model by ID or alias
+ *   GET  /api/providers                  — List all providers (summary)
+ *   GET  /api/providers/:id              — Get a single provider with its models
+ *   POST /api/refresh                    — Trigger re-discovery (body: { provider?: string })
+ *   GET  /api/resolve/:alias             — Resolve an alias to its canonical model ID
+ *   GET  /health                         — Health check
  * @module
  */
 
@@ -20,6 +21,7 @@ import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import type { ModelMode } from "./types.js";
 import { ModelRegistry } from "./registry.js";
+import { normalizeModelId } from "./normalize.js";
 
 // ---------------------------------------------------------------------------
 //  Server factory
@@ -39,20 +41,42 @@ export function createServer(registry: ModelRegistry): Hono {
 
 	// ── Model listing & lookup routes ────────────────────────────────
 	//
-	// GET /api/models supports three optional query parameters:
-	//   ?provider=anthropic   — filter by provider slug
-	//   ?mode=chat            — filter by ModelMode
-	//   ?capability=vision    — filter by capability flag
+	// GET /api/models supports four optional query parameters:
+	//   ?provider=anthropic        — filter by serving-layer provider slug
+	//   ?originProvider=anthropic  — filter by original model creator
+	//   ?mode=chat                 — filter by ModelMode
+	//   ?capability=vision         — filter by capability flag
 	app.get("/api/models", (ctx) => {
 		const provider = ctx.req.query("provider") ?? undefined;
+		const originProvider = ctx.req.query("originProvider") ?? undefined;
 		const mode = (ctx.req.query("mode") as ModelMode | undefined) ?? undefined;
 		const capability = ctx.req.query("capability") ?? undefined;
 
-		const models = registry.models({ provider, mode, capability });
+		const models = registry.models({ provider, originProvider, mode, capability });
 
 		return ctx.json({
 			models,
 			count: models.length,
+		});
+	});
+
+	// All provider routes for a single model — must be registered BEFORE the
+	// generic /:idOrAlias route so that Hono matches "/routes" as a literal
+	// segment rather than treating it as a dynamic parameter value.
+	//
+	// Returns the normalized base ID plus every serving-layer ModelCard that
+	// resolves to the same underlying model (direct, openrouter, bedrock, etc.).
+	app.get("/api/models/:idOrAlias/routes", (ctx) => {
+		const idOrAlias = ctx.req.param("idOrAlias");
+		const routes = registry.modelRoutes(idOrAlias);
+
+		if (routes.length === 0) {
+			return ctx.json({ error: "Model not found", id: idOrAlias }, 404);
+		}
+
+		return ctx.json({
+			model: normalizeModelId(idOrAlias),
+			routes,
 		});
 	});
 
@@ -179,6 +203,7 @@ export async function startServer(port = 3000): Promise<void> {
 
 	console.log(`\nKosha API server listening on http://localhost:${port}`);
 	console.log(`  GET  http://localhost:${port}/api/models`);
+	console.log(`  GET  http://localhost:${port}/api/models/:id/routes`);
 	console.log(`  GET  http://localhost:${port}/api/providers`);
 	console.log(`  GET  http://localhost:${port}/health`);
 

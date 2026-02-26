@@ -8,6 +8,7 @@
  */
 
 import type { Enricher, ModelCard, ModelMode, ModelPricing } from "../types.js";
+import { normalizeModelId } from "../normalize.js";
 
 /** Shape of a single entry in the litellm pricing JSON. */
 interface LiteLLMModelEntry {
@@ -137,15 +138,25 @@ export class LiteLLMEnricher implements Enricher {
 	}
 
 	/**
-	 * Look up a model in the litellm data using multiple key strategies:
-	 *   1. Exact id match
+	 * Look up a model in the litellm pricing catalogue using a tiered set of
+	 * key strategies. Later strategies use `originProvider` to handle models
+	 * whose IDs are namespaced differently by the serving layer (e.g. a Bedrock
+	 * model whose `id` is `"anthropic.claude-opus-4-6-…"` but whose
+	 * `originProvider` is `"anthropic"`).
+	 *
+	 * Lookup order:
+	 *   1. Exact `id` match
 	 *   2. `{provider}/{id}` format
-	 *   3. Lowercase variants of the above
+	 *   3. `{originProvider}/{id}` (when originProvider differs from provider)
+	 *   4. `{originProvider}/{normalizedId}` — strips prefix/date suffixes
+	 *   5. Lowercase exact `id` match
+	 *   6. Lowercase `{provider}/{id}`
+	 *   7. Lowercase `{originProvider}/{normalizedId}`
 	 */
 	private lookupModel(model: ModelCard): LiteLLMModelEntry | undefined {
 		if (!this.data) return undefined;
 
-		const { id, provider } = model;
+		const { id, provider, originProvider } = model;
 
 		// 1. Exact match
 		if (this.data[id]) return this.data[id];
@@ -154,13 +165,35 @@ export class LiteLLMEnricher implements Enricher {
 		const prefixed = `${provider}/${id}`;
 		if (this.data[prefixed]) return this.data[prefixed];
 
-		// 3. Lowercase exact match
+		// 3. originProvider/id — useful when the serving layer prefixes IDs
+		//    differently (e.g. bedrock → anthropic).
+		if (originProvider && originProvider !== provider) {
+			const originPrefixed = `${originProvider}/${id}`;
+			if (this.data[originPrefixed]) return this.data[originPrefixed];
+		}
+
+		// 4. originProvider/normalizedId — strips date suffixes and provider
+		//    namespace segments so "anthropic.claude-opus-4-6-20250514-v1:0"
+		//    resolves to "anthropic/claude-opus-4-6".
+		const normalizedId = normalizeModelId(id);
+		if (originProvider) {
+			const originNormPrefixed = `${originProvider}/${normalizedId}`;
+			if (this.data[originNormPrefixed]) return this.data[originNormPrefixed];
+		}
+
+		// 5. Lowercase exact match
 		const lower = id.toLowerCase();
 		if (this.data[lower]) return this.data[lower];
 
-		// 4. Lowercase provider/id
+		// 6. Lowercase provider/id
 		const lowerPrefixed = `${provider}/${lower}`;
 		if (this.data[lowerPrefixed]) return this.data[lowerPrefixed];
+
+		// 7. Lowercase originProvider/normalizedId
+		if (originProvider) {
+			const lowerOriginNorm = `${originProvider}/${normalizedId.toLowerCase()}`;
+			if (this.data[lowerOriginNorm]) return this.data[lowerOriginNorm];
+		}
 
 		return undefined;
 	}

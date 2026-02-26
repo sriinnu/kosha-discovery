@@ -21,6 +21,7 @@ import {
 	cmdProviders,
 	cmdRefresh,
 	cmdResolve,
+	cmdRoutes,
 	cmdSearch,
 	cmdServe,
 	showHelp,
@@ -146,6 +147,10 @@ async function main(): Promise<void> {
 
 		case "providers":
 			await cmdProviders(registry, flags);
+			break;
+
+		case "routes":
+			await cmdRoutes(registry, positional[1] ?? "", flags);
 			break;
 
 		case "resolve":

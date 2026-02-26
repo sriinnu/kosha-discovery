@@ -316,6 +316,8 @@ describe("ModelRegistry", () => {
 					google: { enabled: false },
 					ollama: { enabled: false },
 					openrouter: { enabled: false },
+					bedrock: { enabled: false },
+					vertex: { enabled: false },
 				},
 			});
 
@@ -324,7 +326,7 @@ describe("ModelRegistry", () => {
 			expect(result).toEqual([]);
 		});
 
-		it("deduplicates models by ID across providers", () => {
+		it("keeps same-ID models from different providers as separate routes", () => {
 			const model1 = makeModel({ id: "shared-model", provider: "provider-a" });
 			const model2 = makeModel({ id: "shared-model", provider: "provider-b" });
 
@@ -337,7 +339,25 @@ describe("ModelRegistry", () => {
 				discoveredAt: Date.now(),
 			});
 
-			// models() should deduplicate — first provider wins
+			// Same model ID from different providers = different routes, both kept
+			const allModels = registry.models();
+			expect(allModels).toHaveLength(2);
+			expect(allModels.map((m) => m.provider).sort()).toEqual(["provider-a", "provider-b"]);
+		});
+
+		it("deduplicates exact duplicates within the same provider", () => {
+			const model1 = makeModel({ id: "dup-model", provider: "provider-a" });
+			const model2 = makeModel({ id: "dup-model", provider: "provider-a" });
+
+			const providerA = makeProvider("provider-a", "Provider A", [model1, model2]);
+
+			const registry = ModelRegistry.fromJSON({
+				providers: [providerA],
+				aliases: {},
+				discoveredAt: Date.now(),
+			});
+
+			// Same provider + same ID = true duplicate, collapsed to 1
 			const allModels = registry.models();
 			expect(allModels).toHaveLength(1);
 			expect(allModels[0].provider).toBe("provider-a");

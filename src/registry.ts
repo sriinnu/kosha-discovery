@@ -18,6 +18,7 @@ import type {
 } from "./types.js";
 import { AliasResolver } from "./aliases.js";
 import { KoshaCache } from "./cache.js";
+import { normalizeModelId } from "./normalize.js";
 
 const DEFAULT_CACHE_TTL_MS = 86_400_000; // 24 hours
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -139,10 +140,30 @@ export class ModelRegistry {
 	// ---------------------------------------------------------------------------
 
 	/**
-	 * Return all known models, optionally filtered by provider, mode, or capability.
-	 * Deduplicates by model ID.
+	 * Return all known models, optionally filtered by provider, originProvider, mode, or capability.
+	 *
+	 * Deduplication is provider-aware: the same underlying model served through
+	 * different providers (e.g. `claude-opus-4-6` via anthropic, openrouter, and
+	 * bedrock) is **kept** as separate entries because each represents a distinct
+	 * route. Only exact `{provider}:{id}` duplicates within the same provider are
+	 * collapsed.
+	 *
+	 * @param filter - Optional filter criteria. All supplied fields are ANDed.
+	 * @param filter.provider       - Limit to a specific serving-layer provider ID.
+	 * @param filter.originProvider - Limit to models whose creator matches this slug
+	 *                                (e.g. `"anthropic"` returns Claude models from
+	 *                                any serving provider).
+	 * @param filter.mode           - Limit to a specific {@link ModelMode}.
+	 * @param filter.capability     - Limit to models that declare this capability string.
 	 */
-	models(filter?: { provider?: string; mode?: ModelMode; capability?: string }): ModelCard[] {
+	models(filter?: {
+		provider?: string;
+		originProvider?: string;
+		mode?: ModelMode;
+		capability?: string;
+	}): ModelCard[] {
+		// Use composite key so the same base model served by different providers
+		// is not incorrectly collapsed into one entry.
 		const seen = new Set<string>();
 		const result: ModelCard[] = [];
 
@@ -152,17 +173,65 @@ export class ModelRegistry {
 			}
 
 			for (const model of providerInfo.models) {
-				if (seen.has(model.id)) continue;
+				// Provider-aware dedup key prevents collapsing cross-provider routes.
+				const dedupKey = `${model.provider}:${model.id}`;
+				if (seen.has(dedupKey)) continue;
 
+				if (filter?.originProvider && model.originProvider !== filter.originProvider) continue;
 				if (filter?.mode && model.mode !== filter.mode) continue;
 				if (filter?.capability && !model.capabilities.includes(filter.capability)) continue;
 
-				seen.add(model.id);
+				seen.add(dedupKey);
 				result.push(model);
 			}
 		}
 
 		return result;
+	}
+
+	/**
+	 * Find all provider routes through which a given model can be accessed.
+	 *
+	 * A "route" is a {@link ModelCard} whose normalized model ID matches the
+	 * normalized form of `modelId`. This lets callers discover every serving
+	 * provider (anthropic direct, openrouter, bedrock, vertex, …) for a single
+	 * underlying model in one call.
+	 *
+	 * Normalization strips provider prefixes and calendar-date version suffixes
+	 * so that `"claude-opus-4-6"`, `"anthropic/claude-opus-4-6"`, and
+	 * `"anthropic.claude-opus-4-6-20250514-v1:0"` all compare as equal.
+	 *
+	 * Results are sorted by provider name for deterministic output.
+	 *
+	 * @param modelId - Any form of model identifier (namespaced, versioned, bare).
+	 * @returns All {@link ModelCard}s that represent the same underlying model
+	 *          across all discovered providers.
+	 *
+	 * @example
+	 * registry.modelRoutes("claude-opus-4-6")
+	 * // Returns cards from: anthropic (direct), openrouter, bedrock
+	 *
+	 * @example
+	 * registry.modelRoutes("gpt-4o-2024-11-20")
+	 * // Returns cards from: openai (direct), azure, openrouter
+	 */
+	modelRoutes(modelId: string): ModelCard[] {
+		const targetNorm = normalizeModelId(modelId).toLowerCase();
+		const routes: ModelCard[] = [];
+
+		for (const providerInfo of this.providerMap.values()) {
+			for (const model of providerInfo.models) {
+				const candidateNorm = normalizeModelId(model.id).toLowerCase();
+				if (candidateNorm === targetNorm) {
+					routes.push(model);
+				}
+			}
+		}
+
+		// Sort by provider for deterministic, human-friendly output.
+		routes.sort((a, b) => a.provider.localeCompare(b.provider));
+
+		return routes;
 	}
 
 	/**
