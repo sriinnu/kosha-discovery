@@ -42,6 +42,9 @@ export const YELLOW = "\x1b[33m";
 /** ANSI SGR — cyan foreground. */
 export const CYAN = "\x1b[36m";
 
+/** ANSI SGR — magenta foreground (used for branding). */
+export const MAGENTA = "\x1b[35m";
+
 // ---------------------------------------------------------------------------
 //  Colour helper
 // ---------------------------------------------------------------------------
