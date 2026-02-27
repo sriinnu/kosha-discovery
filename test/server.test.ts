@@ -519,6 +519,20 @@ describe("Hono API Server — createServer()", () => {
 		});
 	});
 
+	// ── GET /api/discovery-errors ────────────────────────────────────
+
+	describe("GET /api/discovery-errors", () => {
+		it("returns empty errors array for a registry with no discovery failures", async () => {
+			const res = await app.request("/api/discovery-errors");
+			expect(res.status).toBe(200);
+
+			const body = await res.json();
+			expect(body.errors).toEqual([]);
+			expect(body.count).toBe(0);
+			expect(body.hasErrors).toBe(false);
+		});
+	});
+
 	// ── 404 for unregistered routes ──────────────────────────────────
 
 	describe("unregistered routes", () => {

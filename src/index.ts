@@ -14,6 +14,7 @@ export type {
 	ModelCard,
 	ProviderInfo,
 	ProviderRoleInfo,
+	DiscoveryError,
 	DiscoveryOptions,
 	KoshaConfig,
 	ModelMode,
@@ -35,6 +36,9 @@ export type {
 /**
  * Convenience factory: creates a ModelRegistry and runs discovery in one call.
  *
+ * Automatically loads config from `~/.kosharc.json` and `kosha.config.json`
+ * (if they exist) before applying any explicit overrides.
+ *
  * @example
  * ```ts
  * const kosha = await createKosha();
@@ -43,7 +47,8 @@ export type {
  */
 export async function createKosha(config?: import("./types.js").KoshaConfig): Promise<import("./registry.js").ModelRegistry> {
 	const { ModelRegistry: Registry } = await import("./registry.js");
-	const registry = new Registry(config);
+	const merged = await Registry.loadConfigFile(config);
+	const registry = new Registry(merged);
 	await registry.discover();
 	return registry;
 }

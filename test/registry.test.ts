@@ -587,6 +587,47 @@ describe("ModelRegistry", () => {
 		});
 	});
 
+	describe("discoveryErrors()", () => {
+		it("returns empty array when no discovery has been run", () => {
+			const registry = new ModelRegistry();
+			expect(registry.discoveryErrors()).toEqual([]);
+		});
+
+		it("returns empty array after successful discovery with all providers disabled", async () => {
+			const registry = new ModelRegistry({
+				cacheDir: tempDir,
+				providers: {
+					anthropic: { enabled: false },
+					openai: { enabled: false },
+					google: { enabled: false },
+					ollama: { enabled: false },
+					openrouter: { enabled: false },
+					bedrock: { enabled: false },
+					vertex: { enabled: false },
+				},
+			});
+			await registry.discover({ force: true });
+			expect(registry.discoveryErrors()).toEqual([]);
+		});
+	});
+
+	describe("loadConfigFile()", () => {
+		it("returns empty config when no files exist", async () => {
+			const config = await ModelRegistry.loadConfigFile();
+			expect(config).toBeDefined();
+			expect(typeof config).toBe("object");
+		});
+
+		it("merges explicit overrides on top of file config", async () => {
+			const config = await ModelRegistry.loadConfigFile({
+				cacheTtlMs: 60_000,
+				aliases: { "my-alias": "my-model" },
+			});
+			expect(config.cacheTtlMs).toBe(60_000);
+			expect(config.aliases?.["my-alias"]).toBe("my-model");
+		});
+	});
+
 	describe("discover() with mocked discoverers", () => {
 		it("handles discovery failure gracefully (Promise.allSettled)", async () => {
 			// Mock the dynamic import to simulate discovery module loading

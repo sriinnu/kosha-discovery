@@ -7,7 +7,8 @@
  * @module
  */
 
-import { mkdir, readFile, readdir, rm, unlink, writeFile } from "fs/promises";
+import { mkdir, readFile, readdir, rename, rm, unlink, writeFile } from "fs/promises";
+import { randomBytes } from "crypto";
 import { homedir } from "os";
 import { join } from "path";
 
@@ -46,7 +47,9 @@ export class KoshaCache {
 
 	/**
 	 * Write data to the cache under the given key.
-	 * Creates the cache directory if it does not exist.
+	 *
+	 * Uses atomic write (temp file + rename) so a crash mid-write
+	 * cannot leave a corrupted cache file behind.
 	 */
 	async set<T>(key: string, data: T): Promise<void> {
 		await this.ensureDir();
@@ -55,7 +58,9 @@ export class KoshaCache {
 			timestamp: Date.now(),
 		};
 		const filePath = this.keyToPath(key);
-		await writeFile(filePath, JSON.stringify(entry, null, "\t"), "utf-8");
+		const tmpPath = `${filePath}.${randomBytes(4).toString("hex")}.tmp`;
+		await writeFile(tmpPath, JSON.stringify(entry, null, "\t"), "utf-8");
+		await rename(tmpPath, filePath);
 	}
 
 	/**
