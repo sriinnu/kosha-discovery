@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "fs/promises";
+import { mkdtemp, readdir, rm } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -113,6 +113,20 @@ describe("KoshaCache", () => {
 
 		it("does not throw on an empty cache", async () => {
 			await expect(cache.clear()).resolves.not.toThrow();
+		});
+	});
+
+	describe("atomic writes", () => {
+		it("leaves no .tmp files after set()", async () => {
+			await cache.set("atomic-test", { value: 42 });
+			const files = await readdir(tempDir);
+			const tmpFiles = files.filter((f) => f.endsWith(".tmp"));
+			expect(tmpFiles).toHaveLength(0);
+
+			// Verify the data is readable
+			const entry = await cache.get<{ value: number }>("atomic-test");
+			expect(entry).not.toBeNull();
+			expect(entry!.data.value).toBe(42);
 		});
 	});
 

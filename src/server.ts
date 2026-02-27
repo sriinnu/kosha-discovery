@@ -15,6 +15,7 @@
  *   GET  /api/providers/:id              — Get a single provider with its models
  *   POST /api/refresh                    — Trigger re-discovery (body: { provider?: string })
  *   GET  /api/resolve/:alias             — Resolve an alias to its canonical model ID
+ *   GET  /api/discovery-errors            — Errors from last discovery pass
  *   GET  /health                         — Health check
  * @module
  */
@@ -283,6 +284,19 @@ export function createServer(registry: ModelRegistry): Hono {
 			alias,
 			resolved,
 			isAlias: resolved !== alias,
+		});
+	});
+
+	// ── Discovery error reporting ────────────────────────────────────
+	//
+	// Returns errors from the most recent discovery pass so operators
+	// can diagnose which providers failed and why.
+	app.get("/api/discovery-errors", (ctx) => {
+		const errors = registry.discoveryErrors();
+		return ctx.json({
+			errors,
+			count: errors.length,
+			hasErrors: errors.length > 0,
 		});
 	});
 
