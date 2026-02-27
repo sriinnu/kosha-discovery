@@ -471,6 +471,122 @@ describe("ModelRegistry", () => {
 		});
 	});
 
+	describe("capabilities()", () => {
+		it("aggregates capabilities across all models sorted by count descending", () => {
+			const chatVision = makeModel({
+				id: "claude-sonnet-4",
+				provider: "anthropic",
+				mode: "chat",
+				capabilities: ["chat", "vision", "code"],
+			});
+			const chatTools = makeModel({
+				id: "gpt-4o",
+				provider: "openai",
+				mode: "chat",
+				capabilities: ["chat", "vision", "function_calling", "code"],
+			});
+			const embedModel = makeModel({
+				id: "text-embedding-3-small",
+				provider: "openai",
+				mode: "embedding",
+				capabilities: ["embedding"],
+			});
+
+			const registry = ModelRegistry.fromJSON({
+				providers: [
+					makeProvider("anthropic", "Anthropic", [chatVision]),
+					makeProvider("openai", "OpenAI", [chatTools, embedModel]),
+				],
+				aliases: {},
+				discoveredAt: Date.now(),
+			});
+
+			const caps = registry.capabilities();
+
+			// "chat" should be the most common capability (2 models + embedding=1)
+			expect(caps.length).toBeGreaterThan(0);
+			expect(caps[0].capability).toBe("chat");
+			expect(caps[0].modelCount).toBe(2);
+			expect(caps[0].providerCount).toBe(2);
+			expect(caps[0].providers).toEqual(["anthropic", "openai"]);
+
+			// "vision" should appear with 2 models
+			const vision = caps.find((c) => c.capability === "vision");
+			expect(vision).toBeDefined();
+			expect(vision!.modelCount).toBe(2);
+
+			// "embedding" should appear with 1 model from openai
+			const embedding = caps.find((c) => c.capability === "embedding");
+			expect(embedding).toBeDefined();
+			expect(embedding!.modelCount).toBe(1);
+			expect(embedding!.providers).toEqual(["openai"]);
+
+			// "function_calling" from gpt-4o only
+			const funcCalling = caps.find((c) => c.capability === "function_calling");
+			expect(funcCalling).toBeDefined();
+			expect(funcCalling!.modelCount).toBe(1);
+
+			// Every capability should have an example model ID
+			for (const cap of caps) {
+				expect(cap.exampleModelId).toBeDefined();
+				expect(typeof cap.exampleModelId).toBe("string");
+			}
+		});
+
+		it("scopes capabilities to a single provider when filtered", () => {
+			const chatModel = makeModel({
+				id: "claude-sonnet-4",
+				provider: "anthropic",
+				mode: "chat",
+				capabilities: ["chat", "vision"],
+			});
+			const embedModel = makeModel({
+				id: "text-embedding-3-small",
+				provider: "openai",
+				mode: "embedding",
+				capabilities: ["embedding"],
+			});
+
+			const registry = ModelRegistry.fromJSON({
+				providers: [
+					makeProvider("anthropic", "Anthropic", [chatModel]),
+					makeProvider("openai", "OpenAI", [embedModel]),
+				],
+				aliases: {},
+				discoveredAt: Date.now(),
+			});
+
+			const anthropicCaps = registry.capabilities({ provider: "anthropic" });
+
+			// Should only contain anthropic capabilities
+			const capNames = anthropicCaps.map((c) => c.capability);
+			expect(capNames).toContain("chat");
+			expect(capNames).toContain("vision");
+			expect(capNames).not.toContain("embedding");
+		});
+
+		it("returns empty array when no models exist", () => {
+			const registry = new ModelRegistry();
+			expect(registry.capabilities()).toEqual([]);
+		});
+	});
+
+	describe("normalizeRoleToken()", () => {
+		it("resolves common aliases", () => {
+			const registry = new ModelRegistry();
+			expect(registry.normalizeRoleToken("embeddings")).toBe("embedding");
+			expect(registry.normalizeRoleToken("tools")).toBe("function_calling");
+			expect(registry.normalizeRoleToken("stt")).toBe("speech_to_text");
+			expect(registry.normalizeRoleToken("tts")).toBe("text_to_speech");
+		});
+
+		it("passes through unknown tokens unchanged", () => {
+			const registry = new ModelRegistry();
+			expect(registry.normalizeRoleToken("vision")).toBe("vision");
+			expect(registry.normalizeRoleToken("code")).toBe("code");
+		});
+	});
+
 	describe("discover() with mocked discoverers", () => {
 		it("handles discovery failure gracefully (Promise.allSettled)", async () => {
 			// Mock the dynamic import to simulate discovery module loading
