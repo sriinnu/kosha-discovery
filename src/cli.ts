@@ -15,8 +15,10 @@
 import { ModelRegistry } from "./registry.js";
 import { DIM, RED, c } from "./cli-format.js";
 import {
-	cmdDiscover,
+	cmdCapabilities,
+	cmdCapable,
 	cmdCheapest,
+	cmdDiscover,
 	cmdList,
 	cmdModel,
 	cmdProviders,
@@ -143,6 +145,15 @@ async function main(): Promise<void> {
 
 		case "roles":
 			await cmdRoles(registry, flags);
+			break;
+
+		case "capabilities":
+		case "caps":
+			await cmdCapabilities(registry, flags);
+			break;
+
+		case "capable":
+			await cmdCapable(registry, positional[1] ?? "", flags);
 			break;
 
 		case "cheapest":

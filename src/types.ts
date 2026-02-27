@@ -182,6 +182,22 @@ export interface CheapestModelResult {
 	missingCredentials: ProviderCredentialPrompt[];
 }
 
+/** Aggregated capability summary returned by {@link ModelRegistry.capabilities}. */
+export interface CapabilitySummary {
+	/** Normalized capability/role string (e.g. "vision", "embedding", "function_calling"). */
+	capability: string;
+	/** Number of distinct models that declare this capability. */
+	modelCount: number;
+	/** Number of unique serving-layer providers that offer this capability. */
+	providerCount: number;
+	/** List of unique provider slugs that serve models with this capability. */
+	providers: string[];
+	/** Unique model modes seen among models with this capability. */
+	modes: ModelMode[];
+	/** An example model ID for quick reference (first encountered). */
+	exampleModelId?: string;
+}
+
 /** Detailed provider route info for a model across serving layers. */
 export interface ModelRouteInfo {
 	/** Original model card for this route. */
