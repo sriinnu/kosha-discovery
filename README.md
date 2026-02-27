@@ -1,8 +1,16 @@
-# kosha-discovery — कोश
+<p align="center">
+  <img src="logo.svg" alt="Kosha — AI Model Discovery" width="140" />
+</p>
 
-**AI Model & Provider Discovery Registry**
+<h1 align="center">kosha-discovery — कोश</h1>
 
-![Kosha mini cute app](docs/kosha-mini-cute-mascot.svg)
+<p align="center"><strong>AI Model & Provider Discovery Registry</strong></p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/kosha-discovery"><img src="https://img.shields.io/npm/v/kosha-discovery?color=7C3AED&label=npm" alt="npm version" /></a>
+  <a href="https://github.com/sriinnu/kosha-discovery/blob/main/LICENSE"><img src="https://img.shields.io/npm/l/kosha-discovery?color=F59E0B" alt="license" /></a>
+  <img src="https://img.shields.io/node/v/kosha-discovery?color=5B21B6" alt="node version" />
+</p>
 
 Kosha (कोश — treasury/repository) automatically discovers AI models across providers, resolves credentials from CLI tools and environment variables, enriches models with pricing data, and exposes the catalog via library, CLI, and HTTP API.
 
@@ -622,9 +630,11 @@ bin/
 - **[chitragupta](https://github.com/sriinnu/chitragupta)** -- Autonomous AI Agent Platform whose provider registry patterns inspired kosha's design.
 - **[takumi](https://github.com/sriinnu/takumi)** -- AI coding agent TUI whose model routing needs drove kosha's creation.
 
-## Part of Kaala-brahma
+## What "Kosha" Means
 
-Kosha is a standalone utility in the [Kaala-brahma](https://github.com/sriinnu/Kaala-brahma) ecosystem -- powering model discovery for Takumi (coding agent), Chitragupta (autonomous agents), and other AI applications.
+`Kosha` comes from Sanskrit and is commonly used to mean a container, treasury, or layered sheath of knowledge.
+
+In this project, Kosha is a standalone model-discovery utility that can be used by any AI system or developer tooling stack (CLIs, agents, apps, or services), not only Kaala-brahma projects.
 
 ## License
 
