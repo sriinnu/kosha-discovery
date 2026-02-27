@@ -1,6 +1,6 @@
 {
 	"name": "kosha-discovery",
-	"version": "0.1.0",
+	"version": "0.2.1",
 	"description": "AI Model & Provider Discovery Registry -- kosha (कोश) treasury of models",
 	"type": "module",
 	"license": "MIT",
@@ -12,6 +12,24 @@
 	"engines": {
 		"node": ">=22"
 	},
+	"keywords": [
+		"ai",
+		"llm",
+		"model-discovery",
+		"model-registry",
+		"openai",
+		"anthropic",
+		"gemini",
+		"ollama",
+		"openrouter",
+		"bedrock",
+		"vertex-ai",
+		"ai-models",
+		"provider-discovery",
+		"model-routing",
+		"pricing",
+		"cli"
+	],
 	"publishConfig": {
 		"access": "public"
 	},

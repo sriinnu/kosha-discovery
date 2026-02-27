@@ -198,6 +198,18 @@ export interface CapabilitySummary {
 	exampleModelId?: string;
 }
 
+/** Error captured when a provider's discovery fails during {@link ModelRegistry.discover}. */
+export interface DiscoveryError {
+	/** Provider slug that failed discovery. */
+	providerId: string;
+	/** Human-readable provider name. */
+	providerName: string;
+	/** Error message from the failed discovery attempt. */
+	error: string;
+	/** Unix timestamp (ms) when the error occurred. */
+	timestamp: number;
+}
+
 /** Detailed provider route info for a model across serving layers. */
 export interface ModelRouteInfo {
 	/** Original model card for this route. */

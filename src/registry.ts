@@ -12,6 +12,7 @@ import type {
 	CheapestModelOptions,
 	CheapestModelResult,
 	CredentialResult,
+	DiscoveryError,
 	DiscoveryOptions,
 	Enricher,
 	KoshaConfig,
@@ -25,6 +26,9 @@ import type {
 	ProviderRoleInfo,
 	RoleQueryOptions,
 } from "./types.js";
+import { readFile } from "fs/promises";
+import { homedir } from "os";
+import { join } from "path";
 import { AliasResolver } from "./aliases.js";
 import { KoshaCache } from "./cache.js";
 import { extractModelVersion, extractOriginProvider, normalizeModelId } from "./normalize.js";
@@ -89,6 +93,7 @@ export class ModelRegistry {
 	private cache: KoshaCache;
 	private config: KoshaConfig;
 	private discoveredAt = 0;
+	private lastDiscoveryErrors: DiscoveryError[] = [];
 
 	constructor(config?: KoshaConfig) {
 		this.config = config ?? {};
@@ -148,10 +153,20 @@ export class ModelRegistry {
 			}),
 		);
 
-		// Collect successful results
-		for (const result of results) {
+		// Collect successful results and record failures
+		this.lastDiscoveryErrors = [];
+		for (let i = 0; i < results.length; i++) {
+			const result = results[i];
 			if (result.status === "fulfilled") {
 				this.providerMap.set(result.value.id, result.value);
+			} else {
+				const discoverer = discoverers[i];
+				this.lastDiscoveryErrors.push({
+					providerId: discoverer.providerId,
+					providerName: discoverer.providerName,
+					error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+					timestamp: Date.now(),
+				});
 			}
 		}
 
@@ -531,6 +546,16 @@ export class ModelRegistry {
 		return Array.from(this.providerMap.values());
 	}
 
+	/**
+	 * Return errors from the most recent discovery pass.
+	 *
+	 * Each entry identifies a provider that failed and the error message.
+	 * Empty when all providers succeeded or no discovery has been run yet.
+	 */
+	discoveryErrors(): DiscoveryError[] {
+		return [...this.lastDiscoveryErrors];
+	}
+
 	// ---------------------------------------------------------------------------
 	// Capability aggregation
 	// ---------------------------------------------------------------------------
@@ -725,6 +750,61 @@ export class ModelRegistry {
 
 		registry.discoveredAt = data.discoveredAt;
 		return registry;
+	}
+
+	// ---------------------------------------------------------------------------
+	// Config file loading
+	// ---------------------------------------------------------------------------
+
+	/**
+	 * Load configuration from disk and merge with explicit overrides.
+	 *
+	 * Reads up to two JSON config files (in increasing priority):
+	 * 1. Global: `~/.kosharc.json`
+	 * 2. Project: `kosha.config.json` in the current working directory
+	 *
+	 * Explicit `overrides` take highest priority. Missing files are silently skipped.
+	 *
+	 * @param overrides - Programmatic config that takes precedence over file values.
+	 * @returns Merged configuration ready for the ModelRegistry constructor.
+	 */
+	static async loadConfigFile(overrides?: KoshaConfig): Promise<KoshaConfig> {
+		const layers: KoshaConfig[] = [];
+
+		// Layer 1: global config
+		const globalPath = join(homedir(), ".kosharc.json");
+		const globalConfig = await ModelRegistry.readJsonFile<KoshaConfig>(globalPath);
+		if (globalConfig) layers.push(globalConfig);
+
+		// Layer 2: project-level config
+		const projectPath = join(process.cwd(), "kosha.config.json");
+		const projectConfig = await ModelRegistry.readJsonFile<KoshaConfig>(projectPath);
+		if (projectConfig) layers.push(projectConfig);
+
+		// Layer 3: explicit overrides
+		if (overrides) layers.push(overrides);
+
+		if (layers.length === 0) return {};
+
+		// Shallow merge — later layers override earlier ones.
+		// providers and aliases get deep-merged one level.
+		return layers.reduce<KoshaConfig>((merged, layer) => {
+			return {
+				...merged,
+				...layer,
+				providers: { ...merged.providers, ...layer.providers },
+				aliases: { ...merged.aliases, ...layer.aliases },
+			};
+		}, {});
+	}
+
+	private static async readJsonFile<T>(filePath: string): Promise<T | null> {
+		try {
+			const raw = await readFile(filePath, "utf-8");
+			return JSON.parse(raw) as T;
+		} catch {
+			return null;
+		}
 	}
 
 	// ---------------------------------------------------------------------------

@@ -28,35 +28,66 @@ export abstract class BaseDiscoverer implements ProviderDiscoverer {
 	abstract discover(credential: CredentialResult, options?: { timeout?: number }): Promise<ModelCard[]>;
 
 	/**
-	 * Fetch JSON from a URL with timeout support via AbortController.
-	 * Throws descriptive errors on network failure or non-OK status.
+	 * Fetch JSON from a URL with timeout and automatic retry on transient errors.
+	 *
+	 * Retries up to {@link maxRetries} times with exponential backoff on:
+	 * - Network failures (fetch throws)
+	 * - Timeout / abort errors
+	 * - Server errors (HTTP 5xx)
+	 *
+	 * Client errors (4xx) are thrown immediately without retry.
 	 */
 	protected async fetchJSON<T>(url: string, headers?: Record<string, string>, timeoutMs = 10_000): Promise<T> {
-		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), timeoutMs);
+		const maxRetries = 3;
+		const baseDelayMs = 500;
+		let lastError: Error | undefined;
 
-		try {
-			const response = await fetch(url, {
-				headers,
-				signal: controller.signal,
-			});
+		for (let attempt = 0; attempt < maxRetries; attempt++) {
+			const controller = new AbortController();
+			const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-			if (!response.ok) {
-				const body = await response.text().catch(() => "");
-				throw new Error(
-					`${this.providerName} API error: ${response.status} ${response.statusText}${body ? ` — ${body}` : ""}`,
-				);
+			try {
+				const response = await fetch(url, {
+					headers,
+					signal: controller.signal,
+				});
+
+				if (!response.ok) {
+					const body = await response.text().catch(() => "");
+					const err = new Error(
+						`${this.providerName} API error: ${response.status} ${response.statusText}${body ? ` — ${body}` : ""}`,
+					);
+
+					// 4xx client errors are not transient — fail immediately
+					if (response.status >= 400 && response.status < 500) {
+						throw err;
+					}
+
+					// 5xx server errors are retryable
+					lastError = err;
+				} else {
+					return (await response.json()) as T;
+				}
+			} catch (error: unknown) {
+				if (error instanceof DOMException && error.name === "AbortError") {
+					lastError = new Error(`${this.providerName} API request timed out after ${timeoutMs}ms`);
+				} else if (error instanceof Error) {
+					// 4xx errors rethrown above will have already propagated
+					lastError = error;
+				} else {
+					lastError = new Error(String(error));
+				}
+			} finally {
+				clearTimeout(timer);
 			}
 
-			return (await response.json()) as T;
-		} catch (error: unknown) {
-			if (error instanceof DOMException && error.name === "AbortError") {
-				throw new Error(`${this.providerName} API request timed out after ${timeoutMs}ms`);
+			// Wait before retrying (exponential backoff: 500ms, 1s, 2s)
+			if (attempt < maxRetries - 1) {
+				await new Promise((resolve) => setTimeout(resolve, baseDelayMs * 2 ** attempt));
 			}
-			throw error;
-		} finally {
-			clearTimeout(timer);
 		}
+
+		throw lastError ?? new Error(`${this.providerName} API request failed after ${maxRetries} attempts`);
 	}
 
 	/**
