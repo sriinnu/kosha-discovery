@@ -243,6 +243,48 @@ describe("Hono API Server — createServer()", () => {
 		});
 	});
 
+	// ── GET /api/capabilities ────────────────────────────────────────
+
+	describe("GET /api/capabilities", () => {
+		it("returns capability summaries with count and missingCredentials", async () => {
+			const res = await app.request("/api/capabilities");
+			expect(res.status).toBe(200);
+
+			const body = await res.json();
+			expect(body.count).toBeGreaterThan(0);
+			expect(body.capabilities).toHaveLength(body.count);
+			expect(body.missingCredentials).toBeDefined();
+			expect(Array.isArray(body.missingCredentials)).toBe(true);
+
+			// "chat" should be the most common (appears in sonnet + opus)
+			const chat = body.capabilities.find((c: { capability: string }) => c.capability === "chat");
+			expect(chat).toBeDefined();
+			expect(chat.modelCount).toBeGreaterThanOrEqual(2);
+			expect(chat.exampleModelId).toBeDefined();
+		});
+
+		it("filters capabilities by provider", async () => {
+			const res = await app.request("/api/capabilities?provider=openai");
+			expect(res.status).toBe(200);
+
+			const body = await res.json();
+			// OpenAI only has the embedding model in fixture data
+			const capNames = body.capabilities.map((c: { capability: string }) => c.capability);
+			expect(capNames).toContain("embedding");
+			// Should NOT contain vision (only anthropic models have it)
+			expect(capNames).not.toContain("vision");
+		});
+
+		it("returns empty capabilities for unknown provider", async () => {
+			const res = await app.request("/api/capabilities?provider=nonexistent");
+			expect(res.status).toBe(200);
+
+			const body = await res.json();
+			expect(body.count).toBe(0);
+			expect(body.capabilities).toEqual([]);
+		});
+	});
+
 	// ── GET /api/models/:idOrAlias ───────────────────────────────────
 
 	describe("GET /api/models/:idOrAlias", () => {

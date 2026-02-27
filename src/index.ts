@@ -26,6 +26,7 @@ export type {
 	ProviderCredentialPrompt,
 	PricingMetric,
 	ModelRouteInfo,
+	CapabilitySummary,
 	CredentialResult,
 	ProviderDiscoverer,
 	Enricher,
