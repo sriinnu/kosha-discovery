@@ -14,6 +14,7 @@ AI applications hardcode model IDs, pricing, and provider configs. When provider
 - **Smart credentials** — finds API keys from env vars, CLI tools (Claude, Copilot, Gemini CLI), and config files
 - **Pricing enrichment** — fills in costs and context windows from litellm's community-maintained dataset
 - **Model aliases** — `sonnet` → `claude-sonnet-4-20250514`, updated as models evolve
+- **Capability discovery** — "what can this ecosystem do?" and "which models can do X?" at a glance
 - **Role matrix** — query provider -> model -> roles (`chat`, `embedding`, `image_generation`, etc.)
 - **Cheapest routing** — rank cheapest eligible models for tasks like embeddings or image generation
 - **Credential prompts** — returns provider-specific API key hints when required credentials are missing
@@ -52,6 +53,14 @@ const model = kosha.model("sonnet"); // → full ModelCard for claude-sonnet-4-2
 // Get pricing
 console.log(model.pricing); // { inputPerMillion: 3, outputPerMillion: 15, ... }
 
+// Capability overview — what can the ecosystem do?
+const caps = kosha.capabilities();
+// [{ capability: "chat", modelCount: 38, providerCount: 5, exampleModelId: "claude-opus-4-6", ... }, ...]
+
+// Check if a model supports a role (normalizes aliases: "tools" → "function_calling")
+const normalized = kosha.normalizeRoleToken("tools"); // "function_calling"
+const supports = kosha.modelSupportsRole(model, "vision"); // true/false
+
 // Role matrix for assistants (provider -> models -> roles)
 const roles = kosha.providerRoles({ role: "embeddings" });
 
@@ -76,6 +85,15 @@ kosha search gemini
 
 # Model details
 kosha model sonnet
+
+# What capabilities exist?
+kosha capabilities
+kosha caps --provider anthropic
+
+# Which models can do X?
+kosha capable vision
+kosha capable embeddings --limit 5
+kosha capable tools --mode chat
 
 # Role matrix
 kosha roles
@@ -108,6 +126,7 @@ GET /api/models?mode=embedding     — Filter by mode
 GET /api/models/cheapest           — Cheapest ranked models for a role/capability
 GET /api/models/:idOrAlias         — Single model
 GET /api/models/:idOrAlias/routes  — All provider routes for one model
+GET /api/capabilities              — Capability summary across the ecosystem
 GET /api/roles                     — Provider → model → roles matrix
 GET /api/providers                 — All providers
 GET /api/providers/:id             — Single provider
@@ -120,10 +139,11 @@ GET /health                        — Health check
 
 Kosha is designed to answer routing questions from assistants like Vaayu and Takumi:
 
-1. Ask for capabilities: call `GET /api/roles?role=embeddings`.
-2. Rank by cost: call `GET /api/models/cheapest?role=embeddings`.
-3. If `missingCredentials` is non-empty, prompt the user for one of the listed env vars.
-4. Route execution using the chosen provider/model pair.
+1. Discover what's possible: call `GET /api/capabilities` to see all capabilities across the ecosystem.
+2. Find eligible models: call `GET /api/roles?role=embeddings` or filter models by capability.
+3. Rank by cost: call `GET /api/models/cheapest?role=embeddings`.
+4. If `missingCredentials` is non-empty, prompt the user for one of the listed env vars.
+5. Route execution using the chosen provider/model pair.
 
 ### Embeddings Quick Call
 
@@ -168,6 +188,13 @@ COMMANDS
     --provider <name>             Filter by provider
     --mode <mode>                 Filter by mode (chat, embedding, image, audio)
     --capability <cap>            Filter by capability (vision, function_calling, etc.)
+  capabilities (caps)           Show all capabilities across the ecosystem
+    --provider <name>             Scope to one provider
+  capable <capability>          List models with a given capability
+    --provider <name>             Filter by serving-layer provider
+    --origin <name>               Filter by origin/creator provider
+    --mode <mode>                 Filter by mode (chat, embedding, image, audio)
+    --limit <n>                   Maximum models to show
   roles                         Provider -> model -> roles matrix
     --role <role>                 Filter by task role (embeddings, image, tool_use)
     --provider <name>             Filter by serving-layer provider
@@ -237,6 +264,39 @@ openai       ✓ authenticated      8  cli (~/.config/github-copilot)
 google       ✓ authenticated     15  env (GOOGLE_API_KEY)
 ollama       ✓ local              6  none (local)
 openrouter   ✗ no credentials     0  —
+```
+
+### Example: `kosha capabilities`
+
+```
+Capability           Models  Providers  Example Model
+──────────────────── ──────── ────────── ──────────────────────────────────────
+chat                       38         5  claude-opus-4-20250918
+vision                     18         4  gpt-4o
+code                       22         5  claude-sonnet-4-20250514
+function_calling           16         4  gpt-4o
+nlu                        14         3  claude-haiku-4-5-20251001
+embedding                   8         3  text-embedding-3-small
+image_generation            4         2  openai/dall-e-3
+speech_to_text              2         1  whisper-1
+text_to_speech              2         1  tts-1
+
+9 capabilities across 42 models
+```
+
+### Example: `kosha capable vision`
+
+```
+Models with capability vision
+
+Provider     Model                                  Mode       Context    $/M in   $/M out
+──────────── ────────────────────────────────────── ────────── ────────── ──────── ────────
+anthropic    claude-opus-4-20250918                 chat       200K       $15.00   $75.00
+anthropic    claude-sonnet-4-20250514               chat       200K       $3.00    $15.00
+openai       gpt-4o                                 chat       128K       $2.50    $10.00
+google       gemini-2.5-pro-preview-05-06           chat       1M         $1.25    $10.00
+──────────────────────────────────────────────────────────────────────────────────────────
+18 models from 4 providers
 ```
 
 ### Example: `kosha roles --role embeddings`
@@ -368,6 +428,51 @@ curl "http://localhost:3000/api/roles?role=image"
   ],
   "count": 1,
   "modelCount": 12,
+  "missingCredentials": []
+}
+```
+
+#### `GET /api/capabilities`
+
+Aggregated capability summary across the ecosystem. Shows what the platform can do and how many models/providers support each capability.
+
+| Parameter  | Type   | Description                              |
+|-----------|--------|------------------------------------------|
+| `provider`| string | Scope to one provider (e.g., `anthropic`)|
+
+```bash
+curl http://localhost:3000/api/capabilities
+```
+
+```json
+{
+  "capabilities": [
+    {
+      "capability": "chat",
+      "modelCount": 38,
+      "providerCount": 5,
+      "providers": ["anthropic", "google", "ollama", "openai", "openrouter"],
+      "modes": ["chat"],
+      "exampleModelId": "claude-opus-4-20250918"
+    },
+    {
+      "capability": "vision",
+      "modelCount": 18,
+      "providerCount": 4,
+      "providers": ["anthropic", "google", "openai", "openrouter"],
+      "modes": ["chat"],
+      "exampleModelId": "gpt-4o"
+    },
+    {
+      "capability": "embedding",
+      "modelCount": 8,
+      "providerCount": 3,
+      "providers": ["google", "ollama", "openai"],
+      "modes": ["embedding"],
+      "exampleModelId": "text-embedding-3-small"
+    }
+  ],
+  "count": 9,
   "missingCredentials": []
 }
 ```
@@ -575,7 +680,7 @@ Model pricing is sourced from [litellm's model pricing database](https://github.
                  │
 ┌────────────────▼────────────────────────┐
 │            ModelRegistry                │
-│ models() · providerRoles() · cheapestModels() │
+│ models() · capabilities() · cheapestModels()  │
 └───┬────────────┬────────────────┬───────┘
     │            │                │
 ┌───▼──┐  ┌─────▼─────┐  ┌──────▼──────┐
