@@ -36,6 +36,130 @@ npm install kosha-discovery
 pnpm add kosha-discovery
 ```
 
+## Getting Started — Provider Credentials
+
+Kosha auto-discovers credentials from environment variables, CLI tool configs, and cloud auth files. Set up whichever providers you use:
+
+### Anthropic
+
+```bash
+# Option A: Environment variable
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# Option B: Auto-detected from Claude CLI / Claude Code
+# If you've run `claude` or `claude-code`, kosha reads the stored token from:
+#   ~/.claude.json
+#   ~/.config/claude/settings.json
+#   ~/.claude/credentials.json
+
+# Option C: Auto-detected from Codex CLI
+#   ~/.codex/auth.json
+```
+
+### OpenAI
+
+```bash
+# Option A: Environment variable
+export OPENAI_API_KEY=sk-...
+
+# Option B: Auto-detected from GitHub Copilot
+# If you've authenticated with Copilot, kosha reads tokens from:
+#   ~/.config/github-copilot/hosts.json (Linux/macOS)
+#   %LOCALAPPDATA%/github-copilot/hosts.json (Windows)
+```
+
+### Google (Gemini)
+
+```bash
+# Option A: Environment variable
+export GOOGLE_API_KEY=AIza...
+# or
+export GEMINI_API_KEY=AIza...
+
+# Option B: Auto-detected from Gemini CLI
+#   ~/.gemini/oauth_creds.json
+
+# Option C: gcloud Application Default Credentials
+gcloud auth application-default login
+```
+
+### AWS Bedrock
+
+```bash
+# Option A: Environment variables
+export AWS_ACCESS_KEY_ID=AKIA...
+export AWS_SECRET_ACCESS_KEY=...
+export AWS_DEFAULT_REGION=us-east-1   # optional, defaults to us-east-1
+
+# Option B: AWS CLI configured profile
+aws configure
+# kosha reads ~/.aws/credentials [default] automatically
+
+# Option C: Named profile
+export AWS_PROFILE=my-profile
+
+# Option D: SSO / IAM role
+# kosha detects sso_start_url or role_arn in ~/.aws/config
+
+# Optional: install the AWS SDK for live model listing (otherwise uses static fallback)
+npm install @aws-sdk/client-bedrock
+```
+
+### Google Vertex AI
+
+```bash
+# Option A: Service account JSON
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+export GOOGLE_CLOUD_PROJECT=my-project
+
+# Option B: gcloud Application Default Credentials
+gcloud auth application-default login
+# Project auto-detected from: GOOGLE_CLOUD_PROJECT, GCLOUD_PROJECT,
+# or `gcloud config get-value project`
+
+# Option C: gcloud access token (auto-detected via subprocess)
+gcloud auth print-access-token
+```
+
+### OpenRouter
+
+```bash
+# Optional — OpenRouter works without auth (rate-limited)
+export OPENROUTER_API_KEY=sk-or-...
+```
+
+### Ollama (Local)
+
+```bash
+# No credentials needed — auto-detected if running locally
+# Default: http://localhost:11434
+ollama serve
+```
+
+### Config file (optional)
+
+Instead of env vars, you can create `~/.kosharc.json` (global) or `kosha.config.json` (project-level):
+
+```json
+{
+  "providers": {
+    "anthropic": { "apiKey": "sk-ant-..." },
+    "openai": { "apiKey": "sk-..." },
+    "bedrock": { "enabled": true },
+    "vertex": { "enabled": true },
+    "openrouter": { "enabled": false }
+  },
+  "aliases": {
+    "fast": "claude-haiku-4-5-20251001"
+  },
+  "cacheTtlMs": 3600000
+}
+```
+
+Config priority: `~/.kosharc.json` < `kosha.config.json` < programmatic config.
+
+---
+
 ## Quick Start
 
 ### Library
@@ -523,8 +647,10 @@ curl http://localhost:3000/health
 | Anthropic | API (`/v1/models`) | `ANTHROPIC_API_KEY`, Claude CLI, Codex CLI |
 | OpenAI | API (`/v1/models`) | `OPENAI_API_KEY`, GitHub Copilot tokens |
 | Google | API (`/v1beta/models`) | `GOOGLE_API_KEY`, `GEMINI_API_KEY`, Gemini CLI, gcloud |
+| AWS Bedrock | SDK → CLI → static fallback | `AWS_ACCESS_KEY_ID`+`AWS_SECRET_ACCESS_KEY`, `~/.aws/credentials`, SSO, IAM roles |
+| Vertex AI | API + gcloud | `GOOGLE_APPLICATION_CREDENTIALS`, gcloud ADC, `gcloud auth print-access-token` |
 | Ollama | Local API (`/api/tags`) | None needed (local) |
-| OpenRouter | API (`/api/v1/models`) | `OPENROUTER_API_KEY` |
+| OpenRouter | API (`/api/v1/models`) | `OPENROUTER_API_KEY` (optional) |
 
 ## Model Aliases
 
@@ -593,7 +719,8 @@ Model pricing is sourced from [litellm's model pricing database](https://github.
           ┌─────┼──────┐         │
           ▼     ▼      ▼         ▼
        Anthropic OpenAI Google  litellm
-       Ollama   OpenRouter       JSON
+       Bedrock  Vertex  Ollama   JSON
+       OpenRouter
 ```
 
 ## Project Structure
@@ -605,10 +732,12 @@ src/
   cli.ts                CLI entry point (process.argv parser)
   server.ts             HTTP API server (Hono)
   discovery/
-    base.ts             Abstract base discoverer
+    base.ts             Abstract base discoverer (retry + exponential backoff)
     anthropic.ts        Anthropic API discoverer
     openai.ts           OpenAI API discoverer
     google.ts           Google Gemini API discoverer
+    bedrock.ts          AWS Bedrock discoverer (SDK → CLI → static)
+    vertex.ts           Vertex AI discoverer (API + gcloud)
     ollama.ts           Ollama local discoverer
     openrouter.ts       OpenRouter API discoverer
     index.ts            Discovery orchestrator
