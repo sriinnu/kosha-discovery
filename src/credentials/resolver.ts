@@ -269,16 +269,9 @@ export class CredentialResolver {
 
 	/**
 	 * Ollama runs locally and never requires authentication.
-	 *
-	 * We always return `{ source: "none" }` regardless of reachability.
-	 * The ping is only a connectivity check — it does not produce a credential.
+	 * Returns `{ source: "none" }` unconditionally.
 	 */
-	private async resolveOllama(): Promise<CredentialResult> {
-		// Ollama never needs auth — the ping is just a reachability check
-		const reachable = await this.pingOllama();
-		if (reachable) {
-			return { source: "none" };
-		}
+	private resolveOllama(): CredentialResult {
 		return { source: "none" };
 	}
 
@@ -615,18 +608,4 @@ export class CredentialResolver {
 		return undefined;
 	}
 
-	/** Ping the Ollama API to check if it's running. */
-	private async pingOllama(): Promise<boolean> {
-		try {
-			const controller = new AbortController();
-			const timeout = setTimeout(() => controller.abort(), 2_000);
-			const response = await fetch("http://localhost:11434/api/tags", {
-				signal: controller.signal,
-			});
-			clearTimeout(timeout);
-			return response.ok;
-		} catch {
-			return false;
-		}
-	}
 }

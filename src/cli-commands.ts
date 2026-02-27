@@ -285,6 +285,91 @@ export async function cmdCheapest(registry: ModelRegistry, flags: Record<string,
 	}
 }
 
+// ── capabilities ─────────────────────────────────────────────────────────
+
+/**
+ * Show an aggregated capability overview across all discovered models.
+ * Each row shows a capability, how many models/providers support it,
+ * and an example model ID for quick reference.
+ *
+ * @param registry  The model registry to query.
+ * @param flags     CLI flags (supports `--provider`, `--json`).
+ */
+export async function cmdCapabilities(registry: ModelRegistry, flags: Record<string, string | boolean>): Promise<void> {
+	const provider = typeof flags.provider === "string" ? flags.provider : undefined;
+
+	await ensureDiscovered(registry);
+	const caps = registry.capabilities({ provider });
+
+	if (flags.json) { console.log(JSON.stringify(caps, null, 2)); return; }
+	if (caps.length === 0) { console.log(c(YELLOW, "No capabilities found.")); return; }
+
+	const columns: Column[] = [
+		{ header: "Capability", width: 20 },
+		{ header: "Models", width: 8, align: "right" },
+		{ header: "Providers", width: 10, align: "right" },
+		{ header: "Example Model", width: 38 },
+	];
+
+	const rows = caps.map((cap) => [
+		c(CYAN, cap.capability),
+		String(cap.modelCount),
+		String(cap.providerCount),
+		cap.exampleModelId ?? c(DIM, "—"),
+	]);
+
+	const totalModels = registry.models({ provider }).length;
+	console.log(renderTable(columns, rows));
+	console.log(c(DIM, `\n${caps.length} capabilities across ${totalModels} models`));
+}
+
+// ── capable ──────────────────────────────────────────────────────────────
+
+/**
+ * Show models that support a given capability/role.
+ * Normalizes the query so aliases work: "embeddings", "stt", "tools", "vision".
+ *
+ * @param registry  The model registry to query.
+ * @param query     The capability query (e.g. "vision", "embeddings", "tools").
+ * @param flags     CLI flags (supports `--provider`, `--origin`, `--json`, `--limit`).
+ */
+export async function cmdCapable(registry: ModelRegistry, query: string, flags: Record<string, string | boolean>): Promise<void> {
+	if (!query) { console.error(c(RED, "Usage: kosha capable <capability>")); process.exit(1); }
+
+	const provider = typeof flags.provider === "string" ? flags.provider : undefined;
+	const originProvider = typeof flags.origin === "string" ? flags.origin : undefined;
+	const mode = typeof flags.mode === "string" ? (flags.mode as ModelMode) : undefined;
+	const limit = parseNumberFlag(flags.limit);
+
+	await ensureDiscovered(registry);
+
+	const normalized = registry.normalizeRoleToken(query);
+	const allModels = registry.models({ provider, originProvider, mode });
+	let models = allModels.filter((m) => registry.modelSupportsRole(m, normalized));
+
+	if (limit !== undefined && limit > 0) {
+		models = models.slice(0, limit);
+	}
+
+	if (flags.json) { console.log(JSON.stringify(models, null, 2)); return; }
+
+	if (models.length === 0) {
+		console.log(c(YELLOW, `No models found with capability "${query}"${normalized !== query ? ` (normalized: "${normalized}")` : ""}`));
+		return;
+	}
+
+	const header = normalized !== query
+		? `Models with capability ${c(CYAN, normalized)} ${c(DIM, `(from "${query}")`)}`
+		: `Models with capability ${c(CYAN, normalized)}`;
+
+	console.log(`\n${c(BOLD, header)}\n`);
+	console.log(renderTable(MODEL_TABLE_COLUMNS, models.map(modelRow)));
+
+	const providerCount = new Set(models.map((m) => m.provider)).size;
+	console.log(c(DIM, line("\u2500", 90)));
+	console.log(`${c(BOLD, String(models.length))} models from ${c(BOLD, String(providerCount))} providers`);
+}
+
 // ── search ───────────────────────────────────────────────────────────────
 
 /**
@@ -580,6 +665,13 @@ ${c(BOLD, "COMMANDS")}
     --origin <name>               Filter by model creator provider
     --mode <mode>                 Filter by mode (chat, embedding, image, audio, moderation)
     --capability <cap>            Filter by capability tag
+  ${c(CYAN, "capabilities")} ${c(DIM, "(caps)")}             Show all capabilities across the ecosystem
+    --provider <name>             Scope to one provider
+  ${c(CYAN, "capable")} <capability>            List models with a given capability
+    --provider <name>             Filter by serving-layer provider
+    --origin <name>               Filter by origin/creator provider
+    --mode <mode>                 Filter by mode (chat, embedding, image, audio)
+    --limit <n>                   Maximum models to show
   ${c(CYAN, "cheapest")}                      Find cheapest eligible models
     --role <role>                 Task role, e.g. embeddings or image
     --capability <cap>            Capability filter (vision, embedding, function_calling)
@@ -609,6 +701,9 @@ ${c(BOLD, "EXAMPLES")}
   ${c(DIM, "$")} kosha search claude --origin anthropic
   ${c(DIM, "$")} kosha model sonnet
   ${c(DIM, "$")} kosha roles --role embeddings
+  ${c(DIM, "$")} kosha capabilities
+  ${c(DIM, "$")} kosha capable vision
+  ${c(DIM, "$")} kosha capable embeddings --limit 5
   ${c(DIM, "$")} kosha cheapest --role image --limit 3
   ${c(DIM, "$")} kosha routes claude-opus-4-6
   ${c(DIM, "$")} kosha routes gpt-4o --json
@@ -656,6 +751,8 @@ ${c(MAGENTA, "  ╚════════════════════�
     ${c(CYAN, "kosha list")}           List all discovered models
     ${c(CYAN, "kosha search")} ${c(DIM, "<q>")}     Search by name or ID
     ${c(CYAN, "kosha model")} ${c(DIM, "<id>")}     Detailed info for one model
+    ${c(CYAN, "kosha capabilities")}   What capabilities exist?
+    ${c(CYAN, "kosha capable")} ${c(DIM, "<cap>")}  Models with a given capability
     ${c(CYAN, "kosha roles")}          Provider -> model -> roles matrix
     ${c(CYAN, "kosha cheapest")}       Cheapest models for a role
     ${c(CYAN, "kosha routes")} ${c(DIM, "<id>")}    All provider routes for a model

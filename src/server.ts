@@ -142,6 +142,24 @@ export function createServer(registry: ModelRegistry): Hono {
 		});
 	});
 
+	// ── Capability aggregation route ─────────────────────────────────
+	//
+	// Returns a summary of all capabilities across the ecosystem.
+	// Optional ?provider= filter to scope to one provider.
+	app.get("/api/capabilities", (ctx) => {
+		const provider = ctx.req.query("provider") ?? undefined;
+		const caps = registry.capabilities({ provider });
+		const providerIds = provider
+			? [provider]
+			: registry.providers_list().map((p) => p.id);
+
+		return ctx.json({
+			capabilities: caps,
+			count: caps.length,
+			missingCredentials: registry.missingCredentialPrompts(providerIds),
+		});
+	});
+
 	// All provider routes for a single model — must be registered BEFORE the
 	// generic /:idOrAlias route so that Hono matches "/routes" as a literal
 	// segment rather than treating it as a dynamic parameter value.
@@ -308,6 +326,7 @@ export async function startServer(port = 3000): Promise<void> {
 	console.log(`  GET  http://localhost:${port}/api/models`);
 	console.log(`  GET  http://localhost:${port}/api/models/cheapest`);
 	console.log(`  GET  http://localhost:${port}/api/models/:id/routes`);
+	console.log(`  GET  http://localhost:${port}/api/capabilities`);
 	console.log(`  GET  http://localhost:${port}/api/roles`);
 	console.log(`  GET  http://localhost:${port}/api/providers`);
 	console.log(`  GET  http://localhost:${port}/health`);
