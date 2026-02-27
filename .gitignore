@@ -4,3 +4,7 @@ dist/
 .DS_Store
 .env
 .env.*
+
+# Local-only agent/config files
+CLAUDE.md
+AGENTS.md
