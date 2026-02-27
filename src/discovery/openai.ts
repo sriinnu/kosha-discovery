@@ -171,14 +171,14 @@ export class OpenAIDiscoverer extends BaseDiscoverer {
 			return ["chat", "code", "nlu"];
 		}
 
+		// GPT-4o-mini — capable but lacks vision (must be checked before gpt-4o)
+		if (id.includes("gpt-4o-mini")) {
+			return ["chat", "function_calling", "code", "nlu"];
+		}
+
 		// GPT-4o and GPT-4 Turbo — full capabilities including vision
 		if (id.includes("gpt-4o") || id.includes("gpt-4-turbo")) {
 			return ["chat", "vision", "function_calling", "code", "nlu"];
-		}
-
-		// GPT-4o-mini — capable but lacks vision
-		if (id.includes("gpt-4o-mini")) {
-			return ["chat", "function_calling", "code", "nlu"];
 		}
 
 		// GPT-4 (non-turbo, non-4o)

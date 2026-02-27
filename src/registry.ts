@@ -7,6 +7,7 @@
  */
 
 import type {
+	CapabilitySummary,
 	CheapestModelMatch,
 	CheapestModelOptions,
 	CheapestModelResult,
@@ -513,14 +514,6 @@ export class ModelRegistry {
 			if (found) return found;
 		}
 
-		// If alias resolution didn't help, try a direct search with the original input
-		if (resolvedId !== idOrAlias) return undefined;
-
-		for (const providerInfo of this.providerMap.values()) {
-			const found = providerInfo.models.find((m) => m.id === idOrAlias);
-			if (found) return found;
-		}
-
 		return undefined;
 	}
 
@@ -539,20 +532,94 @@ export class ModelRegistry {
 	}
 
 	// ---------------------------------------------------------------------------
+	// Capability aggregation
+	// ---------------------------------------------------------------------------
+
+	/**
+	 * Aggregate capability statistics across all discovered models.
+	 *
+	 * Iterates every model, collects unique capabilities (using the same
+	 * normalization as {@link providerRoles}), and returns per-capability
+	 * counts of models, providers, and an example model ID.
+	 *
+	 * @param filter - Optional provider scope.
+	 * @returns Sorted (by model count desc) list of capability summaries.
+	 */
+	capabilities(filter?: { provider?: string }): CapabilitySummary[] {
+		const capMap = new Map<string, {
+			models: Set<string>;
+			providers: Set<string>;
+			modes: Set<ModelMode>;
+			exampleModelId?: string;
+		}>();
+
+		const allModels = this.models({ provider: filter?.provider });
+
+		for (const model of allModels) {
+			const roles = this.modelRoles(model);
+			for (const role of roles) {
+				let entry = capMap.get(role);
+				if (!entry) {
+					entry = { models: new Set(), providers: new Set(), modes: new Set(), exampleModelId: model.id };
+					capMap.set(role, entry);
+				}
+				entry.models.add(`${model.provider}:${model.id}`);
+				entry.providers.add(model.provider);
+				entry.modes.add(model.mode);
+			}
+		}
+
+		const result: CapabilitySummary[] = [];
+		for (const [capability, entry] of capMap) {
+			result.push({
+				capability,
+				modelCount: entry.models.size,
+				providerCount: entry.providers.size,
+				providers: Array.from(entry.providers).sort(),
+				modes: Array.from(entry.modes).sort() as ModelMode[],
+				exampleModelId: entry.exampleModelId,
+			});
+		}
+
+		result.sort((a, b) => {
+			if (a.modelCount !== b.modelCount) return b.modelCount - a.modelCount;
+			return a.capability.localeCompare(b.capability);
+		});
+
+		return result;
+	}
+
+	// ---------------------------------------------------------------------------
 	// Query helpers
 	// ---------------------------------------------------------------------------
 
-	private normalizeRoleToken(value: string): string {
+	/**
+	 * Normalize a role/capability token by lowercasing, collapsing whitespace
+	 * and hyphens to underscores, and resolving known aliases.
+	 *
+	 * @example
+	 * registry.normalizeRoleToken("embeddings") // "embedding"
+	 * registry.normalizeRoleToken("tool_use")   // "function_calling"
+	 * registry.normalizeRoleToken("stt")         // "speech_to_text"
+	 */
+	normalizeRoleToken(value: string): string {
 		const token = value.trim().toLowerCase().replace(/[\s-]+/g, "_");
 		return ROLE_ALIASES[token] ?? token;
 	}
 
-	private modelRoles(model: ModelCard): string[] {
+	/**
+	 * Return the deduplicated set of roles for a model (mode + normalized capabilities).
+	 */
+	modelRoles(model: ModelCard): string[] {
 		const roles = [model.mode, ...model.capabilities.map((capability) => this.normalizeRoleToken(capability))];
 		return Array.from(new Set(roles));
 	}
 
-	private modelSupportsRole(model: ModelCard, roleOrCapability: string): boolean {
+	/**
+	 * Check whether a model supports the given role or capability.
+	 * Normalizes the input and checks against mode, capabilities, and mode aliases.
+	 */
+	modelSupportsRole(model: ModelCard, roleOrCapability: string): boolean {
 		const token = this.normalizeRoleToken(roleOrCapability);
 		const modelRoles = this.modelRoles(model);
 		if (modelRoles.includes(token)) return true;
