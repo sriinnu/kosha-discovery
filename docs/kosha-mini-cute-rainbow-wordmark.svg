@@ -1,0 +1,40 @@
+<svg width="960" height="520" viewBox="0 0 960 520" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bgRain" x1="0" y1="0" x2="960" y2="520" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFF7E7"/>
+      <stop offset="1" stop-color="#ECF7FF"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="20" y="20" width="920" height="480" rx="36" fill="url(#bgRain)"/>
+
+  <rect x="100" y="110" width="540" height="300" rx="24" fill="#FFFFFF" stroke="#E7EAF3" stroke-width="2"/>
+  <rect x="100" y="110" width="540" height="54" rx="24" fill="#EEF3FA"/>
+  <circle cx="138" cy="137" r="6" fill="#EE8C8C"/>
+  <circle cx="158" cy="137" r="6" fill="#F0C27D"/>
+  <circle cx="178" cy="137" r="6" fill="#8FDCAA"/>
+
+  <text x="142" y="212" fill="#50708F" font-size="14" font-family="Menlo, Monaco, Consolas, monospace">discover -> roles -> cheapest -> call</text>
+  <text x="142" y="240" fill="#50708F" font-size="14" font-family="Menlo, Monaco, Consolas, monospace">show origin provider + route URL</text>
+  <text x="142" y="268" fill="#50708F" font-size="14" font-family="Menlo, Monaco, Consolas, monospace">prompt user if API key missing</text>
+
+  <text x="142" y="332" fill="#1E3F5E" font-size="18" font-family="Menlo, Monaco, Consolas, monospace">CLI splash with mascot</text>
+
+  <g>
+    <circle cx="790" cy="240" r="95" fill="#91D4FF"/>
+    <circle cx="752" cy="229" r="10" fill="#0B3E64"/>
+    <circle cx="828" cy="229" r="10" fill="#0B3E64"/>
+    <path d="M747 268C761 287 819 287 833 268" stroke="#0B3E64" stroke-width="8" stroke-linecap="round"/>
+    <path d="M755 171L742 153" stroke="#3E89BE" stroke-width="8" stroke-linecap="round"/>
+    <path d="M825 171L838 153" stroke="#3E89BE" stroke-width="8" stroke-linecap="round"/>
+  </g>
+
+  <text x="54" y="446" font-size="56" font-weight="800" font-family="Avenir Next, Segoe UI, Arial, sans-serif">
+    <tspan fill="#E84C4C">k</tspan>
+    <tspan fill="#E89A34">o</tspan>
+    <tspan fill="#D3B021">s</tspan>
+    <tspan fill="#34A866">h</tspan>
+    <tspan fill="#2D8FE3">a</tspan>
+  </text>
+  <text x="54" y="480" fill="#4B6784" font-size="18" font-family="Avenir Next, Segoe UI, Arial, sans-serif">Rainbow wordmark + mascot variant</text>
+</svg>

@@ -1,0 +1,48 @@
+<svg width="960" height="520" viewBox="0 0 960 520" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bgSticker" x1="60" y1="20" x2="900" y2="500" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFCEB"/>
+      <stop offset="1" stop-color="#E7F7FF"/>
+    </linearGradient>
+    <filter id="soft" x="0" y="0" width="960" height="520" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="0"/>
+    </filter>
+  </defs>
+
+  <rect x="20" y="20" width="920" height="480" rx="36" fill="url(#bgSticker)"/>
+
+  <path d="M112 100H585C603 100 618 115 618 133V408C618 426 603 441 585 441H112C94 441 79 426 79 408V133C79 115 94 100 112 100Z" fill="#FFFFFF" stroke="#DCE9F6" stroke-width="3"/>
+  <rect x="79" y="100" width="539" height="56" rx="28" fill="#E9F1FA"/>
+
+  <circle cx="117" cy="128" r="7" fill="#F18E8E"/>
+  <circle cx="140" cy="128" r="7" fill="#F2C27C"/>
+  <circle cx="163" cy="128" r="7" fill="#8BD7A7"/>
+
+  <rect x="119" y="183" width="254" height="15" rx="7.5" fill="#C7D9EC"/>
+  <rect x="119" y="213" width="347" height="10" rx="5" fill="#DFEAF5"/>
+  <rect x="119" y="232" width="282" height="10" rx="5" fill="#DFEAF5"/>
+  <rect x="119" y="251" width="402" height="10" rx="5" fill="#DFEAF5"/>
+
+  <rect x="119" y="294" width="228" height="102" rx="18" fill="#FFF5D7" stroke="#F2DFAC"/>
+  <text x="143" y="332" fill="#735017" font-size="25" font-family="Menlo, Monaco, Consolas, monospace">kosha</text>
+  <text x="143" y="358" fill="#8F682D" font-size="13" font-family="Menlo, Monaco, Consolas, monospace">sticker-style board</text>
+
+  <rect x="365" y="294" width="214" height="102" rx="18" fill="#EFFFF3" stroke="#CDEED8"/>
+  <text x="382" y="325" fill="#24573A" font-size="12" font-family="Menlo, Monaco, Consolas, monospace">task: embeddings</text>
+  <text x="382" y="346" fill="#24573A" font-size="12" font-family="Menlo, Monaco, Consolas, monospace">provider: openai</text>
+  <text x="382" y="367" fill="#3F7E5D" font-size="11" font-family="Menlo, Monaco, Consolas, monospace">status: cheapest selected</text>
+
+  <g>
+    <path d="M703 129H860C877 129 891 143 891 160V317C891 334 877 348 860 348H789L761 378V348H703C686 348 672 334 672 317V160C672 143 686 129 703 129Z" fill="#7ACDFF"/>
+    <circle cx="736" cy="227" r="10" fill="#0F436B"/>
+    <circle cx="826" cy="227" r="10" fill="#0F436B"/>
+    <path d="M731 265C745 284 817 284 831 265" stroke="#0F436B" stroke-width="8" stroke-linecap="round"/>
+    <circle cx="730" cy="217" r="4" fill="#FFFFFF"/>
+    <circle cx="820" cy="217" r="4" fill="#FFFFFF"/>
+    <path d="M712 175L698 158" stroke="#3B84B4" stroke-width="8" stroke-linecap="round"/>
+    <path d="M850 175L864 158" stroke="#3B84B4" stroke-width="8" stroke-linecap="round"/>
+  </g>
+
+  <text x="56" y="451" fill="#2A4968" font-size="40" font-weight="700" font-family="Avenir Next, Segoe UI, Arial, sans-serif">Kosha Discovery</text>
+  <text x="56" y="481" fill="#446C90" font-size="18" font-family="Avenir Next, Segoe UI, Arial, sans-serif">Sticker-card variant with a friendly routing mascot</text>
+</svg>
