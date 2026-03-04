@@ -23,6 +23,8 @@ AI applications hardcode model IDs, pricing, and provider configs. When provider
 - **Pricing enrichment** — fills in costs and context windows from litellm's community-maintained dataset
 - **Model aliases** — `sonnet` → `claude-sonnet-4-20250514`, updated as models evolve
 - **Role matrix** — query provider -> model -> roles (`chat`, `embedding`, `image_generation`, etc.)
+- **Capability discovery** — explore all capabilities across the ecosystem, find models by capability
+- **Multi-provider routing** — see all provider routes for a model, with direct/preferred flags
 - **Cheapest routing** — rank cheapest eligible models for tasks like embeddings or image generation
 - **Credential prompts** — returns provider-specific API key hints when required credentials are missing
 - **Local LLM scanning** — detects Ollama models alongside cloud providers
@@ -201,10 +203,12 @@ kosha discover
 # List models
 kosha list
 kosha list --provider anthropic
+kosha list --origin anthropic
 kosha list --mode embedding
 
 # Search
 kosha search gemini
+kosha search claude --origin anthropic
 
 # Model details
 kosha model sonnet
@@ -213,9 +217,17 @@ kosha model sonnet
 kosha roles
 kosha roles --role embeddings
 
+# Capabilities ecosystem view
+kosha capabilities
+kosha capable vision
+kosha capable embeddings --limit 5
+
 # Cheapest routing candidates
 kosha cheapest --role embeddings
 kosha cheapest --role image --limit 3
+
+# All provider routes for a model
+kosha routes gpt-4o
 
 # Providers status
 kosha providers
@@ -297,26 +309,36 @@ USAGE
 COMMANDS
   discover                      Discover all providers and models
   list                          List all known models
-    --provider <name>             Filter by provider
+    --provider <name>             Filter by serving-layer provider
+    --origin <name>               Filter by origin/creator provider (e.g. anthropic)
     --mode <mode>                 Filter by mode (chat, embedding, image, audio)
     --capability <cap>            Filter by capability (vision, function_calling, etc.)
-  roles                         Provider -> model -> roles matrix
-    --role <role>                 Filter by task role (embeddings, image, tool_use)
-    --provider <name>             Filter by serving-layer provider
-    --origin <name>               Filter by origin model provider
-    --mode <mode>                 Filter by mode
-    --capability <cap>            Filter by capability
-  cheapest                      Find cheapest eligible models
-    --role <role>                 Task role (embeddings, image, etc.)
-    --capability <cap>            Capability filter
-    --mode <mode>                 Mode filter
-    --limit <n>                   Maximum matches (default 5)
-    --price-metric <metric>       input | output | blended
-    --input-weight <n>            Blended metric input weight
-    --output-weight <n>           Blended metric output weight
-    --include-unpriced            Include models without pricing at end
   search <query>                Search models by name/ID (fuzzy match)
+    --origin <name>               Restrict search to a specific origin provider
   model <id|alias>              Show detailed info for one model
+  roles                         Show provider -> model -> roles matrix
+    --role <role>                 Filter by task role (e.g. embeddings, image, tool_use)
+    --provider <name>             Filter by serving-layer provider
+    --origin <name>               Filter by model creator provider
+    --mode <mode>                 Filter by mode (chat, embedding, image, audio, moderation)
+    --capability <cap>            Filter by capability tag
+  capabilities (caps)           Show all capabilities across the ecosystem
+    --provider <name>             Scope to one provider
+  capable <capability>          List models with a given capability
+    --provider <name>             Filter by serving-layer provider
+    --origin <name>               Filter by origin/creator provider
+    --mode <mode>                 Filter by mode (chat, embedding, image, audio)
+    --limit <n>                   Maximum models to show
+  cheapest                      Find cheapest eligible models
+    --role <role>                 Task role, e.g. embeddings or image
+    --capability <cap>            Capability filter (vision, embedding, function_calling)
+    --mode <mode>                 Mode filter
+    --limit <n>                   Maximum matches to return (default 5)
+    --price-metric <metric>       input | output | blended
+    --input-weight <n>            Weight for blended metric input price
+    --output-weight <n>           Weight for blended metric output price
+    --include-unpriced            Include unpriced models after ranked matches
+  routes <id|alias>             Show all provider routes for a model
   providers                     List all providers and their status
   resolve <alias>               Resolve an alias to canonical model ID
   refresh                       Force re-discover all providers (bypass cache)
@@ -387,6 +409,42 @@ Provider     Model                                   Mode       Metric      Scor
 ──────────── ─────────────────────────────────────── ────────── ──────── ────────── ──────── ────────
 openrouter   openai/dall-e-3                         image      blended     $8.00    $8.00    $0.00
 openrouter   black-forest-labs/flux-1-schnell        image      blended    $10.00   $10.00    $0.00
+```
+
+### Example: `kosha capabilities`
+
+```
+Capability           Models
+──────────────────── ──────
+chat                     38
+vision                   12
+function_calling         10
+code                      8
+embedding                 6
+image_generation          4
+audio                     2
+```
+
+### Example: `kosha capable vision --limit 3`
+
+```
+Provider     Model                              Mode       Context    $/M in   $/M out
+──────────── ────────────────────────────────── ────────── ────────── ──────── ────────
+anthropic    claude-sonnet-4-20250514           chat       200K       $3.00    $15.00
+openai       gpt-4o                             chat       128K       $2.50    $10.00
+google       gemini-2.5-pro-preview-05-06       chat       1M         $1.25    $10.00
+```
+
+### Example: `kosha routes gpt-4o`
+
+```
+Model: gpt-4o
+Preferred provider: openai
+
+Provider     Origin     Base URL                     Direct  Preferred
+──────────── ────────── ──────────────────────────── ─────── ─────────
+openai       openai     https://api.openai.com       ✓       ✓
+openrouter   openai     https://openrouter.ai        —       —
 ```
 
 ## HTTP API Reference
