@@ -24,11 +24,13 @@ import type { CredentialResult, ModelCard } from "../../src/types.js";
 
 vi.mock("node:child_process", () => ({
 	execSync: vi.fn(),
+	execFileSync: vi.fn(),
 }));
 
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 
 const mockedExecSync = vi.mocked(execSync);
+const mockedExecFileSync = vi.mocked(execFileSync);
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -189,6 +191,9 @@ beforeEach(() => {
 	mockedExecSync.mockImplementation(() => {
 		throw new Error("aws: command not found");
 	});
+	mockedExecFileSync.mockImplementation(() => {
+		throw new Error("aws: command not found");
+	});
 	delete process.env.AWS_DEFAULT_REGION;
 });
 
@@ -336,7 +341,7 @@ describe("BedrockDiscoverer — static fallback", () => {
 
 describe("BedrockDiscoverer — CLI fallback", () => {
 	it("parses CLI JSON output and returns mapped ModelCards", async () => {
-		mockedExecSync.mockReturnValue(Buffer.from(cliThreeModels));
+		mockedExecFileSync.mockReturnValue(Buffer.from(cliThreeModels));
 
 		const d = new BedrockDiscoverer();
 		const cards = await d.discover(noCredential);
@@ -346,7 +351,7 @@ describe("BedrockDiscoverer — CLI fallback", () => {
 	});
 
 	it("CLI: Claude Sonnet has vision from IMAGE inputModality", async () => {
-		mockedExecSync.mockReturnValue(
+		mockedExecFileSync.mockReturnValue(
 			Buffer.from(JSON.stringify({ modelSummaries: [rawClaudeSonnet] })),
 		);
 
@@ -360,7 +365,7 @@ describe("BedrockDiscoverer — CLI fallback", () => {
 	});
 
 	it("CLI: Titan embedding has mode=embedding", async () => {
-		mockedExecSync.mockReturnValue(
+		mockedExecFileSync.mockReturnValue(
 			Buffer.from(JSON.stringify({ modelSummaries: [rawTitanEmbed] })),
 		);
 
@@ -374,7 +379,7 @@ describe("BedrockDiscoverer — CLI fallback", () => {
 	});
 
 	it("CLI: image-only model has mode=image and capability=image", async () => {
-		mockedExecSync.mockReturnValue(
+		mockedExecFileSync.mockReturnValue(
 			Buffer.from(JSON.stringify({ modelSummaries: [rawStabilityImage] })),
 		);
 
@@ -388,7 +393,7 @@ describe("BedrockDiscoverer — CLI fallback", () => {
 	});
 
 	it("CLI: sets source=api on successfully parsed models", async () => {
-		mockedExecSync.mockReturnValue(
+		mockedExecFileSync.mockReturnValue(
 			Buffer.from(JSON.stringify({ modelSummaries: [rawMistralLarge] })),
 		);
 
@@ -402,7 +407,7 @@ describe("BedrockDiscoverer — CLI fallback", () => {
 	});
 
 	it("falls through to static fallback when CLI returns invalid JSON", async () => {
-		mockedExecSync.mockReturnValue(Buffer.from("INVALID JSON !!!{{{"));
+		mockedExecFileSync.mockReturnValue(Buffer.from("INVALID JSON !!!{{{"));
 
 		const d = new BedrockDiscoverer();
 		const cards = await d.discover(noCredential);
@@ -412,7 +417,7 @@ describe("BedrockDiscoverer — CLI fallback", () => {
 	});
 
 	it("falls through to static fallback when CLI exits with non-zero code", async () => {
-		mockedExecSync.mockImplementation(() => {
+		mockedExecFileSync.mockImplementation(() => {
 			throw new Error("Command failed: aws bedrock list-foundation-models (exit code 255)");
 		});
 
@@ -424,7 +429,7 @@ describe("BedrockDiscoverer — CLI fallback", () => {
 	});
 
 	it("CLI: attaches the resolved region to each card", async () => {
-		mockedExecSync.mockReturnValue(
+		mockedExecFileSync.mockReturnValue(
 			Buffer.from(JSON.stringify({ modelSummaries: [rawLlama] })),
 		);
 
@@ -436,15 +441,16 @@ describe("BedrockDiscoverer — CLI fallback", () => {
 		expect(llama!.region).toBe("eu-west-1");
 	});
 
-	it("CLI: passes the correct region flag to execSync", async () => {
-		mockedExecSync.mockReturnValue(Buffer.from(JSON.stringify({ modelSummaries: [] })));
+	it("CLI: passes the correct region flag to execFileSync", async () => {
+		mockedExecFileSync.mockReturnValue(Buffer.from(JSON.stringify({ modelSummaries: [] })));
 
 		const d = new BedrockDiscoverer();
-		// With empty CLI result, falls through to static — but execSync was still called
+		// With empty CLI result, falls through to static — but execFileSync was still called
 		await d.discover(credWithRegion);
 
-		expect(mockedExecSync).toHaveBeenCalledWith(
-			expect.stringContaining("eu-west-1"),
+		expect(mockedExecFileSync).toHaveBeenCalledWith(
+			"aws",
+			expect.arrayContaining(["--region", "eu-west-1"]),
 			expect.any(Object),
 		);
 	});
@@ -634,7 +640,7 @@ describe("BedrockDiscoverer — capability inference", () => {
 describe("BedrockDiscoverer — region resolution", () => {
 	it("defaults to 'us-east-1' when no region is configured", async () => {
 		delete process.env.AWS_DEFAULT_REGION;
-		mockedExecSync.mockReturnValue(Buffer.from(JSON.stringify({ modelSummaries: [rawLlama] })));
+		mockedExecFileSync.mockReturnValue(Buffer.from(JSON.stringify({ modelSummaries: [rawLlama] })));
 
 		const d = new BedrockDiscoverer();
 		const cards = await d.discover(noCredential);
@@ -645,7 +651,7 @@ describe("BedrockDiscoverer — region resolution", () => {
 
 	it("uses AWS_DEFAULT_REGION env var when credential has no metadata", async () => {
 		process.env.AWS_DEFAULT_REGION = "ap-southeast-1";
-		mockedExecSync.mockReturnValue(Buffer.from(JSON.stringify({ modelSummaries: [rawLlama] })));
+		mockedExecFileSync.mockReturnValue(Buffer.from(JSON.stringify({ modelSummaries: [rawLlama] })));
 
 		const d = new BedrockDiscoverer();
 		const cards = await d.discover(noCredential);
@@ -656,7 +662,7 @@ describe("BedrockDiscoverer — region resolution", () => {
 
 	it("credential.metadata.region overrides AWS_DEFAULT_REGION", async () => {
 		process.env.AWS_DEFAULT_REGION = "us-west-2";
-		mockedExecSync.mockReturnValue(Buffer.from(JSON.stringify({ modelSummaries: [rawLlama] })));
+		mockedExecFileSync.mockReturnValue(Buffer.from(JSON.stringify({ modelSummaries: [rawLlama] })));
 
 		const d = new BedrockDiscoverer();
 		const cards = await d.discover(credWithRegion); // metadata.region = "eu-west-1"

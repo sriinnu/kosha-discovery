@@ -40,7 +40,10 @@ export class KoshaCache {
 			const raw = await readFile(filePath, "utf-8");
 			const entry = JSON.parse(raw) as CacheEntry<T>;
 			return entry;
-		} catch {
+		} catch (err: unknown) {
+			if (err instanceof SyntaxError) {
+				console.warn(`KoshaCache: corrupted cache file for key "${key}"`);
+			}
 			return null;
 		}
 	}
@@ -59,8 +62,13 @@ export class KoshaCache {
 		};
 		const filePath = this.keyToPath(key);
 		const tmpPath = `${filePath}.${randomBytes(4).toString("hex")}.tmp`;
-		await writeFile(tmpPath, JSON.stringify(entry, null, "\t"), "utf-8");
-		await rename(tmpPath, filePath);
+		try {
+			await writeFile(tmpPath, JSON.stringify(entry, null, "\t"), "utf-8");
+			await rename(tmpPath, filePath);
+		} catch (err) {
+			await unlink(tmpPath).catch(() => {});
+			throw err;
+		}
 	}
 
 	/**

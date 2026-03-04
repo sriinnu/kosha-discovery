@@ -47,7 +47,7 @@ export class OpenAIDiscoverer extends BaseDiscoverer {
 			return [];
 		}
 
-		const timeoutMs = options?.timeout ?? 10_000;
+		const timeoutMs = this.validateTimeout(options?.timeout);
 		const headers: Record<string, string> = {
 			Authorization: `Bearer ${apiKey}`,
 		};

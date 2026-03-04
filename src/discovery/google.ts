@@ -10,7 +10,7 @@
  */
 
 import type { CredentialResult, ModelCard, ModelMode } from "../types.js";
-import { BaseDiscoverer } from "./base.js";
+import { BaseDiscoverer, MAX_MODELS_PER_PROVIDER } from "./base.js";
 
 /** Shape of a single model from the Google Generative Language API. */
 interface GoogleModel {
@@ -54,7 +54,7 @@ export class GoogleDiscoverer extends BaseDiscoverer {
 			return [];
 		}
 
-		const timeoutMs = options?.timeout ?? 10_000;
+		const timeoutMs = this.validateTimeout(options?.timeout);
 		const allModels: GoogleModel[] = [];
 		let pageToken: string | undefined;
 
@@ -64,6 +64,7 @@ export class GoogleDiscoverer extends BaseDiscoverer {
 			const response = await this.fetchJSON<GoogleListResponse>(url, undefined, timeoutMs);
 			allModels.push(...response.models);
 			pageToken = response.nextPageToken;
+			if (allModels.length >= MAX_MODELS_PER_PROVIDER) break;
 		} while (pageToken);
 
 		return allModels.map((model) => this.toModelCard(model));

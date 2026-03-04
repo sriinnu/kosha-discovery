@@ -40,6 +40,21 @@ export const DEFAULT_ALIASES: Readonly<Record<string, string>> = {
 	"codestral": "codestral:latest",
 	"deepseek": "deepseek-r1:latest",
 
+	// ── NVIDIA — Nemotron family via build.nvidia.com ──
+	"nemotron-ultra": "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+	"nemotron-super": "nvidia/llama-3.1-nemotron-super-49b-v1",
+	"nemotron-nano": "nvidia/llama-3.1-nemotron-nano-8b-v1",
+
+	// ── Mistral AI — latest models ──
+	"mistral-large": "mistral-large-latest",
+	"mistral-small": "mistral-small-latest",
+	"mistral-codestral": "codestral-latest",
+	"pixtral": "pixtral-large-latest",
+
+	// ── Groq — fast inference ──
+	"groq-llama": "llama-3.3-70b-versatile",
+	"groq-mixtral": "mixtral-8x7b-32768",
+
 	// ── Embeddings — OpenAI, Nomic, and Google embedding models ──
 	"embed-small": "text-embedding-3-small",
 	"embed-large": "text-embedding-3-large",

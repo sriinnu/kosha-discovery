@@ -604,6 +604,15 @@ describe("ModelRegistry", () => {
 					openrouter: { enabled: false },
 					bedrock: { enabled: false },
 					vertex: { enabled: false },
+					nvidia: { enabled: false },
+					together: { enabled: false },
+					fireworks: { enabled: false },
+					groq: { enabled: false },
+					mistral: { enabled: false },
+					deepinfra: { enabled: false },
+					cohere: { enabled: false },
+					cerebras: { enabled: false },
+					perplexity: { enabled: false },
 				},
 			});
 			await registry.discover({ force: true });
@@ -642,6 +651,15 @@ describe("ModelRegistry", () => {
 					openrouter: { enabled: false },
 					bedrock: { enabled: false },
 					vertex: { enabled: false },
+					nvidia: { enabled: false },
+					together: { enabled: false },
+					fireworks: { enabled: false },
+					groq: { enabled: false },
+					mistral: { enabled: false },
+					deepinfra: { enabled: false },
+					cohere: { enabled: false },
+					cerebras: { enabled: false },
+					perplexity: { enabled: false },
 				},
 			});
 

@@ -61,6 +61,24 @@ export class CredentialResolver {
 				return this.resolveBedrockCredential(explicitKey);
 			case "vertex":
 				return this.resolveVertexCredential(explicitKey);
+			case "nvidia":
+				return this.resolveNvidia(explicitKey);
+			case "together":
+				return this.resolveSimpleEnvKey(explicitKey, "TOGETHER_API_KEY");
+			case "fireworks":
+				return this.resolveSimpleEnvKey(explicitKey, "FIREWORKS_API_KEY");
+			case "groq":
+				return this.resolveSimpleEnvKey(explicitKey, "GROQ_API_KEY");
+			case "mistral":
+				return this.resolveSimpleEnvKey(explicitKey, "MISTRAL_API_KEY");
+			case "deepinfra":
+				return this.resolveSimpleEnvKey(explicitKey, "DEEPINFRA_API_KEY");
+			case "cohere":
+				return this.resolveSimpleEnvKey(explicitKey, "CO_API_KEY");
+			case "cerebras":
+				return this.resolveSimpleEnvKey(explicitKey, "CEREBRAS_API_KEY");
+			case "perplexity":
+				return this.resolveSimpleEnvKey(explicitKey, "PERPLEXITY_API_KEY");
 			default:
 				return { source: "none" };
 		}
@@ -539,6 +557,31 @@ export class CredentialResolver {
 		} catch {
 			return null;
 		}
+	}
+
+	// ---------------------------------------------------------------------------
+	// Simple env-var providers (NVIDIA, Together, Fireworks, Groq, Mistral)
+	// ---------------------------------------------------------------------------
+
+	/**
+	 * Generic resolver for providers that only need an explicit key or a single env var.
+	 * Used by NVIDIA, Together AI, Fireworks AI, Groq, and Mistral AI.
+	 */
+	private resolveNvidia(explicitKey?: string): Promise<CredentialResult> {
+		return this.resolveSimpleEnvKey(explicitKey, "NVIDIA_API_KEY");
+	}
+
+	private resolveSimpleEnvKey(explicitKey: string | undefined, envVarName: string): Promise<CredentialResult> {
+		if (explicitKey) {
+			return Promise.resolve({ apiKey: explicitKey, source: "config" });
+		}
+
+		const envKey = process.env[envVarName];
+		if (envKey) {
+			return Promise.resolve({ apiKey: envKey, source: "env" });
+		}
+
+		return Promise.resolve({ source: "none" });
 	}
 
 	// ---------------------------------------------------------------------------

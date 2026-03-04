@@ -32,6 +32,8 @@ import { join } from "path";
 import { AliasResolver } from "./aliases.js";
 import { KoshaCache } from "./cache.js";
 import { extractModelVersion, extractOriginProvider, normalizeModelId } from "./normalize.js";
+import { HealthTracker, StaleCachePolicy } from "./resilience.js";
+import type { ProviderHealth } from "./resilience.js";
 
 const DEFAULT_CACHE_TTL_MS = 86_400_000; // 24 hours
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -78,6 +80,15 @@ const PROVIDER_CREDENTIAL_REQUIREMENTS: Record<string, { required: boolean; envV
 	ollama: { required: false, envVars: [] },
 	bedrock: { required: true, envVars: ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"] },
 	vertex: { required: true, envVars: ["GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT"] },
+	nvidia: { required: true, envVars: ["NVIDIA_API_KEY"] },
+	together: { required: true, envVars: ["TOGETHER_API_KEY"] },
+	fireworks: { required: true, envVars: ["FIREWORKS_API_KEY"] },
+	groq: { required: true, envVars: ["GROQ_API_KEY"] },
+	mistral: { required: true, envVars: ["MISTRAL_API_KEY"] },
+	deepinfra: { required: true, envVars: ["DEEPINFRA_API_KEY"] },
+	cohere: { required: true, envVars: ["CO_API_KEY"] },
+	cerebras: { required: true, envVars: ["CEREBRAS_API_KEY"] },
+	perplexity: { required: true, envVars: ["PERPLEXITY_API_KEY"] },
 };
 
 /**
@@ -94,6 +105,7 @@ export class ModelRegistry {
 	private config: KoshaConfig;
 	private discoveredAt = 0;
 	private lastDiscoveryErrors: DiscoveryError[] = [];
+	private healthTracker = new HealthTracker();
 
 	constructor(config?: KoshaConfig) {
 		this.config = config ?? {};
@@ -129,27 +141,61 @@ export class ModelRegistry {
 		const credentialResolver = await this.getCredentialResolver();
 		const timeout = options?.timeout ?? DEFAULT_TIMEOUT_MS;
 
-		// Run discovery in parallel — one failing provider does not block others
+		// Run discovery in parallel — one failing provider does not block others.
+		// Circuit breakers skip providers that are consistently failing.
 		const results = await Promise.allSettled(
 			discoverers.map(async (discoverer) => {
+				const breaker = this.healthTracker.breaker(discoverer.providerId);
+
+				// Circuit breaker: skip providers in open state, serve stale cache instead
+				if (!breaker.canExecute()) {
+					const stale = await StaleCachePolicy.getWithStale<ProviderInfo>(
+						this.cache,
+						`${CACHE_KEY_PREFIX}${discoverer.providerId}`,
+					);
+					if (stale) {
+						return stale.data;
+					}
+					// No stale data — skip this provider entirely
+					return null;
+				}
+
 				const explicitKey = this.config.providers?.[discoverer.providerId]?.apiKey;
 				const credential = credentialResolver
 					? await credentialResolver.resolve(discoverer.providerId, explicitKey)
 					: this.fallbackCredential(discoverer.providerId, explicitKey);
 
-				const models = await discoverer.discover(credential, { timeout });
+				try {
+					const models = await discoverer.discover(credential, { timeout });
+					breaker.onSuccess();
 
-				const providerInfo: ProviderInfo = {
-					id: discoverer.providerId,
-					name: discoverer.providerName,
-					baseUrl: discoverer.baseUrl,
-					authenticated: credential.source !== "none",
-					credentialSource: credential.source,
-					models,
-					lastRefreshed: Date.now(),
-				};
+					const providerInfo: ProviderInfo = {
+						id: discoverer.providerId,
+						name: discoverer.providerName,
+						baseUrl: discoverer.baseUrl,
+						authenticated: credential.source !== "none",
+						credentialSource: credential.source,
+						models,
+						lastRefreshed: Date.now(),
+					};
 
-				return providerInfo;
+					return providerInfo;
+				} catch (error: unknown) {
+					const errorMsg = error instanceof Error ? error.message : String(error);
+					breaker.onFailure(errorMsg);
+
+					// Degrade gracefully: serve stale cached data for this provider
+					const stale = await StaleCachePolicy.getWithStale<ProviderInfo>(
+						this.cache,
+						`${CACHE_KEY_PREFIX}${discoverer.providerId}`,
+					);
+					if (stale) {
+						return stale.data;
+					}
+
+					// No stale fallback — propagate the error
+					throw error;
+				}
 			}),
 		);
 
@@ -158,7 +204,9 @@ export class ModelRegistry {
 		for (let i = 0; i < results.length; i++) {
 			const result = results[i];
 			if (result.status === "fulfilled") {
-				this.providerMap.set(result.value.id, result.value);
+				if (result.value !== null) {
+					this.providerMap.set(result.value.id, result.value);
+				}
 			} else {
 				const discoverer = discoverers[i];
 				this.lastDiscoveryErrors.push({
@@ -556,6 +604,29 @@ export class ModelRegistry {
 		return [...this.lastDiscoveryErrors];
 	}
 
+	/**
+	 * Return health status for all tracked providers.
+	 *
+	 * Each entry contains the circuit breaker state (`closed`, `open`, `half-open`),
+	 * failure counts, and last error messages. Useful for monitoring dashboards
+	 * and deciding whether to trigger manual recovery.
+	 */
+	providerHealth(): ProviderHealth[] {
+		return this.healthTracker.healthReport();
+	}
+
+	/**
+	 * Reset the circuit breaker for a specific provider or all providers.
+	 * Use this for manual recovery after a transient outage is resolved.
+	 */
+	resetHealth(providerId?: string): void {
+		if (providerId) {
+			this.healthTracker.breaker(providerId).reset();
+		} else {
+			this.healthTracker.resetAll();
+		}
+	}
+
 	// ---------------------------------------------------------------------------
 	// Capability aggregation
 	// ---------------------------------------------------------------------------
@@ -802,7 +873,10 @@ export class ModelRegistry {
 		try {
 			const raw = await readFile(filePath, "utf-8");
 			return JSON.parse(raw) as T;
-		} catch {
+		} catch (err: unknown) {
+			if (err instanceof SyntaxError) {
+				console.warn(`kosha: config file has invalid JSON: ${filePath}`);
+			}
 			return null;
 		}
 	}
@@ -874,6 +948,15 @@ export class ModelRegistry {
 			openai: "OPENAI_API_KEY",
 			google: "GOOGLE_API_KEY",
 			openrouter: "OPENROUTER_API_KEY",
+			nvidia: "NVIDIA_API_KEY",
+			together: "TOGETHER_API_KEY",
+			fireworks: "FIREWORKS_API_KEY",
+			groq: "GROQ_API_KEY",
+			mistral: "MISTRAL_API_KEY",
+			deepinfra: "DEEPINFRA_API_KEY",
+			cohere: "CO_API_KEY",
+			cerebras: "CEREBRAS_API_KEY",
+			perplexity: "PERPLEXITY_API_KEY",
 		};
 
 		const envVar = envMap[providerId];

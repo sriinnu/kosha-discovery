@@ -8,6 +8,20 @@
 
 import type { CredentialResult, ModelCard, ProviderDiscoverer } from "../types.js";
 
+/** Safety cap for paginated model listing. */
+export const MAX_MODELS_PER_PROVIDER = 10_000;
+
+/** Common API-key patterns to redact from error messages. */
+const API_KEY_PATTERN =
+	/\b(sk-[A-Za-z0-9_-]{8,}|key-[A-Za-z0-9_-]{8,}|Bearer\s+[A-Za-z0-9._\-]{20,})\b/gi;
+
+/** Sanitize a response body before including it in an error message. */
+function sanitizeErrorBody(raw: string, maxLen = 200): string {
+	const redacted = raw.replace(API_KEY_PATTERN, "[REDACTED]");
+	if (redacted.length <= maxLen) return redacted;
+	return `${redacted.slice(0, maxLen)}…[truncated]`;
+}
+
 /**
  * Abstract base class for all provider discoverers.
  *
@@ -54,8 +68,9 @@ export abstract class BaseDiscoverer implements ProviderDiscoverer {
 
 				if (!response.ok) {
 					const body = await response.text().catch(() => "");
+					const safeBody = body ? sanitizeErrorBody(body) : "";
 					const err = new Error(
-						`${this.providerName} API error: ${response.status} ${response.statusText}${body ? ` — ${body}` : ""}`,
+						`${this.providerName} API error: ${response.status} ${response.statusText}${safeBody ? ` — ${safeBody}` : ""}`,
 					);
 
 					// 4xx client errors are not transient — fail immediately
@@ -101,6 +116,11 @@ export abstract class BaseDiscoverer implements ProviderDiscoverer {
 	 * - `region` and `projectId` are passed through unchanged when present
 	 *   (used by Bedrock and Vertex AI respectively).
 	 */
+	/** Validate and normalise a timeout value. Returns defaultMs when invalid. */
+	protected validateTimeout(timeout: number | undefined, defaultMs = 10_000): number {
+		return (Number.isFinite(timeout) && timeout! > 0) ? timeout! : defaultMs;
+	}
+
 	protected makeCard(partial: Partial<ModelCard> & { id: string; provider: string }): ModelCard {
 		return {
 			name: partial.id,

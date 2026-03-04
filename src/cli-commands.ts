@@ -16,9 +16,10 @@ import {
 	line, renderTable,
 } from "./cli-format.js";
 import type { Column } from "./cli-format.js";
+import { createRequire } from "node:module";
 
-/** CLI version string — kept in sync with `package.json`. */
-const VERSION = "0.1.0";
+const _require = createRequire(import.meta.url);
+const VERSION = (_require("../package.json") as { version: string }).version;
 
 /**
  * Standard column layout reused by both `cmdList` and `cmdSearch`.
