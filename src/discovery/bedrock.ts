@@ -15,7 +15,8 @@
  * @module
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
+import { assertSafeShellArg } from "../shell-safe.js";
 import type { CredentialResult, ModelCard, ModelMode } from "../types.js";
 import { BaseDiscoverer } from "./base.js";
 
@@ -232,16 +233,22 @@ export class BedrockDiscoverer extends BaseDiscoverer {
 	private async discoverViaCli(credential: CredentialResult, options?: { timeout?: number }): Promise<ModelCard[]> {
 		const region = this.resolveRegion(credential);
 		// Default CLI timeout: 15 s (slower than SDK due to subprocess overhead)
-		const timeoutMs = options?.timeout ?? 15_000;
+		const timeoutMs = this.validateTimeout(options?.timeout, 15_000);
 
 		let stdout: string;
 		try {
-			stdout = execSync(`aws bedrock list-foundation-models --region ${region} --output json`, {
-				timeout: timeoutMs,
-				encoding: "utf8",
-				// Suppress stderr — credential errors print there, not on stdout
-				stdio: ["ignore", "pipe", "ignore"],
-			});
+			assertSafeShellArg(region, "region");
+
+			stdout = execFileSync(
+				"aws",
+				["bedrock", "list-foundation-models", "--region", region, "--output", "json"],
+				{
+					timeout: timeoutMs,
+					encoding: "utf8",
+					// Suppress stderr — credential errors print there, not on stdout
+					stdio: ["ignore", "pipe", "ignore"],
+				},
+			);
 		} catch (error: unknown) {
 			// Re-throw so discover() can fall through to the static list
 			throw new Error(`AWS CLI failed: ${error instanceof Error ? error.message : String(error)}`);

@@ -70,7 +70,7 @@ export class OpenRouterDiscoverer extends BaseDiscoverer {
 	 *                     response contains hundreds of models).
 	 */
 	async discover(credential: CredentialResult, options?: { timeout?: number }): Promise<ModelCard[]> {
-		const timeoutMs = options?.timeout ?? 15_000;
+		const timeoutMs = this.validateTimeout(options?.timeout, 15_000);
 		const headers: Record<string, string> = {};
 
 		// API key is optional — the /api/v1/models endpoint is publicly

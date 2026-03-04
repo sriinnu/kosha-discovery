@@ -5,15 +5,34 @@ export { OllamaDiscoverer } from "./ollama.js";
 export { OpenRouterDiscoverer } from "./openrouter.js";
 export { BedrockDiscoverer, inferOriginFromBedrockId } from "./bedrock.js";
 export { VertexDiscoverer } from "./vertex.js";
+export { NvidiaDiscoverer } from "./nvidia.js";
+export { TogetherDiscoverer } from "./together.js";
+export { FireworksDiscoverer } from "./fireworks.js";
+export { GroqDiscoverer } from "./groq.js";
+export { MistralDiscoverer } from "./mistral.js";
+export { DeepInfraDiscoverer } from "./deepinfra.js";
+export { CohereDiscoverer } from "./cohere.js";
+export { CerebrasDiscoverer } from "./cerebras.js";
+export { PerplexityDiscoverer } from "./perplexity.js";
+export { OpenAICompatibleDiscoverer } from "./openai-compatible.js";
 export { BaseDiscoverer } from "./base.js";
 
 import type { ProviderDiscoverer } from "../types.js";
 import { AnthropicDiscoverer } from "./anthropic.js";
 import { BedrockDiscoverer } from "./bedrock.js";
+import { CerebrasDiscoverer } from "./cerebras.js";
+import { CohereDiscoverer } from "./cohere.js";
+import { DeepInfraDiscoverer } from "./deepinfra.js";
+import { FireworksDiscoverer } from "./fireworks.js";
 import { GoogleDiscoverer } from "./google.js";
+import { GroqDiscoverer } from "./groq.js";
+import { MistralDiscoverer } from "./mistral.js";
+import { NvidiaDiscoverer } from "./nvidia.js";
 import { OllamaDiscoverer } from "./ollama.js";
 import { OpenAIDiscoverer } from "./openai.js";
 import { OpenRouterDiscoverer } from "./openrouter.js";
+import { PerplexityDiscoverer } from "./perplexity.js";
+import { TogetherDiscoverer } from "./together.js";
 import { VertexDiscoverer } from "./vertex.js";
 
 /**
@@ -31,6 +50,15 @@ export function getAllDiscoverers(options?: { ollamaBaseUrl?: string }): Provide
 		new OpenRouterDiscoverer(),
 		new BedrockDiscoverer(),
 		new VertexDiscoverer(),
+		new NvidiaDiscoverer(),
+		new TogetherDiscoverer(),
+		new FireworksDiscoverer(),
+		new GroqDiscoverer(),
+		new MistralDiscoverer(),
+		new DeepInfraDiscoverer(),
+		new CohereDiscoverer(),
+		new CerebrasDiscoverer(),
+		new PerplexityDiscoverer(),
 	];
 }
 
@@ -49,6 +77,15 @@ export function getDiscoverer(providerId: string, options?: { baseUrl?: string }
 		openrouter: () => new OpenRouterDiscoverer(),
 		bedrock: () => new BedrockDiscoverer(),
 		vertex: () => new VertexDiscoverer(),
+		nvidia: () => new NvidiaDiscoverer(),
+		together: () => new TogetherDiscoverer(),
+		fireworks: () => new FireworksDiscoverer(),
+		groq: () => new GroqDiscoverer(),
+		mistral: () => new MistralDiscoverer(),
+		deepinfra: () => new DeepInfraDiscoverer(),
+		cohere: () => new CohereDiscoverer(),
+		cerebras: () => new CerebrasDiscoverer(),
+		perplexity: () => new PerplexityDiscoverer(),
 	};
 	return map[providerId]?.();
 }

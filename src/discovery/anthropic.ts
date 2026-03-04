@@ -7,7 +7,7 @@
  */
 
 import type { CredentialResult, ModelCard } from "../types.js";
-import { BaseDiscoverer } from "./base.js";
+import { BaseDiscoverer, MAX_MODELS_PER_PROVIDER } from "./base.js";
 
 /** Shape of a single model object returned by the Anthropic API. */
 interface AnthropicModel {
@@ -48,7 +48,7 @@ export class AnthropicDiscoverer extends BaseDiscoverer {
 			return [];
 		}
 
-		const timeoutMs = options?.timeout ?? 10_000;
+		const timeoutMs = this.validateTimeout(options?.timeout);
 		const headers: Record<string, string> = {
 			"x-api-key": apiKey,
 			"anthropic-version": "2023-06-01",
@@ -62,6 +62,8 @@ export class AnthropicDiscoverer extends BaseDiscoverer {
 		while (url) {
 			const response = await this.fetchJSON<AnthropicListResponse>(url, headers, timeoutMs);
 			allModels.push(...response.data);
+
+			if (allModels.length >= MAX_MODELS_PER_PROVIDER) break;
 
 			if (response.has_more && response.last_id) {
 				url = `${this.baseUrl}/v1/models?limit=100&after_id=${response.last_id}`;

@@ -130,6 +130,60 @@ gcloud auth print-access-token
 export OPENROUTER_API_KEY=sk-or-...
 ```
 
+### NVIDIA (build.nvidia.com)
+
+```bash
+export NVIDIA_API_KEY=nvapi-...
+```
+
+### Together AI
+
+```bash
+export TOGETHER_API_KEY=...
+```
+
+### Fireworks AI
+
+```bash
+export FIREWORKS_API_KEY=...
+```
+
+### Groq
+
+```bash
+export GROQ_API_KEY=gsk_...
+```
+
+### Mistral AI
+
+```bash
+export MISTRAL_API_KEY=...
+```
+
+### DeepInfra
+
+```bash
+export DEEPINFRA_API_KEY=...
+```
+
+### Cohere
+
+```bash
+export CO_API_KEY=...
+```
+
+### Cerebras
+
+```bash
+export CEREBRAS_API_KEY=...
+```
+
+### Perplexity
+
+```bash
+export PERPLEXITY_API_KEY=pplx-...
+```
+
 ### Ollama (Local)
 
 ```bash
@@ -363,7 +417,7 @@ openai       text-embedding-3-small             embedding  8K         $0.02    �
 google       gemini-2.5-pro-preview-05-06       chat       1M         $1.25    $10.00
 ollama       qwen3:8b                           chat       —          free     free
 ───────────────────────────────────────────────────────────────────────────────────────
-42 models from 4 providers
+234 models from 16 providers
 ```
 
 ### Example: `kosha model sonnet`
@@ -391,6 +445,15 @@ openai       ✓ authenticated      8  cli (~/.config/github-copilot)
 google       ✓ authenticated     15  env (GOOGLE_API_KEY)
 ollama       ✓ local              6  none (local)
 openrouter   ✗ no credentials     0  —
+nvidia       ✓ authenticated     42  env (NVIDIA_API_KEY)
+together     ✓ authenticated     38  env (TOGETHER_API_KEY)
+fireworks    ✓ authenticated     25  env (FIREWORKS_API_KEY)
+groq         ✓ authenticated     12  env (GROQ_API_KEY)
+mistral      ✓ authenticated      8  env (MISTRAL_API_KEY)
+deepinfra    ✓ authenticated     50  env (DEEPINFRA_API_KEY)
+cohere       ✓ authenticated      6  env (CO_API_KEY)
+cerebras     ✓ authenticated      4  env (CEREBRAS_API_KEY)
+perplexity   ✓ authenticated      8  env (PERPLEXITY_API_KEY)
 ```
 
 ### Example: `kosha roles --role embeddings`
@@ -692,8 +755,8 @@ curl http://localhost:3000/health
 ```json
 {
   "status": "ok",
-  "models": 42,
-  "providers": 4,
+  "models": 234,
+  "providers": 16,
   "uptime": 123.45
 }
 ```
@@ -709,6 +772,15 @@ curl http://localhost:3000/health
 | Vertex AI | API + gcloud | `GOOGLE_APPLICATION_CREDENTIALS`, gcloud ADC, `gcloud auth print-access-token` |
 | Ollama | Local API (`/api/tags`) | None needed (local) |
 | OpenRouter | API (`/api/v1/models`) | `OPENROUTER_API_KEY` (optional) |
+| NVIDIA | API (`/v1/models`) | `NVIDIA_API_KEY` |
+| Together AI | API (`/v1/models`) | `TOGETHER_API_KEY` |
+| Fireworks AI | API (`/v1/models`) | `FIREWORKS_API_KEY` |
+| Groq | API (`/v1/models`) | `GROQ_API_KEY` |
+| Mistral AI | API (`/v1/models`) | `MISTRAL_API_KEY` |
+| DeepInfra | API (`/v1/models`) | `DEEPINFRA_API_KEY` |
+| Cohere | API (`/v1/models`) | `CO_API_KEY` |
+| Cerebras | API (`/v1/models`) | `CEREBRAS_API_KEY` |
+| Perplexity | API (`/v1/models`) | `PERPLEXITY_API_KEY` |
 
 ## Model Aliases
 
@@ -716,11 +788,15 @@ Built-in aliases for common models:
 
 | Alias | Resolves To |
 |-------|-------------|
-| `sonnet` | `claude-sonnet-4-20250514` |
-| `opus` | `claude-opus-4-20250918` |
+| `sonnet` | `claude-sonnet-4-6` |
+| `opus` | `claude-opus-4-6` |
 | `haiku` | `claude-haiku-4-5-20251001` |
 | `gpt4o` | `gpt-4o` |
+| `o3` | `o3` |
 | `gemini-pro` | `gemini-2.5-pro-preview-05-06` |
+| `nemotron-ultra` | `nvidia/llama-3.1-nemotron-ultra-253b-v1` |
+| `mistral-large` | `mistral-large-latest` |
+| `groq-llama` | `llama-3.3-70b-versatile` |
 | `embed-small` | `text-embedding-3-small` |
 | `nomic` | `nomic-embed-text` |
 
@@ -759,54 +835,110 @@ Model pricing is sourced from [litellm's model pricing database](https://github.
 
 ## Architecture
 
+<p align="center">
+  <img src="architecture.svg" alt="Kosha Architecture" width="720" />
+</p>
+
 ```
-┌─────────────────────────────────────────┐
-│          Your Application               │
-│  import { createKosha } from "kosha"    │
-└────────────────┬────────────────────────┘
-                 │
-┌────────────────▼────────────────────────┐
-│            ModelRegistry                │
-│ models() · providerRoles() · cheapestModels() │
-└───┬────────────┬────────────────┬───────┘
-    │            │                │
-┌───▼──┐  ┌─────▼─────┐  ┌──────▼──────┐
-│Alias │  │ Discovery  │  │ Enrichment  │
-│System│  │ Layer      │  │ Layer       │
-└──────┘  └─────┬──────┘  └──────┬──────┘
-          ┌─────┼──────┐         │
-          ▼     ▼      ▼         ▼
-       Anthropic OpenAI Google  litellm
-       Bedrock  Vertex  Ollama   JSON
-       OpenRouter
+┌─────────────────────────────────────────────────────┐
+│                  Your Application                    │
+│        import { createKosha } from "kosha"          │
+└───────────────────────┬─────────────────────────────┘
+                        │
+┌───────────────────────▼─────────────────────────────┐
+│                  ModelRegistry                        │
+│  models() · providerRoles() · cheapestModels()       │
+│  providerHealth() · resetHealth()                    │
+└──┬──────────┬──────────────┬───────────────┬────────┘
+   │          │              │               │
+┌──▼───┐ ┌───▼────────┐ ┌───▼──────────┐ ┌──▼─────────┐
+│Alias │ │ Discovery   │ │ Enrichment   │ │ Resilience  │
+│System│ │ Layer       │ │ Layer        │ │ Layer       │
+└──────┘ └───┬────────┘ └──────┬───────┘ └────────────┘
+             │                 │          CircuitBreaker
+    ┌────────┼────────┐        │          HealthTracker
+    ▼        ▼        ▼        ▼          StaleCachePolicy
+ Direct   OpenAI-   Cloud      litellm
+  API    Compatible  Proxies    JSON
+ ─────   ──────────  ───────
+Anthropic  NVIDIA    Bedrock
+ OpenAI   Together   Vertex
+ Google   Fireworks
+ Ollama    Groq
+OpenRouter Mistral
+           DeepInfra
+           Cohere
+           Cerebras
+           Perplexity
+```
+
+## Resilience
+
+Kosha is designed to degrade gracefully and auto-heal when providers are unavailable.
+
+### Circuit Breaker
+
+Each provider has an independent circuit breaker with three states:
+
+- **Closed** (healthy) — requests pass through normally
+- **Open** (failing) — after 3 consecutive failures, the provider is short-circuited for 60 seconds
+- **Half-Open** (probing) — after cooldown, one probe request is allowed; success → closed, failure → open
+
+### Stale Cache Fallback
+
+When a provider fails during discovery, Kosha serves the last-known-good cached data (marked as stale) instead of returning nothing. This ensures your application always has model data, even during provider outages.
+
+### Health Monitoring
+
+```typescript
+const kosha = await createKosha();
+
+// Check provider health
+const health = kosha.providerHealth();
+// → { anthropic: "closed", nvidia: "open", groq: "half-open", ... }
+
+// Reset a provider's circuit breaker
+kosha.resetHealth("nvidia");
 ```
 
 ## Project Structure
 
 ```
 src/
-  types.ts              Type definitions (ModelCard, ProviderInfo, etc.)
-  registry.ts           ModelRegistry class — core orchestrator
-  cli.ts                CLI entry point (process.argv parser)
-  server.ts             HTTP API server (Hono)
+  types.ts                Type definitions (ModelCard, ProviderInfo, etc.)
+  registry.ts             ModelRegistry class — core orchestrator
+  resilience.ts           CircuitBreaker, HealthTracker, StaleCachePolicy
+  aliases.ts              Model alias resolution system
+  cli.ts                  CLI entry point (process.argv parser)
+  server.ts               HTTP API server (Hono)
   discovery/
-    base.ts             Abstract base discoverer (retry + exponential backoff)
-    anthropic.ts        Anthropic API discoverer
-    openai.ts           OpenAI API discoverer
-    google.ts           Google Gemini API discoverer
-    bedrock.ts          AWS Bedrock discoverer (SDK → CLI → static)
-    vertex.ts           Vertex AI discoverer (API + gcloud)
-    ollama.ts           Ollama local discoverer
-    openrouter.ts       OpenRouter API discoverer
-    index.ts            Discovery orchestrator
+    base.ts               Abstract base discoverer (retry + exponential backoff)
+    openai-compatible.ts  DRY base for OpenAI-compatible providers
+    anthropic.ts          Anthropic API discoverer
+    openai.ts             OpenAI API discoverer
+    google.ts             Google Gemini API discoverer
+    bedrock.ts            AWS Bedrock discoverer (SDK → CLI → static)
+    vertex.ts             Vertex AI discoverer (API + gcloud)
+    ollama.ts             Ollama local discoverer
+    openrouter.ts         OpenRouter API discoverer
+    nvidia.ts             NVIDIA build.nvidia.com discoverer
+    together.ts           Together AI discoverer
+    fireworks.ts          Fireworks AI discoverer
+    groq.ts               Groq discoverer
+    mistral.ts            Mistral AI discoverer
+    deepinfra.ts          DeepInfra discoverer
+    cohere.ts             Cohere discoverer
+    cerebras.ts           Cerebras discoverer
+    perplexity.ts         Perplexity discoverer
+    index.ts              Discovery orchestrator + getAllDiscoverers()
   credentials/
-    resolver.ts         Credential resolver (env, CLI, config)
-    index.ts            Credential resolver entry
+    resolver.ts           Credential resolver (env, CLI, config)
+    index.ts              Credential resolver entry
   enrichment/
-    litellm.ts          litellm pricing enrichment
-    index.ts            Enrichment entry
+    litellm.ts            litellm pricing enrichment
+    index.ts              Enrichment entry
 bin/
-  kosha.js              CLI bin entry point
+  kosha.js                CLI bin entry point
 ```
 
 ## Credits & Inspiration

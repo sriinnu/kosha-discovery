@@ -77,7 +77,7 @@ export class OllamaDiscoverer extends BaseDiscoverer {
 	 * Uses a shorter default timeout (5 s) since the server is local.
 	 */
 	async discover(_credential: CredentialResult, options?: { timeout?: number }): Promise<ModelCard[]> {
-		const timeoutMs = options?.timeout ?? 5_000;
+		const timeoutMs = this.validateTimeout(options?.timeout, 5_000);
 
 		// Best-effort fetch of currently loaded (warm) models — non-critical
 		await this.fetchRunningModels(timeoutMs);
@@ -142,7 +142,7 @@ export class OllamaDiscoverer extends BaseDiscoverer {
 	 */
 	private inferCapabilities(model: OllamaModel): string[] {
 		const name = model.name.toLowerCase();
-		const families = model.details?.families ?? [];
+		const families = Array.isArray(model.details?.families) ? model.details.families : [];
 
 		// Embedding models — detected by common naming patterns:
 		// "nomic-embed-text", "mxbai-embed-large", "all-minilm", etc.

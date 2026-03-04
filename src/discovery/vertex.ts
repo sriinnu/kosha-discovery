@@ -12,10 +12,11 @@
  * @module
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { assertSafeShellArg } from "../shell-safe.js";
 import type { CredentialResult, ModelCard, ModelMode } from "../types.js";
 import { BaseDiscoverer } from "./base.js";
 
@@ -151,6 +152,9 @@ export class VertexDiscoverer extends BaseDiscoverer {
 	): Promise<ModelCard[]> {
 		if (!projectId) throw new Error("Vertex AI: project ID is required for the REST API");
 
+		assertSafeShellArg(projectId, "projectId");
+		assertSafeShellArg(region, "region");
+
 		const token = await this.getAccessToken(credential);
 		if (!token) throw new Error("Vertex AI: could not obtain an access token");
 
@@ -161,7 +165,7 @@ export class VertexDiscoverer extends BaseDiscoverer {
 			"Content-Type": "application/json",
 		};
 
-		const response = await this.fetchJSON<VertexListResponse>(url, headers, options?.timeout ?? 10_000);
+		const response = await this.fetchJSON<VertexListResponse>(url, headers, this.validateTimeout(options?.timeout));
 		const rawModels: VertexModel[] = response.publisherModels ?? response.models ?? [];
 		return rawModels.map((m) => this.toModelCard(m, region, projectId));
 	}
@@ -200,8 +204,11 @@ export class VertexDiscoverer extends BaseDiscoverer {
 			if (adc.refresh_token && adc.client_id && adc.client_secret) {
 				return await this.exchangeRefreshToken(adc.client_id, adc.client_secret, adc.refresh_token);
 			}
-		} catch {
-			// ADC file absent or unreadable — continue to CLI fallback
+		} catch (err: unknown) {
+			if (err instanceof SyntaxError) {
+				console.warn(`Vertex AI: ADC file has invalid JSON: ${adcPath}`);
+			}
+			// ENOENT or other read errors — continue to CLI fallback
 		}
 
 		// 4. gcloud CLI fallback
@@ -271,15 +278,22 @@ export class VertexDiscoverer extends BaseDiscoverer {
 	 */
 	private async discoverViaCli(projectId: string, region: string): Promise<ModelCard[]> {
 		try {
-			const raw = execSync(
-				`gcloud ai models list --project=${projectId} --region=${region} --format=json`,
+			assertSafeShellArg(projectId, "projectId");
+			assertSafeShellArg(region, "region");
+
+			const raw = execFileSync(
+				"gcloud",
+				["ai", "models", "list", `--project=${projectId}`, `--region=${region}`, "--format=json"],
 				{ stdio: ["pipe", "pipe", "pipe"], timeout: 15_000 },
 			).toString();
 
 			const models = JSON.parse(raw) as GcloudModel[];
 			if (!Array.isArray(models)) return [];
 			return models.map((m) => this.gcloudModelToCard(m, region, projectId));
-		} catch {
+		} catch (err: unknown) {
+			if (err instanceof SyntaxError) {
+				console.warn(`Vertex AI: gcloud CLI returned invalid JSON for region ${region}`);
+			}
 			return [];
 		}
 	}
