@@ -2,6 +2,7 @@ export { AnthropicDiscoverer } from "./anthropic.js";
 export { OpenAIDiscoverer } from "./openai.js";
 export { GoogleDiscoverer } from "./google.js";
 export { OllamaDiscoverer } from "./ollama.js";
+export { LlamaCppDiscoverer } from "./llama-cpp.js";
 export { OpenRouterDiscoverer } from "./openrouter.js";
 export { BedrockDiscoverer, inferOriginFromBedrockId } from "./bedrock.js";
 export { VertexDiscoverer } from "./vertex.js";
@@ -28,12 +29,14 @@ import { GoogleDiscoverer } from "./google.js";
 import { GroqDiscoverer } from "./groq.js";
 import { MistralDiscoverer } from "./mistral.js";
 import { NvidiaDiscoverer } from "./nvidia.js";
+import { LlamaCppDiscoverer } from "./llama-cpp.js";
 import { OllamaDiscoverer } from "./ollama.js";
 import { OpenAIDiscoverer } from "./openai.js";
 import { OpenRouterDiscoverer } from "./openrouter.js";
 import { PerplexityDiscoverer } from "./perplexity.js";
 import { TogetherDiscoverer } from "./together.js";
 import { VertexDiscoverer } from "./vertex.js";
+import { normalizeProviderId } from "../provider-catalog.js";
 
 /**
  * Returns all built-in provider discoverers.
@@ -41,12 +44,13 @@ import { VertexDiscoverer } from "./vertex.js";
  * Includes direct-API providers (Anthropic, OpenAI, Google, Ollama, OpenRouter)
  * as well as managed-service proxies (AWS Bedrock, Google Vertex AI).
  */
-export function getAllDiscoverers(options?: { ollamaBaseUrl?: string }): ProviderDiscoverer[] {
+export function getAllDiscoverers(options?: { ollamaBaseUrl?: string; llamaCppBaseUrl?: string }): ProviderDiscoverer[] {
 	return [
 		new AnthropicDiscoverer(),
 		new OpenAIDiscoverer(),
 		new GoogleDiscoverer(),
 		new OllamaDiscoverer(options?.ollamaBaseUrl),
+		new LlamaCppDiscoverer(options?.llamaCppBaseUrl),
 		new OpenRouterDiscoverer(),
 		new BedrockDiscoverer(),
 		new VertexDiscoverer(),
@@ -74,6 +78,7 @@ export function getDiscoverer(providerId: string, options?: { baseUrl?: string }
 		openai: () => new OpenAIDiscoverer(),
 		google: () => new GoogleDiscoverer(),
 		ollama: () => new OllamaDiscoverer(options?.baseUrl),
+		"llama.cpp": () => new LlamaCppDiscoverer(options?.baseUrl),
 		openrouter: () => new OpenRouterDiscoverer(),
 		bedrock: () => new BedrockDiscoverer(),
 		vertex: () => new VertexDiscoverer(),
@@ -87,5 +92,5 @@ export function getDiscoverer(providerId: string, options?: { baseUrl?: string }
 		cerebras: () => new CerebrasDiscoverer(),
 		perplexity: () => new PerplexityDiscoverer(),
 	};
-	return map[providerId]?.();
+	return map[normalizeProviderId(providerId) ?? providerId]?.();
 }

@@ -26,12 +26,39 @@ import type {
 	ProviderRoleInfo,
 	RoleQueryOptions,
 } from "./types.js";
+import { EventEmitter } from "node:events";
 import { readFile } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
 import { AliasResolver } from "./aliases.js";
 import { KoshaCache } from "./cache.js";
+import type {
+	DiscoveryBindingHintsV1,
+	DiscoveryBindingQuery,
+	DiscoveryChangeV1,
+	DiscoveryCheapestResultV1,
+	DiscoveryDeltaV1,
+	DiscoveryHealthRecord,
+	DiscoveryModelV1,
+	DiscoveryProviderV1,
+	DiscoverySnapshotV1,
+	TrustedCapability,
+} from "./discovery-contract.js";
+import {
+	DISCOVERY_SCHEMA_VERSION,
+	discoveryRoles,
+	makeModelKey,
+	rawCapabilitiesForModel,
+	trustedCapabilitiesForModel,
+} from "./discovery-contract.js";
 import { extractModelVersion, extractOriginProvider, normalizeModelId } from "./normalize.js";
+import {
+	getProviderConfig,
+	getProviderDescriptor,
+	isLocalProvider,
+	listProviderDescriptors,
+	normalizeProviderId,
+} from "./provider-catalog.js";
 import { HealthTracker, StaleCachePolicy } from "./resilience.js";
 import type { ProviderHealth } from "./resilience.js";
 
@@ -72,24 +99,12 @@ const MODE_ALIASES: Record<string, ModelMode> = {
 	safety: "moderation",
 };
 
-const PROVIDER_CREDENTIAL_REQUIREMENTS: Record<string, { required: boolean; envVars: string[] }> = {
-	anthropic: { required: true, envVars: ["ANTHROPIC_API_KEY"] },
-	openai: { required: true, envVars: ["OPENAI_API_KEY"] },
-	google: { required: true, envVars: ["GOOGLE_API_KEY", "GEMINI_API_KEY"] },
-	openrouter: { required: false, envVars: ["OPENROUTER_API_KEY"] },
-	ollama: { required: false, envVars: [] },
-	bedrock: { required: true, envVars: ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"] },
-	vertex: { required: true, envVars: ["GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT"] },
-	nvidia: { required: true, envVars: ["NVIDIA_API_KEY"] },
-	together: { required: true, envVars: ["TOGETHER_API_KEY"] },
-	fireworks: { required: true, envVars: ["FIREWORKS_API_KEY"] },
-	groq: { required: true, envVars: ["GROQ_API_KEY"] },
-	mistral: { required: true, envVars: ["MISTRAL_API_KEY"] },
-	deepinfra: { required: true, envVars: ["DEEPINFRA_API_KEY"] },
-	cohere: { required: true, envVars: ["CO_API_KEY"] },
-	cerebras: { required: true, envVars: ["CEREBRAS_API_KEY"] },
-	perplexity: { required: true, envVars: ["PERPLEXITY_API_KEY"] },
-};
+interface ProviderObservation {
+	latenciesMs: number[];
+	timeoutCount: number;
+	attemptCount: number;
+	lastErrorType: "auth_error" | "throttled" | "timeout" | "transport" | "unknown" | null;
+}
 
 /**
  * The main orchestrating registry for AI model discovery.
@@ -106,11 +121,18 @@ export class ModelRegistry {
 	private discoveredAt = 0;
 	private lastDiscoveryErrors: DiscoveryError[] = [];
 	private healthTracker = new HealthTracker();
+	private providerObservations = new Map<string, ProviderObservation>();
+	private discoveryEventBus = new EventEmitter();
+	private discoveryRevision = 0;
+	private currentCursor = this.makeCursor();
+	private lastSnapshotCache: DiscoverySnapshotV1 | null = null;
+	private deltaHistory: DiscoveryDeltaV1[] = [];
 
 	constructor(config?: KoshaConfig) {
 		this.config = config ?? {};
 		this.aliasResolver = new AliasResolver(this.config.aliases);
 		this.cache = new KoshaCache(this.config.cacheDir);
+		this.discoveryEventBus.setMaxListeners(0);
 	}
 
 	// ---------------------------------------------------------------------------
@@ -127,17 +149,20 @@ export class ModelRegistry {
 	 * 5. Caches results to disk.
 	 */
 	async discover(options?: DiscoveryOptions): Promise<ProviderInfo[]> {
+		const beforeSnapshot = this.snapshotForDelta();
+		const providers = options?.providers?.map((providerId) => normalizeProviderId(providerId) ?? providerId);
 		const force = options?.force ?? false;
 
 		// Try loading from cache first (unless forced)
 		if (!force) {
-			const loaded = await this.loadFromCache(options?.providers);
+			const loaded = await this.loadFromCache(providers);
 			if (loaded) {
+				this.recordDiscoveryMutation(beforeSnapshot);
 				return this.providers_list();
 			}
 		}
 
-		const discoverers = await this.loadDiscoverers(options?.providers, options?.includeLocal);
+		const discoverers = await this.loadDiscoverers(providers, options?.includeLocal);
 		const credentialResolver = await this.getCredentialResolver();
 		const timeout = options?.timeout ?? DEFAULT_TIMEOUT_MS;
 
@@ -146,6 +171,7 @@ export class ModelRegistry {
 		const results = await Promise.allSettled(
 			discoverers.map(async (discoverer) => {
 				const breaker = this.healthTracker.breaker(discoverer.providerId);
+				const startedAt = Date.now();
 
 				// Circuit breaker: skip providers in open state, serve stale cache instead
 				if (!breaker.canExecute()) {
@@ -160,7 +186,7 @@ export class ModelRegistry {
 					return null;
 				}
 
-				const explicitKey = this.config.providers?.[discoverer.providerId]?.apiKey;
+				const explicitKey = getProviderConfig(this.config, discoverer.providerId)?.apiKey;
 				const credential = credentialResolver
 					? await credentialResolver.resolve(discoverer.providerId, explicitKey)
 					: this.fallbackCredential(discoverer.providerId, explicitKey);
@@ -168,6 +194,10 @@ export class ModelRegistry {
 				try {
 					const models = await discoverer.discover(credential, { timeout });
 					breaker.onSuccess();
+					this.recordObservation(discoverer.providerId, {
+						latencyMs: Date.now() - startedAt,
+						errorType: null,
+					});
 
 					const providerInfo: ProviderInfo = {
 						id: discoverer.providerId,
@@ -183,6 +213,10 @@ export class ModelRegistry {
 				} catch (error: unknown) {
 					const errorMsg = error instanceof Error ? error.message : String(error);
 					breaker.onFailure(errorMsg);
+					this.recordObservation(discoverer.providerId, {
+						latencyMs: Date.now() - startedAt,
+						errorType: this.classifyError(errorMsg),
+					});
 
 					// Degrade gracefully: serve stale cached data for this provider
 					const stale = await StaleCachePolicy.getWithStale<ProviderInfo>(
@@ -231,6 +265,7 @@ export class ModelRegistry {
 
 		// Persist to cache
 		await this.saveToCache();
+		this.recordDiscoveryMutation(beforeSnapshot);
 
 		return this.providers_list();
 	}
@@ -282,8 +317,11 @@ export class ModelRegistry {
 		const seen = new Set<string>();
 		const result: ModelCard[] = [];
 
+		const normalizedProvider = normalizeProviderId(filter?.provider);
+		const normalizedOriginProvider = normalizeProviderId(filter?.originProvider);
+
 		for (const providerInfo of this.providerMap.values()) {
-			if (filter?.provider && providerInfo.id !== filter.provider) {
+			if (normalizedProvider && providerInfo.id !== normalizedProvider) {
 				continue;
 			}
 
@@ -292,7 +330,7 @@ export class ModelRegistry {
 				const dedupKey = `${model.provider}:${model.id}`;
 				if (seen.has(dedupKey)) continue;
 
-				if (filter?.originProvider && model.originProvider !== filter.originProvider) continue;
+				if (normalizedOriginProvider && normalizeProviderId(model.originProvider) !== normalizedOriginProvider) continue;
 				if (filter?.mode && model.mode !== filter.mode) continue;
 				if (filter?.capability && !model.capabilities.includes(filter.capability)) continue;
 
@@ -312,15 +350,17 @@ export class ModelRegistry {
 	 */
 	providerRoles(filter?: RoleQueryOptions): ProviderRoleInfo[] {
 		const normalizedCapability = filter?.capability ? this.normalizeRoleToken(filter.capability) : undefined;
+		const normalizedProvider = normalizeProviderId(filter?.provider);
+		const normalizedOriginProvider = normalizeProviderId(filter?.originProvider);
 		const providers: ProviderRoleInfo[] = [];
 
 		for (const providerInfo of this.providerMap.values()) {
-			if (filter?.provider && providerInfo.id !== filter.provider) {
+			if (normalizedProvider && providerInfo.id !== normalizedProvider) {
 				continue;
 			}
 
 			const models = providerInfo.models.filter((model) => {
-				if (filter?.originProvider && model.originProvider !== filter.originProvider) return false;
+				if (normalizedOriginProvider && normalizeProviderId(model.originProvider) !== normalizedOriginProvider) return false;
 				if (filter?.mode && model.mode !== filter.mode) return false;
 				if (normalizedCapability && !this.modelSupportsRole(model, normalizedCapability)) return false;
 				if (filter?.role && !this.modelSupportsRole(model, filter.role)) return false;
@@ -358,33 +398,39 @@ export class ModelRegistry {
 	 * Return prompt metadata for providers that are currently missing required
 	 * credentials (API keys, cloud auth config, etc.).
 	 */
-	missingCredentialPrompts(providerIds?: string[]): ProviderCredentialPrompt[] {
+		missingCredentialPrompts(providerIds?: string[]): ProviderCredentialPrompt[] {
 		const prompts: ProviderCredentialPrompt[] = [];
+		const normalizedIds = providerIds?.map((providerId) => normalizeProviderId(providerId) ?? providerId);
+		const providers = providerIds && providerIds.length > 0
+			? normalizedIds?.reduce<ProviderInfo[]>((items, providerId) => {
+				const provider = this.provider(providerId ?? "");
+				if (provider) items.push(provider);
+				return items;
+			}, []) ?? []
+			: this.providers_list();
 
-		for (const provider of this.providerMap.values()) {
-			if (providerIds && providerIds.length > 0 && !providerIds.includes(provider.id)) {
+		for (const provider of providers) {
+			const descriptor = this.providerDescriptor(provider.id, provider);
+			if (normalizedIds && normalizedIds.length > 0 && !normalizedIds.includes(descriptor.providerId)) {
 				continue;
 			}
-
-			const requirement = PROVIDER_CREDENTIAL_REQUIREMENTS[provider.id];
-			if (!requirement || !requirement.required) {
+			if (!descriptor.credentialRequired) {
 				continue;
 			}
-
 			if (provider.authenticated) {
 				continue;
 			}
 
-			const envHint = requirement.envVars.length > 0
-				? `Set ${requirement.envVars.join(" or ")}`
+			const envHint = descriptor.credentialEnvVars.length > 0
+				? `Set ${descriptor.credentialEnvVars.join(" or ")}`
 				: "Configure credentials";
 
 			prompts.push({
-				providerId: provider.id,
-				providerName: provider.name,
+				providerId: descriptor.providerId,
+				providerName: descriptor.name,
 				required: true,
-				envVars: requirement.envVars,
-				message: `${envHint} to enable ${provider.name} model discovery.`,
+				envVars: descriptor.credentialEnvVars,
+				message: `${envHint} to enable ${descriptor.name} model discovery.`,
 			});
 		}
 
@@ -584,7 +630,8 @@ export class ModelRegistry {
 	 * Get a single provider's info by ID.
 	 */
 	provider(id: string): ProviderInfo | undefined {
-		return this.providerMap.get(id);
+		const normalized = normalizeProviderId(id) ?? id;
+		return this.providerMap.get(normalized);
 	}
 
 	/**
@@ -613,6 +660,205 @@ export class ModelRegistry {
 	 */
 	providerHealth(): ProviderHealth[] {
 		return this.healthTracker.healthReport();
+	}
+
+	/**
+	 * Build the stable v1 discovery snapshot for daemon consumers.
+	 */
+	discoverySnapshot(): DiscoverySnapshotV1 {
+		const snapshot = this.buildSnapshot(this.currentCursor);
+		this.lastSnapshotCache = snapshot;
+		return snapshot;
+	}
+
+	/**
+	 * Return aggregated deltas since a prior cursor.
+	 *
+	 * Passing no cursor returns a full "upsert everything" delta so polling
+	 * clients can bootstrap from the delta surface alone.
+	 */
+	discoveryDelta(options?: { sinceCursor?: string | null }): DiscoveryDeltaV1 {
+		const snapshot = this.discoverySnapshot();
+		const sinceCursor = options?.sinceCursor ?? null;
+
+		if (!sinceCursor) {
+			return {
+				schemaVersion: DISCOVERY_SCHEMA_VERSION,
+				sinceCursor,
+				cursor: snapshot.cursor,
+				changedAt: snapshot.discoveredAt,
+				resetRequired: false,
+				changes: this.fullSnapshotChanges(snapshot),
+			};
+		}
+
+		if (sinceCursor === snapshot.cursor) {
+			return {
+				schemaVersion: DISCOVERY_SCHEMA_VERSION,
+				sinceCursor,
+				cursor: snapshot.cursor,
+				changedAt: snapshot.discoveredAt,
+				resetRequired: false,
+				changes: [],
+			};
+		}
+
+		const sinceIndex = this.deltaHistory.findIndex((delta) =>
+			delta.sinceCursor === sinceCursor || delta.cursor === sinceCursor
+		);
+		if (sinceIndex === -1) {
+			return {
+				schemaVersion: DISCOVERY_SCHEMA_VERSION,
+				sinceCursor,
+				cursor: snapshot.cursor,
+				changedAt: snapshot.discoveredAt,
+				resetRequired: true,
+				changes: [],
+			};
+		}
+
+		const deltas = this.deltaHistory.slice(sinceIndex);
+		return {
+			schemaVersion: DISCOVERY_SCHEMA_VERSION,
+			sinceCursor,
+			cursor: snapshot.cursor,
+			changedAt: deltas.at(-1)?.changedAt ?? snapshot.discoveredAt,
+			resetRequired: false,
+			changes: deltas.flatMap((delta) => delta.changes),
+		};
+	}
+
+	/**
+	 * Watch live discovery deltas as an async iterator.
+	 */
+	async *watchDiscovery(options?: { sinceCursor?: string | null }): AsyncGenerator<DiscoveryDeltaV1, void, void> {
+		const backlog = this.discoveryDelta({ sinceCursor: options?.sinceCursor ?? null });
+		if (backlog.resetRequired || backlog.changes.length > 0) {
+			yield backlog;
+		}
+
+		const queue: DiscoveryDeltaV1[] = [];
+		let notify: (() => void) | undefined;
+		const listener = (delta: DiscoveryDeltaV1) => {
+			queue.push(delta);
+			notify?.();
+			notify = undefined;
+		};
+
+		this.discoveryEventBus.on("delta", listener);
+		try {
+			while (true) {
+				if (queue.length === 0) {
+					await new Promise<void>((resolve) => {
+						notify = resolve;
+					});
+				}
+				const next = queue.shift();
+				if (next) yield next;
+			}
+		} finally {
+			this.discoveryEventBus.off("delta", listener);
+		}
+	}
+
+	/**
+	 * Return ranked cheapest candidates using the trusted v1 capability filters.
+	 */
+	cheapestCandidates(query: DiscoveryBindingQuery = {}): DiscoveryCheapestResultV1 {
+		const candidates = this.discoveryCandidateModels(query);
+		const priceMetric = query.priceMetric ?? this.defaultPricingMetric({
+			mode: query.mode as ModelMode | undefined,
+			role: query.role,
+			capability: query.capability,
+		});
+		const inputWeight = 1;
+		const outputWeight = 1;
+		const ranked = candidates.map(({ model, descriptor }) => ({
+			model,
+			descriptor,
+			score: this.computeModelScore(model, priceMetric as PricingMetric, inputWeight, outputWeight),
+		}));
+
+		const priced = ranked.filter((entry) => entry.score !== undefined);
+		const unpriced = ranked.filter((entry) => entry.score === undefined);
+
+		priced.sort((a, b) => (a.score ?? Number.POSITIVE_INFINITY) - (b.score ?? Number.POSITIVE_INFINITY));
+
+		const limit = this.normalizeLimit(query.limit);
+		const matches = [...priced, ...unpriced].slice(0, limit).map(({ model, descriptor, score }) => ({
+			modelId: model.id,
+			providerId: model.provider,
+			canonicalProviderId: descriptor.canonicalProviderId,
+			score: score ?? null,
+			priceMetric,
+			capabilities: trustedCapabilitiesForModel(model, descriptor),
+		}));
+
+		return {
+			schemaVersion: DISCOVERY_SCHEMA_VERSION,
+			query: this.discoveryQueryRecord(query),
+			candidates: candidates.length,
+			pricedCandidates: priced.length,
+			skippedNoPricing: candidates.length - priced.length,
+			priceMetric,
+			matches,
+		};
+	}
+
+	/**
+	 * Return query-scoped discovery hints that Chitragupta can turn into a binding.
+	 */
+	executionBindingHints(query: DiscoveryBindingQuery = {}): DiscoveryBindingHintsV1 {
+		const preferLocalProviders = query.preferLocalProviders ?? false;
+		const allowCrossProvider = query.allowCrossProvider ?? true;
+		const routes = this.discoveryCandidateModels(query)
+			.map(({ model, descriptor }) => ({
+				model,
+				descriptor,
+				capabilities: trustedCapabilitiesForModel(model, descriptor),
+				isLocal: descriptor.isLocal,
+				isDirect: normalizeProviderId(model.originProvider) === descriptor.canonicalProviderId,
+				price: this.computeModelScore(
+					model,
+					(query.priceMetric ?? this.defaultPricingMetric({
+						mode: query.mode as ModelMode | undefined,
+						role: query.role,
+						capability: query.capability,
+					})) as PricingMetric,
+					1,
+					1,
+				),
+			}))
+			.sort((a, b) => {
+				if (preferLocalProviders && a.isLocal !== b.isLocal) return a.isLocal ? -1 : 1;
+				if (a.isDirect !== b.isDirect) return a.isDirect ? -1 : 1;
+				const aPrice = a.price ?? Number.POSITIVE_INFINITY;
+				const bPrice = b.price ?? Number.POSITIVE_INFINITY;
+				if (aPrice !== bPrice) return aPrice - bPrice;
+				if (a.descriptor.canonicalProviderId !== b.descriptor.canonicalProviderId) {
+					return a.descriptor.canonicalProviderId.localeCompare(b.descriptor.canonicalProviderId);
+				}
+				return a.model.id.localeCompare(b.model.id);
+			});
+
+		const selected = routes[0];
+		const scopedRoutes = !allowCrossProvider && selected
+			? routes.filter((route) => route.model.provider === selected.model.provider)
+			: routes;
+		const limit = this.normalizeLimit(query.limit);
+		const preferredRoutes = scopedRoutes.slice(0, limit);
+
+		return {
+			schemaVersion: DISCOVERY_SCHEMA_VERSION,
+			query: this.discoveryQueryRecord(query),
+			selectedModelId: selected?.model.id ?? null,
+			selectedProviderId: selected?.model.provider ?? null,
+			candidateModelIds: Array.from(new Set(scopedRoutes.map((route) => route.model.id))),
+			preferredModelIds: Array.from(new Set(preferredRoutes.map((route) => route.model.id))),
+			preferredProviderIds: Array.from(new Set(preferredRoutes.map((route) => route.model.provider))),
+			preferLocalProviders,
+			allowCrossProvider,
+		};
 	}
 
 	/**
@@ -776,6 +1022,419 @@ export class ModelRegistry {
 		return normalized;
 	}
 
+	private snapshotForDelta(): DiscoverySnapshotV1 | null {
+		if (this.lastSnapshotCache) return this.lastSnapshotCache;
+		if (this.providerMap.size === 0 && this.discoveredAt === 0) return null;
+		return this.buildSnapshot(this.currentCursor);
+	}
+
+	private recordDiscoveryMutation(previousSnapshot: DiscoverySnapshotV1 | null): void {
+		this.discoveryRevision += 1;
+		this.currentCursor = this.makeCursor();
+		const nextSnapshot = this.buildSnapshot(this.currentCursor);
+		this.lastSnapshotCache = nextSnapshot;
+
+		if (!previousSnapshot) {
+			return;
+		}
+
+		const delta = this.diffSnapshots(previousSnapshot, nextSnapshot);
+		if (delta.changes.length === 0) {
+			return;
+		}
+
+		this.deltaHistory.push(delta);
+		if (this.deltaHistory.length > 50) {
+			this.deltaHistory.shift();
+		}
+		this.discoveryEventBus.emit("delta", delta);
+	}
+
+	private makeCursor(): string {
+		return `discovery-${this.discoveryRevision}-${this.discoveredAt || Date.now()}`;
+	}
+
+	private buildSnapshot(cursor: string): DiscoverySnapshotV1 {
+		const providers = listProviderDescriptors().map((descriptor) => this.serializeProvider(descriptor.providerId));
+		const models = this.models()
+			.map((model) => this.serializeModel(model))
+			.sort((a, b) => a.key.localeCompare(b.key));
+		const health = listProviderDescriptors()
+			.map((descriptor) => this.buildHealthRecord(descriptor.providerId))
+			.sort((a, b) => a.providerId.localeCompare(b.providerId));
+
+		return {
+			schemaVersion: DISCOVERY_SCHEMA_VERSION,
+			discoveredAt: this.discoveredAt || null,
+			cursor,
+			providers,
+			models,
+			roles: discoveryRoles(),
+			health,
+			credentialPrompts: this.catalogCredentialPrompts().map((prompt) => ({
+				providerId: prompt.providerId,
+				providerName: prompt.providerName,
+				required: prompt.required,
+				envVars: [...prompt.envVars],
+				message: prompt.message,
+			})),
+		};
+	}
+
+	private catalogCredentialPrompts(): ProviderCredentialPrompt[] {
+		const prompts: ProviderCredentialPrompt[] = [];
+
+		for (const descriptor of listProviderDescriptors()) {
+			const provider = this.providerMap.get(descriptor.providerId);
+			if (!descriptor.credentialRequired || provider?.authenticated) {
+				continue;
+			}
+
+			const envHint = descriptor.credentialEnvVars.length > 0
+				? `Set ${descriptor.credentialEnvVars.join(" or ")}`
+				: "Configure credentials";
+
+			prompts.push({
+				providerId: descriptor.providerId,
+				providerName: descriptor.name,
+				required: true,
+				envVars: descriptor.credentialEnvVars,
+				message: `${envHint} to enable ${descriptor.name} model discovery.`,
+			});
+		}
+
+		return prompts.sort((a, b) => a.providerId.localeCompare(b.providerId));
+	}
+
+	private providerDescriptor(providerId: string, providerInfo?: ProviderInfo) {
+		return getProviderDescriptor(providerId) ?? {
+			providerId,
+			canonicalProviderId: providerId,
+			aliases: [],
+			name: providerInfo?.name ?? providerId,
+			origin: isLocalProvider(providerId) ? "local" : "direct",
+			isLocal: isLocalProvider(providerId),
+			transport: providerInfo?.baseUrl?.startsWith("http") ? "native-http" : "native-http",
+			defaultBaseUrl: providerInfo?.baseUrl ?? "",
+			credentialRequired: false,
+			credentialEnvVars: [],
+		};
+	}
+
+	private serializeProvider(providerId: string): DiscoveryProviderV1 {
+		const provider = this.providerMap.get(providerId);
+		const descriptor = this.providerDescriptor(providerId, provider);
+
+		const config = getProviderConfig(this.config, providerId);
+		return {
+			providerId: descriptor.providerId,
+			canonicalProviderId: descriptor.canonicalProviderId,
+			aliases: [...descriptor.aliases],
+			name: descriptor.name,
+			origin: descriptor.origin,
+			isLocal: descriptor.isLocal,
+			transport: descriptor.transport,
+			authenticated: provider?.authenticated ?? false,
+			credentialSource: provider?.credentialSource ?? null,
+			credentialsPresent: provider?.authenticated ?? false,
+			credentialsRequired: descriptor.credentialRequired,
+			credentialEnvVars: [...descriptor.credentialEnvVars],
+			modelCount: provider?.models.length ?? 0,
+			lastRefreshed: provider?.lastRefreshed ?? null,
+			baseUrl: provider?.baseUrl ?? config?.baseUrl ?? descriptor.defaultBaseUrl,
+		};
+	}
+
+	private serializeModel(model: ModelCard): DiscoveryModelV1 {
+		const provider = this.providerMap.get(model.provider);
+		const descriptor = this.providerDescriptor(model.provider, provider);
+
+		const runtime = model.localRuntime;
+		const capabilities = trustedCapabilitiesForModel(model, descriptor);
+		return {
+			key: makeModelKey(model, descriptor),
+			modelId: model.id,
+			name: model.name,
+			providerId: model.provider,
+			canonicalProviderId: descriptor.canonicalProviderId,
+			originProviderId: normalizeProviderId(model.originProvider) ?? model.originProvider ?? descriptor.canonicalProviderId,
+			mode: model.mode,
+			capabilities,
+			rawCapabilities: rawCapabilitiesForModel(model),
+			contextWindow: model.contextWindow > 0 ? model.contextWindow : null,
+			maxOutputTokens: model.maxOutputTokens > 0 ? model.maxOutputTokens : null,
+			pricing: model.pricing ?? null,
+			dimensions: model.dimensions ?? null,
+			maxInputTokens: model.maxInputTokens ?? null,
+			discoveredAt: model.discoveredAt,
+			source: model.source,
+			aliases: [...model.aliases],
+			region: model.region ?? null,
+			projectId: model.projectId ?? null,
+			runtimeFamily: runtime?.runtimeFamily ?? (descriptor.isLocal ? descriptor.canonicalProviderId : null),
+			tokenizerFamily: runtime?.tokenizerFamily ?? null,
+			quantization: runtime?.quantization ?? null,
+			memoryFootprintBytes: runtime?.memoryFootprintBytes ?? null,
+			computeTarget: runtime?.computeTarget ?? null,
+			supportsStructuredOutput: runtime?.supportsStructuredOutput ?? null,
+			supportsStreaming: runtime?.supportsStreaming ?? null,
+		};
+	}
+
+	private buildHealthRecord(providerId: string): DiscoveryHealthRecord {
+		const breaker = this.healthTracker.breaker(providerId).health();
+		const observation = this.providerObservations.get(providerId);
+		const provider = this.providerMap.get(providerId);
+		const timeoutRate = observation && observation.attemptCount > 0
+			? observation.timeoutCount / observation.attemptCount
+			: 0;
+		const latencyClass = this.computeLatencyClass(observation);
+		let state: DiscoveryHealthRecord["state"] = "unknown";
+
+		if (observation?.lastErrorType === "auth_error") {
+			state = "auth_error";
+		} else if (observation?.lastErrorType === "throttled") {
+			state = "throttled";
+		} else if (breaker.state === "open" && observation?.attemptCount) {
+			state = "down";
+		} else if (provider?.lastRefreshed && (breaker.failureCount > 0 || timeoutRate >= 0.25 || latencyClass === "high")) {
+			state = "degraded";
+		} else if (breaker.lastSuccessTime > 0 || provider?.lastRefreshed) {
+			state = "healthy";
+		}
+
+		return {
+			providerId,
+			state,
+			failureCount: breaker.failureCount,
+			lastError: breaker.lastError ?? null,
+			lastSuccessAt: breaker.lastSuccessTime || provider?.lastRefreshed || null,
+			lastFailureAt: breaker.lastFailureTime || null,
+			latencyClass,
+			timeoutRate: Number(timeoutRate.toFixed(3)),
+			rateLimitState: observation?.lastErrorType === "throttled" ? "throttled" : observation?.attemptCount ? "ok" : "unknown",
+			circuitState: breaker.state,
+		};
+	}
+
+	private computeLatencyClass(observation: ProviderObservation | undefined): DiscoveryHealthRecord["latencyClass"] {
+		if (!observation || observation.attemptCount === 0 || observation.latenciesMs.length === 0) {
+			return "unknown";
+		}
+		if (observation.lastErrorType === "timeout") {
+			return "timeout";
+		}
+
+		const average = observation.latenciesMs.reduce((sum, value) => sum + value, 0) / observation.latenciesMs.length;
+		if (average <= 1_000) return "low";
+		if (average <= 4_000) return "medium";
+		return "high";
+	}
+
+	private discoveryCandidateModels(query: DiscoveryBindingQuery): Array<{ model: ModelCard; descriptor: ReturnType<ModelRegistry["providerDescriptor"]> }> {
+		const normalizedProvider = normalizeProviderId(query.provider);
+		const normalizedOriginProvider = normalizeProviderId(query.originProvider);
+
+		return this.models({
+			provider: normalizedProvider,
+			originProvider: normalizedOriginProvider,
+			mode: query.mode as ModelMode | undefined,
+		}).flatMap((model) => {
+			const descriptor = this.providerDescriptor(model.provider, this.providerMap.get(model.provider));
+			if (!this.modelMatchesDiscoveryQuery(model, descriptor, query)) return [];
+			return [{ model, descriptor }];
+		});
+	}
+
+	private modelMatchesDiscoveryQuery(
+		model: ModelCard,
+		descriptor: ReturnType<ModelRegistry["providerDescriptor"]>,
+		query: DiscoveryBindingQuery,
+	): boolean {
+		const capabilities = trustedCapabilitiesForModel(model, descriptor);
+		const capability = this.normalizeTrustedCapabilityToken(query.capability);
+		if (capability && !capabilities.includes(capability)) {
+			return false;
+		}
+
+		if (!query.role) {
+			return true;
+		}
+
+		const roleRequirements = this.roleRequirements(query.role);
+		return roleRequirements.every((requiredCapability) => capabilities.includes(requiredCapability));
+	}
+
+	private roleRequirements(role: string): TrustedCapability[] {
+		const normalizedRole = role.trim().toLowerCase().replace(/[\s-]+/g, "_");
+		switch (normalizedRole) {
+			case "tool_use":
+			case "tools":
+			case "functions":
+				return ["chat", "function_calling"];
+			case "embeddings":
+			case "embedding":
+				return ["embeddings"];
+			case "vision":
+				return ["chat", "vision"];
+			case "rerank":
+				return ["rerank"];
+			case "local":
+			case "local_exec":
+				return ["local_exec"];
+			case "chat":
+			default:
+				return [this.normalizeTrustedCapabilityToken(normalizedRole) ?? "chat"];
+		}
+	}
+
+	private normalizeTrustedCapabilityToken(value: string | undefined): TrustedCapability | undefined {
+		if (!value) return undefined;
+		const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, "_");
+		const map: Record<string, TrustedCapability> = {
+			chat: "chat",
+			embedding: "embeddings",
+			embeddings: "embeddings",
+			function_calling: "function_calling",
+			tool_use: "function_calling",
+			tools: "function_calling",
+			vision: "vision",
+			rerank: "rerank",
+			structured_output: "structured_output",
+			streaming: "streaming",
+			long_context: "long_context",
+			local_exec: "local_exec",
+			local: "local_exec",
+			code: "code_generation",
+			code_generation: "code_generation",
+			reasoning: "reasoning",
+			low_latency: "low_latency",
+			cheap_inference: "cheap_inference",
+		};
+		return map[normalized];
+	}
+
+	private discoveryQueryRecord(query: DiscoveryBindingQuery): Record<string, string | number | boolean | null> {
+		return {
+			role: query.role ?? null,
+			capability: query.capability ?? null,
+			provider: normalizeProviderId(query.provider) ?? query.provider ?? null,
+			originProvider: normalizeProviderId(query.originProvider) ?? query.originProvider ?? null,
+			mode: query.mode ?? null,
+			limit: query.limit ?? null,
+			priceMetric: query.priceMetric ?? null,
+			preferLocalProviders: query.preferLocalProviders ?? null,
+			allowCrossProvider: query.allowCrossProvider ?? null,
+		};
+	}
+
+	private fullSnapshotChanges(snapshot: DiscoverySnapshotV1): DiscoveryChangeV1[] {
+		return [
+			...snapshot.providers.map((provider): DiscoveryChangeV1 => ({
+				entity: "provider",
+				action: "upsert",
+				key: provider.providerId,
+				value: provider,
+			})),
+			...snapshot.models.map((model): DiscoveryChangeV1 => ({
+				entity: "model",
+				action: "upsert",
+				key: model.key,
+				value: model,
+			})),
+			...snapshot.health.map((health): DiscoveryChangeV1 => ({
+				entity: "health",
+				action: "upsert",
+				key: health.providerId,
+				value: health,
+			})),
+			...snapshot.credentialPrompts.map((prompt): DiscoveryChangeV1 => ({
+				entity: "credential_prompt",
+				action: "upsert",
+				key: prompt.providerId,
+				value: prompt,
+			})),
+		];
+	}
+
+	private diffSnapshots(previous: DiscoverySnapshotV1, next: DiscoverySnapshotV1): DiscoveryDeltaV1 {
+		const changes: DiscoveryChangeV1[] = [];
+		this.collectSectionChanges("provider", previous.providers, next.providers, (item) => item.providerId, changes);
+		this.collectSectionChanges("model", previous.models, next.models, (item) => item.key, changes);
+		this.collectSectionChanges("health", previous.health, next.health, (item) => item.providerId, changes);
+		this.collectSectionChanges("credential_prompt", previous.credentialPrompts, next.credentialPrompts, (item) => item.providerId, changes);
+
+		return {
+			schemaVersion: DISCOVERY_SCHEMA_VERSION,
+			sinceCursor: previous.cursor,
+			cursor: next.cursor,
+			changedAt: next.discoveredAt,
+			resetRequired: false,
+			changes,
+		};
+	}
+
+	private collectSectionChanges<T>(
+		entity: DiscoveryChangeV1["entity"],
+		previous: T[],
+		next: T[],
+		keyOf: (item: T) => string,
+		target: DiscoveryChangeV1[],
+	): void {
+		const previousMap = new Map(previous.map((item) => [keyOf(item), item]));
+		const nextMap = new Map(next.map((item) => [keyOf(item), item]));
+
+		for (const [key, item] of nextMap) {
+			const prev = previousMap.get(key);
+			if (!prev || JSON.stringify(prev) !== JSON.stringify(item)) {
+				target.push({ entity, action: "upsert", key, value: item as DiscoveryChangeV1["value"] });
+			}
+		}
+
+		for (const key of previousMap.keys()) {
+			if (!nextMap.has(key)) {
+				target.push({ entity, action: "remove", key, value: null });
+			}
+		}
+	}
+
+	private recordObservation(providerId: string, entry: { latencyMs: number; errorType: ProviderObservation["lastErrorType"] }): void {
+		const observation = this.providerObservations.get(providerId) ?? {
+			latenciesMs: [],
+			timeoutCount: 0,
+			attemptCount: 0,
+			lastErrorType: null,
+		};
+
+		observation.attemptCount += 1;
+		observation.latenciesMs.push(entry.latencyMs);
+		if (observation.latenciesMs.length > 20) {
+			observation.latenciesMs.shift();
+		}
+		if (entry.errorType === "timeout") {
+			observation.timeoutCount += 1;
+		}
+		observation.lastErrorType = entry.errorType;
+		this.providerObservations.set(providerId, observation);
+	}
+
+	private classifyError(errorMessage: string): ProviderObservation["lastErrorType"] {
+		const lower = errorMessage.toLowerCase();
+		if (lower.includes("401") || lower.includes("403") || lower.includes("unauthorized") || lower.includes("forbidden")) {
+			return "auth_error";
+		}
+		if (lower.includes("429") || lower.includes("rate limit") || lower.includes("quota")) {
+			return "throttled";
+		}
+		if (lower.includes("timed out") || lower.includes("timeout") || lower.includes("abort")) {
+			return "timeout";
+		}
+		if (lower.includes("network") || lower.includes("econn") || lower.includes("fetch failed") || lower.includes("5")) {
+			return "transport";
+		}
+		return "unknown";
+	}
+
 	// ---------------------------------------------------------------------------
 	// Aliases
 	// ---------------------------------------------------------------------------
@@ -820,6 +1479,8 @@ export class ModelRegistry {
 		}
 
 		registry.discoveredAt = data.discoveredAt;
+		registry.currentCursor = registry.makeCursor();
+		registry.lastSnapshotCache = registry.buildSnapshot(registry.currentCursor);
 		return registry;
 	}
 
@@ -892,24 +1553,28 @@ export class ModelRegistry {
 	private async loadDiscoverers(providerIds?: string[], includeLocal?: boolean): Promise<ProviderDiscoverer[]> {
 		try {
 			const discoveryModule = await import("./discovery/index.js");
-			const all: ProviderDiscoverer[] = discoveryModule.getAllDiscoverers();
+			const all: ProviderDiscoverer[] = discoveryModule.getAllDiscoverers({
+				ollamaBaseUrl: getProviderConfig(this.config, "ollama")?.baseUrl,
+				llamaCppBaseUrl: getProviderConfig(this.config, "llama.cpp")?.baseUrl,
+			});
 
 			let filtered = all;
 
 			// Filter to requested providers
 			if (providerIds && providerIds.length > 0) {
-				filtered = filtered.filter((d) => providerIds.includes(d.providerId));
+				const normalizedProviderIds = providerIds.map((providerId) => normalizeProviderId(providerId) ?? providerId);
+				filtered = filtered.filter((d) => normalizedProviderIds.includes(d.providerId));
 			}
 
-			// Exclude local providers (ollama) unless explicitly included
+			// Exclude local providers unless explicitly included
 			if (includeLocal === false) {
-				filtered = filtered.filter((d) => d.providerId !== "ollama");
+				filtered = filtered.filter((d) => !isLocalProvider(d.providerId));
 			}
 
 			// Filter out providers that are disabled in config
 			if (this.config.providers) {
 				filtered = filtered.filter((d) => {
-					const provConfig = this.config.providers?.[d.providerId];
+					const provConfig = getProviderConfig(this.config, d.providerId);
 					return provConfig?.enabled !== false;
 				});
 			}
@@ -939,6 +1604,7 @@ export class ModelRegistry {
 	 * Checks environment variables and explicit keys only.
 	 */
 	private fallbackCredential(providerId: string, explicitKey?: string): CredentialResult {
+		const normalizedProviderId = normalizeProviderId(providerId) ?? providerId;
 		if (explicitKey) {
 			return { apiKey: explicitKey, source: "config" };
 		}
@@ -959,7 +1625,7 @@ export class ModelRegistry {
 			perplexity: "PERPLEXITY_API_KEY",
 		};
 
-		const envVar = envMap[providerId];
+		const envVar = envMap[normalizedProviderId];
 		if (envVar) {
 			const value = process.env[envVar];
 			if (value) {

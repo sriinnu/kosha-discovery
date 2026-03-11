@@ -122,6 +122,64 @@ beforeAll(() => {
 // ---------------------------------------------------------------------------
 
 describe("Hono API Server — createServer()", () => {
+	// ── GET /api/discovery ───────────────────────────────────────────
+
+	describe("GET /api/discovery", () => {
+		it("returns the stable v1 discovery snapshot", async () => {
+			const res = await app.request("/api/discovery");
+			expect(res.status).toBe(200);
+
+			const body = await res.json();
+			expect(body.schemaVersion).toBe(1);
+			expect(Array.isArray(body.providers)).toBe(true);
+			expect(Array.isArray(body.models)).toBe(true);
+			expect(Array.isArray(body.health)).toBe(true);
+			expect(Array.isArray(body.credentialPrompts)).toBe(true);
+		});
+	});
+
+	// ── GET /api/discovery/cheapest ──────────────────────────────────
+
+	describe("GET /api/discovery/cheapest", () => {
+		it("returns cheapest candidates for normalized discovery queries", async () => {
+			const res = await app.request("/api/discovery/cheapest?role=embeddings");
+			expect(res.status).toBe(200);
+
+			const body = await res.json();
+			expect(body.schemaVersion).toBe(1);
+			expect(body.matches[0].modelId).toBe("text-embedding-3-small");
+			expect(body.matches[0].score).toBe(0.02);
+		});
+	});
+
+	// ── GET /api/discovery/binding ───────────────────────────────────
+
+	describe("GET /api/discovery/binding", () => {
+		it("returns binding hints for a normalized query", async () => {
+			const res = await app.request("/api/discovery/binding?role=chat");
+			expect(res.status).toBe(200);
+
+			const body = await res.json();
+			expect(body.schemaVersion).toBe(1);
+			expect(Array.isArray(body.candidateModelIds)).toBe(true);
+			expect(Array.isArray(body.preferredProviderIds)).toBe(true);
+		});
+	});
+
+	// ── GET /api/discovery/delta ─────────────────────────────────────
+
+	describe("GET /api/discovery/delta", () => {
+		it("returns a full upsert delta without a cursor", async () => {
+			const res = await app.request("/api/discovery/delta");
+			expect(res.status).toBe(200);
+
+			const body = await res.json();
+			expect(body.schemaVersion).toBe(1);
+			expect(body.resetRequired).toBe(false);
+			expect(body.changes.some((change: { entity: string }) => change.entity === "provider")).toBe(true);
+		});
+	});
+
 	// ── GET /api/models ──────────────────────────────────────────────
 
 	describe("GET /api/models", () => {
@@ -428,8 +486,7 @@ describe("Hono API Server — createServer()", () => {
 
 			expect(googleSummary.missingCredentialPrompt).toContain("GOOGLE_API_KEY");
 			expect(googleSummary.credentialEnvVars).toEqual(["GOOGLE_API_KEY", "GEMINI_API_KEY"]);
-			expect(body.missingCredentials).toHaveLength(1);
-			expect(body.missingCredentials[0].providerId).toBe("google");
+			expect(body.missingCredentials.some((prompt: { providerId: string }) => prompt.providerId === "google")).toBe(true);
 		});
 	});
 

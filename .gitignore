@@ -4,6 +4,23 @@ dist/
 .DS_Store
 .env
 .env.*
+*.log
+*.tmp
+*.swp
+*.bak
+*.db
+*.sqlite
+*.pem
+*.key
+*.p12
+*.local.json
+*.local.yaml
+*.local.yml
+*.local.toml
+.vscode/
+.idea/
+.zed/
+.cursor/
 
 # Local-only agent/config files
 CLAUDE.md

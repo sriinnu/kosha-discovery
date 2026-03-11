@@ -20,6 +20,7 @@ import { readFile } from "fs/promises";
 import { homedir, platform } from "os";
 import { join } from "path";
 import type { CredentialResult } from "../types.js";
+import { normalizeProviderId } from "../provider-catalog.js";
 
 /**
  * Multi-source credential resolver for AI providers.
@@ -45,7 +46,7 @@ export class CredentialResolver {
 	 * @returns The first credential found, or `{ source: "none" }`.
 	 */
 	async resolve(providerId: string, explicitKey?: string): Promise<CredentialResult> {
-		switch (providerId) {
+		switch (normalizeProviderId(providerId) ?? providerId) {
 			case "anthropic":
 				return this.resolveAnthropic(explicitKey);
 			case "openai":
@@ -56,6 +57,7 @@ export class CredentialResolver {
 			case "openrouter":
 				return this.resolveOpenRouter(explicitKey);
 			case "ollama":
+			case "llama.cpp":
 				return this.resolveOllama();
 			case "bedrock":
 				return this.resolveBedrockCredential(explicitKey);

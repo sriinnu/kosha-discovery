@@ -122,10 +122,12 @@ export abstract class BaseDiscoverer implements ProviderDiscoverer {
 	}
 
 	protected makeCard(partial: Partial<ModelCard> & { id: string; provider: string }): ModelCard {
+		const capabilities = partial.capabilities ?? ["chat"];
 		return {
 			name: partial.id,
 			mode: "chat",
-			capabilities: ["chat"],
+			capabilities,
+			rawCapabilities: partial.rawCapabilities ?? [...capabilities],
 			contextWindow: 0,
 			maxOutputTokens: 0,
 			aliases: [],

@@ -23,10 +23,11 @@
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import type { CheapestModelOptions, ModelMode, RoleQueryOptions } from "./types.js";
+import { registerDiscoveryRoutes } from "./discovery-routes.js";
 import { ModelRegistry } from "./registry.js";
 import { extractModelVersion, normalizeModelId } from "./normalize.js";
 
-const MODEL_MODES: readonly ModelMode[] = ["chat", "embedding", "image", "audio", "moderation"];
+const MODEL_MODES: readonly ModelMode[] = ["chat", "embedding", "image", "audio", "moderation", "rerank"];
 const PRICE_METRICS: readonly NonNullable<CheapestModelOptions["priceMetric"]>[] = ["input", "output", "blended"];
 
 function parseMode(value: string | undefined): ModelMode | undefined {
@@ -67,6 +68,7 @@ function parsePriceMetric(value: string | undefined): CheapestModelOptions["pric
  */
 export function createServer(registry: ModelRegistry): Hono {
 	const app = new Hono();
+	registerDiscoveryRoutes(app, registry);
 
 	// ── Model listing & lookup routes ────────────────────────────────
 	//
@@ -343,6 +345,9 @@ export async function startServer(port = 3000): Promise<void> {
 	console.log(`  GET  http://localhost:${port}/api/capabilities`);
 	console.log(`  GET  http://localhost:${port}/api/roles`);
 	console.log(`  GET  http://localhost:${port}/api/providers`);
+	console.log(`  GET  http://localhost:${port}/api/discovery`);
+	console.log(`  GET  http://localhost:${port}/api/discovery/delta`);
+	console.log(`  GET  http://localhost:${port}/api/discovery/watch`);
 	console.log(`  GET  http://localhost:${port}/health`);
 
 	serve({ fetch: app.fetch, port });
