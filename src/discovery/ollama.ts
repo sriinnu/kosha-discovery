@@ -122,6 +122,7 @@ export class OllamaDiscoverer extends BaseDiscoverer {
 	private toModelCard(model: OllamaModel): ModelCard {
 		const capabilities = this.inferCapabilities(model);
 		const mode = this.isEmbeddingModel(model.name) ? "embedding" as const : "chat" as const;
+		const families = Array.isArray(model.details?.families) ? model.details.families : [];
 
 		return this.makeCard({
 			id: model.name,
@@ -129,11 +130,23 @@ export class OllamaDiscoverer extends BaseDiscoverer {
 			provider: this.providerId,
 			mode,
 			capabilities,
+			rawCapabilities: [...capabilities],
 			// Ollama's /api/tags does not return context window info;
 			// the litellm enricher will fill these in later
 			contextWindow: 0,
 			maxOutputTokens: 0,
 			source: "local",
+			localRuntime: {
+				runtimeFamily: "ollama",
+				transport: "native-http",
+				tokenizerFamily: families[0] ?? undefined,
+				quantization: model.details?.quantization_level,
+				memoryFootprintBytes: model.size,
+				computeTarget: this.runningModels.has(model.name) ? "gpu" : "unknown",
+				// Ollama supports streaming and structured JSON at the runtime layer.
+				supportsStructuredOutput: true,
+				supportsStreaming: true,
+			},
 		});
 	}
 

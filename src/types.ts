@@ -8,7 +8,16 @@
  */
 
 /** Supported model operational modes. */
-export type ModelMode = "chat" | "embedding" | "image" | "audio" | "moderation";
+export type ModelMode = "chat" | "embedding" | "image" | "audio" | "moderation" | "rerank";
+
+/** Normalized transport families used by discovery consumers. */
+export type ProviderTransport = "native-http" | "openai-compatible-http" | "cloud-sdk";
+
+/** High-level provider origin classifications. */
+export type ProviderOrigin = "direct" | "proxy" | "local";
+
+/** Broad execution target for local runtimes. */
+export type ComputeTarget = "cpu" | "gpu" | "hybrid" | "unknown";
 
 /** Price scoring metric for cheapest-model selection. */
 export type PricingMetric = "input" | "output" | "blended";
@@ -23,6 +32,31 @@ export interface ModelPricing {
 	cacheReadPerMillion?: number;
 	/** USD cost per 1 million cache-write tokens (optional). */
 	cacheWritePerMillion?: number;
+}
+
+/**
+ * Local-runtime metadata surfaced for first-class local providers.
+ *
+ * Values are optional because local runtimes vary widely in what they expose.
+ * The versioned discovery schema will serialize unknown values as `null`.
+ */
+export interface LocalRuntimeMetadata {
+	/** Canonical runtime family, e.g. `"ollama"` or `"llama.cpp"`. */
+	runtimeFamily: string;
+	/** Normalized transport family used by this runtime. */
+	transport: ProviderTransport;
+	/** Best-effort tokenizer family, when exposed by the runtime. */
+	tokenizerFamily?: string;
+	/** Quantization level / format, e.g. `"Q4_K_M"` or `"F16"`. */
+	quantization?: string;
+	/** Best-effort memory footprint estimate in bytes. */
+	memoryFootprintBytes?: number;
+	/** Best-effort target device class. */
+	computeTarget?: ComputeTarget;
+	/** Whether the runtime is known to support structured outputs / grammars. */
+	supportsStructuredOutput?: boolean;
+	/** Whether the runtime is known to support token streaming. */
+	supportsStreaming?: boolean;
 }
 
 /**
@@ -55,6 +89,8 @@ export interface ModelCard {
 	mode: ModelMode;
 	/** Feature flags: "chat", "vision", "function_calling", "nlu", "code", "embedding", etc. */
 	capabilities: string[];
+	/** Original free-form capability tags retained for compatibility/debugging. */
+	rawCapabilities?: string[];
 	/** Maximum context window size in tokens. */
 	contextWindow: number;
 	/** Maximum number of output tokens the model can generate. */
@@ -75,6 +111,8 @@ export interface ModelCard {
 	region?: string;
 	/** GCP project ID for Vertex AI-served models (e.g. "my-gcp-project"). */
 	projectId?: string;
+	/** Local-runtime metadata for Ollama / llama.cpp style providers. */
+	localRuntime?: LocalRuntimeMetadata;
 }
 
 /**

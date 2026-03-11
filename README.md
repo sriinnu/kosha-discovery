@@ -28,6 +28,7 @@ AI applications hardcode model IDs, pricing, and provider configs. When provider
 - **Cheapest routing** — rank cheapest eligible models for tasks like embeddings or image generation
 - **Credential prompts** — returns provider-specific API key hints when required credentials are missing
 - **Local LLM scanning** — detects Ollama models alongside cloud providers
+- **Discovery plane v1** — stable schema, deltas, live watch, and execution-binding hints for daemon consumers
 - **Three access patterns** — use as a library, CLI tool, or HTTP API
 
 ## Install
@@ -309,10 +310,17 @@ GET /api/models/:idOrAlias/routes  — All provider routes for one model
 GET /api/roles                     — Provider → model → roles matrix
 GET /api/providers                 — All providers
 GET /api/providers/:id             — Single provider
+GET /api/discovery                 — Stable discovery-plane v1 snapshot
+GET /api/discovery/delta           — Polling delta stream since a cursor
+GET /api/discovery/watch           — SSE stream for live deltas
+GET /api/discovery/cheapest        — Cheapest normalized candidates
+GET /api/discovery/binding         — Selection hints for engine bindings
 POST /api/refresh                  — Re-discover
 GET /api/resolve/:alias            — Resolve alias
 GET /health                        — Health check
 ```
+
+For the additive daemon-oriented contract, see [docs/discovery-plane-v1.md](docs/discovery-plane-v1.md).
 
 ## Assistant Routing Flow
 

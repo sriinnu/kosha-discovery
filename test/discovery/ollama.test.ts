@@ -284,4 +284,24 @@ describe("OllamaDiscoverer", () => {
 		// Should still return models even if /api/ps fails
 		expect(cards).toHaveLength(5);
 	});
+
+	it("should attach local runtime metadata", async () => {
+		mockFetch({
+			"http://localhost:11434/api/ps": {
+				status: 200,
+				body: mockPsResponse,
+			},
+			"http://localhost:11434/api/tags": {
+				status: 200,
+				body: mockTagsResponse,
+			},
+		});
+
+		const cards = await discoverer.discover(credential);
+		const llama = cards.find((card) => card.id === "llama3.1:8b");
+
+		expect(llama?.localRuntime?.runtimeFamily).toBe("ollama");
+		expect(llama?.localRuntime?.quantization).toBe("Q4_0");
+		expect(llama?.localRuntime?.supportsStreaming).toBe(true);
+	});
 });

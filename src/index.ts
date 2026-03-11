@@ -9,8 +9,40 @@
 export { ModelRegistry } from "./registry.js";
 export { AliasResolver, DEFAULT_ALIASES } from "./aliases.js";
 export { KoshaCache } from "./cache.js";
-export { extractModelVersion, extractOriginProvider, normalizeModelId } from "./normalize.js";
+export {
+	DISCOVERY_SCHEMA_VERSION,
+	discoveryRoles,
+	makeModelKey,
+	rawCapabilitiesForModel,
+	trustedCapabilitiesForModel,
+} from "./discovery-contract.js";
 export type {
+	DiscoveryBindingHintsV1,
+	DiscoveryBindingQuery,
+	DiscoveryChangeV1,
+	DiscoveryCheapestCandidateV1,
+	DiscoveryCheapestResultV1,
+	DiscoveryCredentialPrompt,
+	DiscoveryDeltaV1,
+	DiscoveryHealthRecord,
+	DiscoveryModelV1,
+	DiscoveryProviderV1,
+	DiscoveryRoleDefinition,
+	DiscoverySnapshotV1,
+	TrustedCapability,
+} from "./discovery-contract.js";
+export { extractModelVersion, extractOriginProvider, normalizeModelId } from "./normalize.js";
+export {
+	getProviderDescriptor,
+	isLocalProvider,
+	listProviderDescriptors,
+	normalizeProviderId,
+	PROVIDER_CATALOG,
+} from "./provider-catalog.js";
+export type { ProviderDescriptor } from "./provider-catalog.js";
+export type {
+	ComputeTarget,
+	LocalRuntimeMetadata,
 	ModelCard,
 	ProviderInfo,
 	ProviderRoleInfo,
@@ -31,6 +63,8 @@ export type {
 	CredentialResult,
 	ProviderDiscoverer,
 	Enricher,
+	ProviderOrigin,
+	ProviderTransport,
 } from "./types.js";
 
 /**
