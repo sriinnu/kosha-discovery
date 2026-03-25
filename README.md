@@ -23,199 +23,15 @@ AI applications hardcode model IDs, pricing, and provider configs. When provider
 - **Pricing enrichment** — fills in costs and context windows from litellm's community-maintained dataset
 - **Model aliases** — `sonnet` → `claude-sonnet-4-20250514`, updated as models evolve
 - **Role matrix** — query provider -> model -> roles (`chat`, `embedding`, `image_generation`, etc.)
-- **Capability discovery** — explore all capabilities across the ecosystem, find models by capability
-- **Multi-provider routing** — see all provider routes for a model, with direct/preferred flags
 - **Cheapest routing** — rank cheapest eligible models for tasks like embeddings or image generation
-- **Credential prompts** — returns provider-specific API key hints when required credentials are missing
 - **Local LLM scanning** — detects Ollama models alongside cloud providers
-- **Discovery plane v1** — stable schema, deltas, live watch, and execution-binding hints for daemon consumers
 - **Three access patterns** — use as a library, CLI tool, or HTTP API
 
 ## Install
 
 ```bash
 npm install kosha-discovery
-# or
-pnpm add kosha-discovery
 ```
-
-## Getting Started — Provider Credentials
-
-Kosha auto-discovers credentials from environment variables, CLI tool configs, and cloud auth files. Set up whichever providers you use:
-
-### Anthropic
-
-```bash
-# Option A: Environment variable
-export ANTHROPIC_API_KEY=sk-ant-...
-
-# Option B: Auto-detected from Claude CLI / Claude Code
-# If you've run `claude` or `claude-code`, kosha reads the stored token from:
-#   ~/.claude.json
-#   ~/.config/claude/settings.json
-#   ~/.claude/credentials.json
-
-# Option C: Auto-detected from Codex CLI
-#   ~/.codex/auth.json
-```
-
-### OpenAI
-
-```bash
-# Option A: Environment variable
-export OPENAI_API_KEY=sk-...
-
-# Option B: Auto-detected from GitHub Copilot
-# If you've authenticated with Copilot, kosha reads tokens from:
-#   ~/.config/github-copilot/hosts.json (Linux/macOS)
-#   %LOCALAPPDATA%/github-copilot/hosts.json (Windows)
-```
-
-### Google (Gemini)
-
-```bash
-# Option A: Environment variable
-export GOOGLE_API_KEY=AIza...
-# or
-export GEMINI_API_KEY=AIza...
-
-# Option B: Auto-detected from Gemini CLI
-#   ~/.gemini/oauth_creds.json
-
-# Option C: gcloud Application Default Credentials
-gcloud auth application-default login
-```
-
-### AWS Bedrock
-
-```bash
-# Option A: Environment variables
-export AWS_ACCESS_KEY_ID=AKIA...
-export AWS_SECRET_ACCESS_KEY=...
-export AWS_DEFAULT_REGION=us-east-1   # optional, defaults to us-east-1
-
-# Option B: AWS CLI configured profile
-aws configure
-# kosha reads ~/.aws/credentials [default] automatically
-
-# Option C: Named profile
-export AWS_PROFILE=my-profile
-
-# Option D: SSO / IAM role
-# kosha detects sso_start_url or role_arn in ~/.aws/config
-
-# Optional: install the AWS SDK for live model listing (otherwise uses static fallback)
-npm install @aws-sdk/client-bedrock
-```
-
-### Google Vertex AI
-
-```bash
-# Option A: Service account JSON
-export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
-export GOOGLE_CLOUD_PROJECT=my-project
-
-# Option B: gcloud Application Default Credentials
-gcloud auth application-default login
-# Project auto-detected from: GOOGLE_CLOUD_PROJECT, GCLOUD_PROJECT,
-# or `gcloud config get-value project`
-
-# Option C: gcloud access token (auto-detected via subprocess)
-gcloud auth print-access-token
-```
-
-### OpenRouter
-
-```bash
-# Optional — OpenRouter works without auth (rate-limited)
-export OPENROUTER_API_KEY=sk-or-...
-```
-
-### NVIDIA (build.nvidia.com)
-
-```bash
-export NVIDIA_API_KEY=nvapi-...
-```
-
-### Together AI
-
-```bash
-export TOGETHER_API_KEY=...
-```
-
-### Fireworks AI
-
-```bash
-export FIREWORKS_API_KEY=...
-```
-
-### Groq
-
-```bash
-export GROQ_API_KEY=gsk_...
-```
-
-### Mistral AI
-
-```bash
-export MISTRAL_API_KEY=...
-```
-
-### DeepInfra
-
-```bash
-export DEEPINFRA_API_KEY=...
-```
-
-### Cohere
-
-```bash
-export CO_API_KEY=...
-```
-
-### Cerebras
-
-```bash
-export CEREBRAS_API_KEY=...
-```
-
-### Perplexity
-
-```bash
-export PERPLEXITY_API_KEY=pplx-...
-```
-
-### Ollama (Local)
-
-```bash
-# No credentials needed — auto-detected if running locally
-# Default: http://localhost:11434
-ollama serve
-```
-
-### Config file (optional)
-
-Instead of env vars, you can create `~/.kosharc.json` (global) or `kosha.config.json` (project-level):
-
-```json
-{
-  "providers": {
-    "anthropic": { "apiKey": "sk-ant-..." },
-    "openai": { "apiKey": "sk-..." },
-    "bedrock": { "enabled": true },
-    "vertex": { "enabled": true },
-    "openrouter": { "enabled": false }
-  },
-  "aliases": {
-    "fast": "claude-haiku-4-5-20251001"
-  },
-  "cacheTtlMs": 3600000
-}
-```
-
-Config priority: `~/.kosharc.json` < `kosha.config.json` < programmatic config.
-
----
 
 ## Quick Start
 
@@ -226,72 +42,26 @@ import { createKosha } from "kosha-discovery";
 
 const kosha = await createKosha();
 
-// List all models
-const models = kosha.models();
-
-// Filter by provider
-const anthropicModels = kosha.models({ provider: "anthropic" });
-
-// Get embedding models
-const embeddings = kosha.models({ mode: "embedding" });
-
-// Resolve alias
-const model = kosha.model("sonnet"); // → full ModelCard for claude-sonnet-4-20250514
-
-// Get pricing
-console.log(model.pricing); // { inputPerMillion: 3, outputPerMillion: 15, ... }
-
-// Role matrix for assistants (provider -> models -> roles)
-const roles = kosha.providerRoles({ role: "embeddings" });
-
-// Cheapest model ranking for a task
+const models = kosha.models();                           // all models
+const embeddings = kosha.models({ mode: "embedding" });  // filter by mode
+const model = kosha.model("sonnet");                     // resolve alias
 const cheapest = kosha.cheapestModels({ role: "image", limit: 3 });
-console.log(cheapest.matches[0]);
+
+console.log(model.pricing); // { inputPerMillion: 3, outputPerMillion: 15, ... }
 ```
 
 ### CLI
 
 ```bash
-# Discover all providers
-kosha discover
-
-# List models
-kosha list
-kosha list --provider anthropic
-kosha list --origin anthropic
-kosha list --mode embedding
-
-# Search
-kosha search gemini
-kosha search claude --origin anthropic
-
-# Model details
-kosha model sonnet
-
-# Role matrix
-kosha roles
-kosha roles --role embeddings
-
-# Capabilities ecosystem view
-kosha capabilities
-kosha capable vision
-kosha capable embeddings --limit 5
-
-# Cheapest routing candidates
-kosha cheapest --role embeddings
-kosha cheapest --role image --limit 3
-
-# All provider routes for a model
-kosha routes gpt-4o
-
-# Providers status
-kosha providers
-
-# Resolve alias
-kosha resolve haiku
-
-# Start API server
-kosha serve --port 3000
+kosha discover                          # discover all providers
+kosha list                              # list models
+kosha list --provider anthropic         # filter by provider
+kosha search gemini                     # fuzzy search
+kosha model sonnet                      # model details
+kosha cheapest --role embeddings        # cheapest for a task
+kosha routes gpt-4o                     # all provider routes
+kosha providers                         # provider status
+kosha serve --port 3000                 # start HTTP API
 ```
 
 ### HTTP API
@@ -301,472 +71,14 @@ kosha serve --port 3000
 ```
 
 ```
-GET /api/models                    — All models
-GET /api/models?provider=anthropic — Filter by provider
-GET /api/models?mode=embedding     — Filter by mode
-GET /api/models/cheapest           — Cheapest ranked models for a role/capability
+GET /api/models                    — All models (filterable)
+GET /api/models/cheapest           — Cheapest ranked models
 GET /api/models/:idOrAlias         — Single model
-GET /api/models/:idOrAlias/routes  — All provider routes for one model
+GET /api/models/:idOrAlias/routes  — All provider routes
 GET /api/roles                     — Provider → model → roles matrix
 GET /api/providers                 — All providers
-GET /api/providers/:id             — Single provider
-GET /api/discovery                 — Stable discovery-plane v1 snapshot
-GET /api/discovery/delta           — Polling delta stream since a cursor
-GET /api/discovery/watch           — SSE stream for live deltas
-GET /api/discovery/cheapest        — Cheapest normalized candidates
-GET /api/discovery/binding         — Selection hints for engine bindings
 POST /api/refresh                  — Re-discover
-GET /api/resolve/:alias            — Resolve alias
 GET /health                        — Health check
-```
-
-For the additive daemon-oriented contract, see [docs/discovery-plane-v1.md](docs/discovery-plane-v1.md).
-
-## Assistant Routing Flow
-
-Kosha is designed to answer routing questions from assistants like Vaayu and Takumi:
-
-1. Ask for capabilities: call `GET /api/roles?role=embeddings`.
-2. Rank by cost: call `GET /api/models/cheapest?role=embeddings`.
-3. If `missingCredentials` is non-empty, prompt the user for one of the listed env vars.
-4. Route execution using the chosen provider/model pair.
-
-### Embeddings Quick Call
-
-If your task is embeddings and you want the cheapest option:
-
-```bash
-kosha cheapest --role embeddings --price-metric input --limit 1
-```
-
-API equivalent:
-
-```bash
-curl "http://localhost:3000/api/models/cheapest?role=embeddings&priceMetric=input&limit=1"
-```
-
-## Provider vs Origin
-
-Kosha distinguishes:
-
-- `provider`: where you call the model (serving layer, e.g. `openrouter`)
-- `originProvider`: who built the model (e.g. `openai`)
-
-Example:
-
-```
-provider: openrouter
-id: openai/gpt-5.3-codex
-originProvider: openai
-```
-
-If a direct OpenAI route exists, route metadata marks it as preferred so assistants can call `openai` directly instead of `openrouter`.
-
-## CLI Reference
-
-```
-USAGE
-  kosha <command> [options]
-
-COMMANDS
-  discover                      Discover all providers and models
-  list                          List all known models
-    --provider <name>             Filter by serving-layer provider
-    --origin <name>               Filter by origin/creator provider (e.g. anthropic)
-    --mode <mode>                 Filter by mode (chat, embedding, image, audio)
-    --capability <cap>            Filter by capability (vision, function_calling, etc.)
-  search <query>                Search models by name/ID (fuzzy match)
-    --origin <name>               Restrict search to a specific origin provider
-  model <id|alias>              Show detailed info for one model
-  roles                         Show provider -> model -> roles matrix
-    --role <role>                 Filter by task role (e.g. embeddings, image, tool_use)
-    --provider <name>             Filter by serving-layer provider
-    --origin <name>               Filter by model creator provider
-    --mode <mode>                 Filter by mode (chat, embedding, image, audio, moderation)
-    --capability <cap>            Filter by capability tag
-  capabilities (caps)           Show all capabilities across the ecosystem
-    --provider <name>             Scope to one provider
-  capable <capability>          List models with a given capability
-    --provider <name>             Filter by serving-layer provider
-    --origin <name>               Filter by origin/creator provider
-    --mode <mode>                 Filter by mode (chat, embedding, image, audio)
-    --limit <n>                   Maximum models to show
-  cheapest                      Find cheapest eligible models
-    --role <role>                 Task role, e.g. embeddings or image
-    --capability <cap>            Capability filter (vision, embedding, function_calling)
-    --mode <mode>                 Mode filter
-    --limit <n>                   Maximum matches to return (default 5)
-    --price-metric <metric>       input | output | blended
-    --input-weight <n>            Weight for blended metric input price
-    --output-weight <n>           Weight for blended metric output price
-    --include-unpriced            Include unpriced models after ranked matches
-  routes <id|alias>             Show all provider routes for a model
-  providers                     List all providers and their status
-  resolve <alias>               Resolve an alias to canonical model ID
-  refresh                       Force re-discover all providers (bypass cache)
-  serve [--port 3000]           Start HTTP API server
-
-OPTIONS
-  --json                          Output as JSON (works with any command)
-  --help                          Show this help message
-  --version                       Show version
-```
-
-### Example: `kosha list`
-
-```
-Provider     Model                              Mode       Context    $/M in   $/M out
-──────────── ────────────────────────────────── ────────── ────────── ──────── ────────
-anthropic    claude-opus-4-20250918             chat       200K       $15.00   $75.00
-anthropic    claude-sonnet-4-20250514           chat       200K       $3.00    $15.00
-anthropic    claude-haiku-4-5-20251001          chat       200K       $0.80    $4.00
-openai       gpt-4o                             chat       128K       $2.50    $10.00
-openai       text-embedding-3-small             embedding  8K         $0.02    —
-google       gemini-2.5-pro-preview-05-06       chat       1M         $1.25    $10.00
-ollama       qwen3:8b                           chat       —          free     free
-───────────────────────────────────────────────────────────────────────────────────────
-234 models from 16 providers
-```
-
-### Example: `kosha model sonnet`
-
-```
-Model: claude-sonnet-4-20250514
-Provider: Anthropic
-Mode: chat
-Aliases: sonnet, sonnet-4
-Context Window: 200,000 tokens
-Max Output: 16,384 tokens
-Capabilities: chat, vision, function_calling, code, nlu
-Pricing: $3.00 / $15.00 per million tokens (in/out)
-Source: api + litellm
-Discovered: 2026-02-26T10:30:00Z
-```
-
-### Example: `kosha providers`
-
-```
-Provider     Status          Models  Credential Source
-──────────── ─────────────── ─────── ─────────────────
-anthropic    ✓ authenticated     12  env (ANTHROPIC_API_KEY)
-openai       ✓ authenticated      8  cli (~/.config/github-copilot)
-google       ✓ authenticated     15  env (GOOGLE_API_KEY)
-ollama       ✓ local              6  none (local)
-openrouter   ✗ no credentials     0  —
-nvidia       ✓ authenticated     42  env (NVIDIA_API_KEY)
-together     ✓ authenticated     38  env (TOGETHER_API_KEY)
-fireworks    ✓ authenticated     25  env (FIREWORKS_API_KEY)
-groq         ✓ authenticated     12  env (GROQ_API_KEY)
-mistral      ✓ authenticated      8  env (MISTRAL_API_KEY)
-deepinfra    ✓ authenticated     50  env (DEEPINFRA_API_KEY)
-cohere       ✓ authenticated      6  env (CO_API_KEY)
-cerebras     ✓ authenticated      4  env (CEREBRAS_API_KEY)
-perplexity   ✓ authenticated      8  env (PERPLEXITY_API_KEY)
-```
-
-### Example: `kosha roles --role embeddings`
-
-```
-Provider     Model                                   Mode       Roles
-──────────── ─────────────────────────────────────── ────────── ───────────────────────────────
-openai       text-embedding-3-small                  embedding  embedding
-google       text-embedding-004                      embedding  embedding
-```
-
-### Example: `kosha cheapest --role image --limit 2`
-
-```
-Provider     Model                                   Mode       Metric      Score    $/M in  $/M out
-──────────── ─────────────────────────────────────── ────────── ──────── ────────── ──────── ────────
-openrouter   openai/dall-e-3                         image      blended     $8.00    $8.00    $0.00
-openrouter   black-forest-labs/flux-1-schnell        image      blended    $10.00   $10.00    $0.00
-```
-
-### Example: `kosha capabilities`
-
-```
-Capability           Models
-──────────────────── ──────
-chat                     38
-vision                   12
-function_calling         10
-code                      8
-embedding                 6
-image_generation          4
-audio                     2
-```
-
-### Example: `kosha capable vision --limit 3`
-
-```
-Provider     Model                              Mode       Context    $/M in   $/M out
-──────────── ────────────────────────────────── ────────── ────────── ──────── ────────
-anthropic    claude-sonnet-4-20250514           chat       200K       $3.00    $15.00
-openai       gpt-4o                             chat       128K       $2.50    $10.00
-google       gemini-2.5-pro-preview-05-06       chat       1M         $1.25    $10.00
-```
-
-### Example: `kosha routes gpt-4o`
-
-```
-Model: gpt-4o
-Preferred provider: openai
-
-Provider     Origin     Base URL                     Direct  Preferred
-──────────── ────────── ──────────────────────────── ─────── ─────────
-openai       openai     https://api.openai.com       ✓       ✓
-openrouter   openai     https://openrouter.ai        —       —
-```
-
-## HTTP API Reference
-
-Start the server:
-
-```bash
-kosha serve --port 3000
-# or
-PORT=3000 node dist/server.js
-```
-
-### Endpoints
-
-#### `GET /api/models`
-
-List all discovered models. Supports query parameters for filtering.
-
-| Parameter    | Type   | Description                                |
-|-------------|--------|--------------------------------------------|
-| `provider`  | string | Filter by provider ID (e.g., `anthropic`)  |
-| `mode`      | string | Filter by mode (`chat`, `embedding`, etc.) |
-| `capability`| string | Filter by capability (`vision`, etc.)      |
-
-```bash
-curl http://localhost:3000/api/models?provider=anthropic&mode=chat
-```
-
-```json
-{
-  "models": [ ... ],
-  "count": 12
-}
-```
-
-#### `GET /api/models/cheapest`
-
-Rank the cheapest eligible models for a role/capability.  
-Useful for assistant routers asking questions like: _"For embeddings, what is cheapest right now?"_
-
-| Parameter         | Type   | Description |
-|------------------|--------|-------------|
-| `role`           | string | Flexible role alias (e.g. `embeddings`, `image`, `tool_use`) |
-| `capability`     | string | Explicit capability (e.g. `vision`, `embedding`) |
-| `mode`           | string | Restrict by mode (`chat`, `embedding`, `image`, `audio`, `moderation`) |
-| `provider`       | string | Restrict by serving provider |
-| `originProvider` | string | Restrict by origin model provider |
-| `limit`          | number | Max ranked matches (default `5`) |
-| `priceMetric`    | string | `input`, `output`, or `blended` |
-| `inputWeight`    | number | Input weight for `blended` scoring |
-| `outputWeight`   | number | Output weight for `blended` scoring |
-| `includeUnpriced`| bool   | Include unpriced models after ranked matches |
-
-```bash
-curl "http://localhost:3000/api/models/cheapest?role=embeddings&limit=3"
-```
-
-```json
-{
-  "matches": [
-    {
-      "model": { "id": "text-embedding-3-small", "provider": "openai", "...": "..." },
-      "score": 0.02,
-      "priceMetric": "input"
-    }
-  ],
-  "candidates": 6,
-  "pricedCandidates": 4,
-  "skippedNoPricing": 2,
-  "priceMetric": "input",
-  "missingCredentials": [
-    {
-      "providerId": "google",
-      "providerName": "Google",
-      "envVars": ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
-      "message": "Set GOOGLE_API_KEY or GEMINI_API_KEY to enable Google model discovery."
-    }
-  ],
-  "cheapest": {
-    "model": { "id": "text-embedding-3-small", "provider": "openai", "...": "..." },
-    "score": 0.02,
-    "priceMetric": "input"
-  }
-}
-```
-
-#### `GET /api/roles`
-
-Return a provider -> model -> roles matrix.
-
-```bash
-curl "http://localhost:3000/api/roles?role=image"
-```
-
-```json
-{
-  "providers": [
-    {
-      "id": "openrouter",
-      "name": "OpenRouter",
-      "authenticated": false,
-      "credentialSource": "none",
-      "models": [
-        {
-          "id": "openai/dall-e-3",
-          "mode": "image",
-          "roles": ["image", "image_generation"]
-        }
-      ]
-    }
-  ],
-  "count": 1,
-  "modelCount": 12,
-  "missingCredentials": []
-}
-```
-
-#### `GET /api/models/:idOrAlias`
-
-Get a single model by its full ID or alias, including resolved provider URL and version hint.
-
-```bash
-curl http://localhost:3000/api/models/sonnet
-```
-
-```json
-{
-  "id": "claude-sonnet-4-20250514",
-  "provider": "anthropic",
-  "originProvider": "anthropic",
-  "baseUrl": "https://api.anthropic.com",
-  "version": "20250514",
-  "resolvedOriginProvider": "anthropic",
-  "isDirectProvider": true
-}
-```
-
-#### `GET /api/models/:idOrAlias/routes`
-
-Return all serving routes for one underlying model with direct/preferred flags.
-
-```bash
-curl http://localhost:3000/api/models/gpt-5.3-codex/routes
-```
-
-```json
-{
-  "model": "gpt-5.3-codex",
-  "preferredProvider": "openai",
-  "routes": [
-    {
-      "provider": "openai",
-      "originProvider": "openai",
-      "baseUrl": "https://api.openai.com",
-      "version": "5.3",
-      "isDirect": true,
-      "isPreferred": true,
-      "model": { "...": "..." }
-    },
-    {
-      "provider": "openrouter",
-      "originProvider": "openai",
-      "baseUrl": "https://openrouter.ai",
-      "version": "5.3",
-      "isDirect": false,
-      "isPreferred": false,
-      "model": { "...": "..." }
-    }
-  ]
-}
-```
-
-#### `GET /api/providers`
-
-List all providers with summary info.
-
-```bash
-curl http://localhost:3000/api/providers
-```
-
-```json
-{
-  "providers": [
-    {
-      "id": "anthropic",
-      "name": "Anthropic",
-      "baseUrl": "https://api.anthropic.com",
-      "authenticated": true,
-      "credentialSource": "env",
-      "modelCount": 12,
-      "lastRefreshed": 1740000000000,
-      "missingCredentialPrompt": null,
-      "credentialEnvVars": []
-    }
-  ],
-  "count": 4,
-  "missingCredentials": []
-}
-```
-
-#### `GET /api/providers/:id`
-
-Get a single provider with all its models.
-
-```bash
-curl http://localhost:3000/api/providers/anthropic
-```
-
-#### `POST /api/refresh`
-
-Trigger re-discovery of all providers, or a specific one.
-
-```bash
-# Refresh all
-curl -X POST http://localhost:3000/api/refresh
-
-# Refresh a specific provider
-curl -X POST http://localhost:3000/api/refresh -H "Content-Type: application/json" -d '{"provider": "anthropic"}'
-```
-
-#### `GET /api/resolve/:alias`
-
-Resolve a model alias to its canonical ID.
-
-```bash
-curl http://localhost:3000/api/resolve/sonnet
-```
-
-```json
-{
-  "alias": "sonnet",
-  "resolved": "claude-sonnet-4-20250514",
-  "isAlias": true
-}
-```
-
-#### `GET /health`
-
-Health check endpoint.
-
-```bash
-curl http://localhost:3000/health
-```
-
-```json
-{
-  "status": "ok",
-  "models": 234,
-  "providers": 16,
-  "uptime": 123.45
-}
 ```
 
 ## Supported Providers
@@ -776,70 +88,25 @@ curl http://localhost:3000/health
 | Anthropic | API (`/v1/models`) | `ANTHROPIC_API_KEY`, Claude CLI, Codex CLI |
 | OpenAI | API (`/v1/models`) | `OPENAI_API_KEY`, GitHub Copilot tokens |
 | Google | API (`/v1beta/models`) | `GOOGLE_API_KEY`, `GEMINI_API_KEY`, Gemini CLI, gcloud |
-| AWS Bedrock | SDK → CLI → static fallback | `AWS_ACCESS_KEY_ID`+`AWS_SECRET_ACCESS_KEY`, `~/.aws/credentials`, SSO, IAM roles |
-| Vertex AI | API + gcloud | `GOOGLE_APPLICATION_CREDENTIALS`, gcloud ADC, `gcloud auth print-access-token` |
-| Ollama | Local API (`/api/tags`) | None needed (local) |
-| OpenRouter | API (`/api/v1/models`) | `OPENROUTER_API_KEY` (optional) |
-| NVIDIA | API (`/v1/models`) | `NVIDIA_API_KEY` |
-| Together AI | API (`/v1/models`) | `TOGETHER_API_KEY` |
-| Fireworks AI | API (`/v1/models`) | `FIREWORKS_API_KEY` |
-| Groq | API (`/v1/models`) | `GROQ_API_KEY` |
-| Mistral AI | API (`/v1/models`) | `MISTRAL_API_KEY` |
-| DeepInfra | API (`/v1/models`) | `DEEPINFRA_API_KEY` |
-| Cohere | API (`/v1/models`) | `CO_API_KEY` |
-| Cerebras | API (`/v1/models`) | `CEREBRAS_API_KEY` |
-| Perplexity | API (`/v1/models`) | `PERPLEXITY_API_KEY` |
+| AWS Bedrock | SDK → CLI → static | `AWS_ACCESS_KEY_ID`, `~/.aws/credentials`, SSO, IAM |
+| Vertex AI | API + gcloud | `GOOGLE_APPLICATION_CREDENTIALS`, gcloud ADC |
+| Ollama | Local API | None needed (local) |
+| OpenRouter | API | `OPENROUTER_API_KEY` (optional) |
+| NVIDIA | API | `NVIDIA_API_KEY` |
+| Together AI | API | `TOGETHER_API_KEY` |
+| Fireworks AI | API | `FIREWORKS_API_KEY` |
+| Groq | API | `GROQ_API_KEY` |
+| Mistral AI | API | `MISTRAL_API_KEY` |
+| DeepInfra | API | `DEEPINFRA_API_KEY` |
+| Cohere | API | `CO_API_KEY` |
+| Cerebras | API | `CEREBRAS_API_KEY` |
+| Perplexity | API | `PERPLEXITY_API_KEY` |
 
-## Model Aliases
+## Security
 
-Built-in aliases for common models:
+All external data (API responses, CLI output, cache reads) is scanned for 9 threat types before use: credential leaks, base64 payloads, script/shell injection, data URIs, null bytes, prototype pollution, hex blobs, and oversized strings. A pre-commit hook blocks secrets at commit time.
 
-| Alias | Resolves To |
-|-------|-------------|
-| `sonnet` | `claude-sonnet-4-6` |
-| `opus` | `claude-opus-4-6` |
-| `haiku` | `claude-haiku-4-5-20251001` |
-| `gpt4o` | `gpt-4o` |
-| `o3` | `o3` |
-| `gemini-pro` | `gemini-2.5-pro-preview-05-06` |
-| `nemotron-ultra` | `nvidia/llama-3.1-nemotron-ultra-253b-v1` |
-| `mistral-large` | `mistral-large-latest` |
-| `groq-llama` | `llama-3.3-70b-versatile` |
-| `embed-small` | `text-embedding-3-small` |
-| `nomic` | `nomic-embed-text` |
-
-Custom aliases:
-
-```typescript
-import { ModelRegistry } from "kosha-discovery";
-const registry = new ModelRegistry({ aliases: { "fast": "claude-haiku-4-5-20251001" } });
-```
-
-## Configuration
-
-```typescript
-const registry = new ModelRegistry({
-  cacheDir: "~/.kosha",           // Cache directory (default: ~/.kosha)
-  cacheTtlMs: 86400000,           // Cache TTL: 24 hours (default)
-  providers: {
-    anthropic: { enabled: true, apiKey: "sk-..." },
-    ollama: { enabled: true, baseUrl: "http://localhost:11434" },
-    openrouter: { enabled: false },
-  },
-  aliases: {
-    "my-model": "claude-sonnet-4-20250514",
-  },
-});
-```
-
-## Pricing Enrichment
-
-Model pricing is sourced from [litellm's model pricing database](https://github.com/BerriAI/litellm) -- a community-maintained dataset covering 300+ models. Kosha fetches this data and enriches discovered models with:
-
-- Input/output token pricing
-- Context window sizes
-- Cache read/write costs
-- Capability flags (vision, function calling, etc.)
+See [docs/security.md](docs/security.md) for the full threat catalogue and architecture.
 
 ## Architecture
 
@@ -856,7 +123,6 @@ Model pricing is sourced from [litellm's model pricing database](https://github.
 ┌───────────────────────▼─────────────────────────────┐
 │                  ModelRegistry                        │
 │  models() · providerRoles() · cheapestModels()       │
-│  providerHealth() · resetHealth()                    │
 └──┬──────────┬──────────────┬───────────────┬────────┘
    │          │              │               │
 ┌──▼───┐ ┌───▼────────┐ ┌───▼──────────┐ ┌──▼─────────┐
@@ -868,140 +134,32 @@ Model pricing is sourced from [litellm's model pricing database](https://github.
     ▼        ▼        ▼        ▼          StaleCachePolicy
  Direct   OpenAI-   Cloud      litellm
   API    Compatible  Proxies    JSON
- ─────   ──────────  ───────
-Anthropic  NVIDIA    Bedrock
- OpenAI   Together   Vertex
- Google   Fireworks
- Ollama    Groq
-OpenRouter Mistral
-           DeepInfra
-           Cohere
-           Cerebras
-           Perplexity
 ```
 
-## Resilience
+## Documentation
 
-Kosha is designed to degrade gracefully and auto-heal when providers are unavailable.
+| Doc | What's in it |
+|-----|-------------|
+| [Credentials](docs/credentials.md) | Setup for all 16 providers (env vars, CLI tools, config files) |
+| [CLI Reference](docs/cli.md) | All commands, flags, and example output |
+| [HTTP API](docs/api.md) | All endpoints, parameters, and response schemas |
+| [Configuration](docs/configuration.md) | Aliases, routing, pricing enrichment, programmatic config |
+| [Architecture](docs/architecture.md) | Discovery flow, module map, data pipeline, adding providers |
+| [Resilience](docs/resilience.md) | Circuit breakers, stale cache fallback, health monitoring |
+| [Security](docs/security.md) | Threat catalogue, runtime scanning, pre-commit hook |
+| [Discovery Plane v1](docs/discovery-plane-v1.md) | Stable daemon contract (deltas, SSE watch, binding hints) |
 
-### Circuit Breaker
+## Credits
 
-Each provider has an independent circuit breaker with three states:
-
-- **Closed** (healthy) — requests pass through normally
-- **Open** (failing) — after 3 consecutive failures, the provider is short-circuited for 60 seconds
-- **Half-Open** (probing) — after cooldown, one probe request is allowed; success → closed, failure → open
-
-### Stale Cache Fallback
-
-When a provider fails during discovery, Kosha serves the last-known-good cached data (marked as stale) instead of returning nothing. This ensures your application always has model data, even during provider outages.
-
-### Health Monitoring
-
-```typescript
-const kosha = await createKosha();
-
-// Check provider health
-const health = kosha.providerHealth();
-// → { anthropic: "closed", nvidia: "open", groq: "half-open", ... }
-
-// Reset a provider's circuit breaker
-kosha.resetHealth("nvidia");
-```
-
-## Security
-
-Kosha applies zero-trust guardrails to all external data — every API response, CLI output, cache read, and enrichment fetch is scanned before use.
-
-### Runtime Payload Scanning
-
-All external data passes through `assertCleanPayload()` which deep-scans every key and string value for 9 threat types:
-
-| Threat | What it catches |
-|--------|----------------|
-| `credential_leak` | `sk-*`, `AKIA*`, `ghp_*`, `gho_*`, `xoxb-*`, `xoxp-*`, `AIza*`, `ya29.*`, `glpat-*`, `npm_*`, `pypi-*`, `hf_*`, Bearer tokens |
-| `base64` | 32+ char base64-encoded blobs (credential exfiltration) |
-| `script_injection` | `<script>`, `javascript:`, `on*=` event handlers |
-| `shell_injection` | `$(cmd)`, backtick execution, pipe/chain to curl/wget/bash |
-| `data_uri` | `data:text/html`, `data:application/*` |
-| `null_byte` | `\x00`, `\u0000`, `%00` |
-| `proto_pollution` | `__proto__` keys |
-| `hex_payload` | 64+ char hex blobs |
-| `oversized_string` | Values >2048 chars |
-
-Gated at 5 chokepoints: `base.ts` fetchJSON (all 15+ providers), `litellm.ts`, `vertex.ts` CLI, `bedrock.ts` CLI, and `cache.ts` reads. Poisoned cache files are logged and auto-invalidated.
-
-### Pre-Commit Hook
-
-A git pre-commit hook (`hooks/pre-commit`) provides 3-layer commit-time defense:
-
-1. **Forbidden files** — blocks `.env*`, `*.pem`, `*.key`, `*.p12`, `credentials.json`, `service-account*.json`
-2. **Credential scan** — scans staged diffs for 15+ secret patterns
-3. **Base64 in configs** — scans staged `.json`/`.yaml`/`.toml` files for encoded blobs
-
-Auto-installed on `npm install` via the `prepare` script. Bypass with `--no-verify` for legitimate cases (e.g. test fixtures with fake credentials).
-
-### .gitignore
-
-Hardened to block `.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `credentials.json`, `service-account*.json`, `service_account*.json`, `.npmrc`, `.pypirc`, and local config overrides.
-
-## Project Structure
-
-```
-src/
-  types.ts                Type definitions (ModelCard, ProviderInfo, etc.)
-  registry.ts             ModelRegistry class — core orchestrator
-  security.ts             Supply-chain guardrails (9 threat detectors)
-  resilience.ts           CircuitBreaker, HealthTracker, StaleCachePolicy
-  cache.ts                File-based JSON cache with security scanning
-  aliases.ts              Model alias resolution system
-  cli.ts                  CLI entry point (process.argv parser)
-  server.ts               HTTP API server (Hono)
-  discovery/
-    base.ts               Abstract base discoverer (retry + exponential backoff)
-    openai-compatible.ts  DRY base for OpenAI-compatible providers
-    anthropic.ts          Anthropic API discoverer
-    openai.ts             OpenAI API discoverer
-    google.ts             Google Gemini API discoverer
-    bedrock.ts            AWS Bedrock discoverer (SDK → CLI → static)
-    vertex.ts             Vertex AI discoverer (API + gcloud)
-    ollama.ts             Ollama local discoverer
-    openrouter.ts         OpenRouter API discoverer
-    nvidia.ts             NVIDIA build.nvidia.com discoverer
-    together.ts           Together AI discoverer
-    fireworks.ts          Fireworks AI discoverer
-    groq.ts               Groq discoverer
-    mistral.ts            Mistral AI discoverer
-    deepinfra.ts          DeepInfra discoverer
-    cohere.ts             Cohere discoverer
-    cerebras.ts           Cerebras discoverer
-    perplexity.ts         Perplexity discoverer
-    index.ts              Discovery orchestrator + getAllDiscoverers()
-  credentials/
-    resolver.ts           Credential resolver (env, CLI, config)
-    index.ts              Credential resolver entry
-  enrichment/
-    litellm.ts            litellm pricing enrichment
-    index.ts              Enrichment entry
-hooks/
-  pre-commit              Secret-blocking pre-commit hook
-bin/
-  kosha.js                CLI bin entry point
-```
-
-## Credits & Inspiration
-
-- **[litellm](https://github.com/BerriAI/litellm)** -- Community-maintained model pricing database. Kosha uses their `model_prices_and_context_window.json` for enrichment.
-- **[openrouter](https://openrouter.ai)** -- Model aggregation API providing rich model metadata.
-- **[ollama](https://ollama.ai)** -- Local LLM runtime with model discovery API.
-- **[chitragupta](https://github.com/sriinnu/chitragupta)** -- Autonomous AI Agent Platform whose provider registry patterns inspired kosha's design.
-- **[takumi](https://github.com/sriinnu/takumi)** -- AI coding agent TUI whose model routing needs drove kosha's creation.
+- **[litellm](https://github.com/BerriAI/litellm)** -- Community-maintained model pricing database
+- **[openrouter](https://openrouter.ai)** -- Model aggregation API
+- **[ollama](https://ollama.ai)** -- Local LLM runtime
+- **[chitragupta](https://github.com/sriinnu/chitragupta)** -- Autonomous AI Agent Platform whose registry patterns inspired kosha
+- **[takumi](https://github.com/sriinnu/takumi)** -- AI coding agent TUI whose routing needs drove kosha's creation
 
 ## What "Kosha" Means
 
-`Kosha` comes from Sanskrit and is commonly used to mean a container, treasury, or layered sheath of knowledge.
-
-In this project, Kosha is a standalone model-discovery utility that can be used by any AI system or developer tooling stack (CLIs, agents, apps, or services), not only Kaala-brahma projects.
+`Kosha` comes from Sanskrit -- a container, treasury, or layered sheath of knowledge. A standalone model-discovery utility for any AI system.
 
 ## License
 
