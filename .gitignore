@@ -2,25 +2,40 @@ node_modules/
 dist/
 *.tsbuildinfo
 .DS_Store
-.env
-.env.*
 *.log
 *.tmp
 *.swp
 *.bak
 *.db
 *.sqlite
-*.pem
-*.key
-*.p12
-*.local.json
-*.local.yaml
-*.local.yml
-*.local.toml
 .vscode/
 .idea/
 .zed/
 .cursor/
+
+# ── Secrets & credentials (NEVER commit) ────────────────────────────────────
+.env
+.env.*
+.env.local
+.env.*.local
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+credentials.json
+service-account*.json
+service_account*.json
+**/gcloud-credentials*.json
+.npmrc
+.pypirc
+
+# ── Local config overrides ───────────────────────────────────────────────────
+*.local.json
+*.local.yaml
+*.local.yml
+*.local.toml
 
 # Local-only agent/config files
 CLAUDE.md

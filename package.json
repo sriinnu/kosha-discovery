@@ -59,7 +59,8 @@
 		"test:watch": "vitest",
 		"clean": "rm -rf dist",
 		"start": "node dist/server.js",
-		"kosha": "node dist/cli.js"
+		"kosha": "node dist/cli.js",
+		"prepare": "cp hooks/pre-commit .git/hooks/pre-commit 2>/dev/null && chmod +x .git/hooks/pre-commit || true"
 	},
 	"files": [
 		"dist",

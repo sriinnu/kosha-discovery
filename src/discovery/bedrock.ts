@@ -17,6 +17,7 @@
 
 import { execFileSync } from "node:child_process";
 import { assertSafeShellArg } from "../shell-safe.js";
+import { assertCleanPayload } from "../security.js";
 import type { CredentialResult, ModelCard, ModelMode } from "../types.js";
 import { BaseDiscoverer } from "./base.js";
 
@@ -261,6 +262,7 @@ export class BedrockDiscoverer extends BaseDiscoverer {
 			throw new Error("AWS CLI returned invalid JSON");
 		}
 
+		assertCleanPayload(parsed, "Bedrock AWS CLI");
 		return (parsed.modelSummaries ?? []).map((m) => this.toModelCard(m, "api", credential));
 	}
 

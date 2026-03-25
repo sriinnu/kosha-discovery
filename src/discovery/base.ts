@@ -7,6 +7,7 @@
  */
 
 import type { CredentialResult, ModelCard, ProviderDiscoverer } from "../types.js";
+import { assertCleanPayload } from "../security.js";
 
 /** Safety cap for paginated model listing. */
 export const MAX_MODELS_PER_PROVIDER = 10_000;
@@ -81,7 +82,9 @@ export abstract class BaseDiscoverer implements ProviderDiscoverer {
 					// 5xx server errors are retryable
 					lastError = err;
 				} else {
-					return (await response.json()) as T;
+					const data = (await response.json()) as T;
+					assertCleanPayload(data, `${this.providerName} API`);
+					return data;
 				}
 			} catch (error: unknown) {
 				if (error instanceof DOMException && error.name === "AbortError") {
