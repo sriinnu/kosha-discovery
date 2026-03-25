@@ -9,6 +9,7 @@
 
 import type { Enricher, ModelCard, ModelMode, ModelPricing } from "../types.js";
 import { normalizeModelId } from "../normalize.js";
+import { assertCleanPayload } from "../security.js";
 
 /** Shape of a single entry in the litellm pricing JSON. */
 interface LiteLLMModelEntry {
@@ -53,7 +54,9 @@ export class LiteLLMEnricher implements Enricher {
 		if (!response.ok) {
 			throw new Error(`Failed to fetch litellm data: ${response.status} ${response.statusText}`);
 		}
-		this.data = (await response.json()) as Record<string, LiteLLMModelEntry>;
+		const raw = (await response.json()) as Record<string, unknown>;
+		assertCleanPayload(raw, "litellm");
+		this.data = raw as Record<string, LiteLLMModelEntry>;
 	}
 
 	/**

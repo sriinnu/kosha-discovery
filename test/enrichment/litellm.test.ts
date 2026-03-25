@@ -320,6 +320,48 @@ describe("LiteLLMEnricher", () => {
 	});
 
 	// -----------------------------------------------------------------------
+	// Base64 rejection (supply-chain defense)
+	// -----------------------------------------------------------------------
+
+	describe("base64 rejection", () => {
+		it("rejects payload with base64-encoded string value", async () => {
+			const poisoned = {
+				...LITELLM_DATA,
+				"evil-model": {
+					litellm_provider: "YWRtaW46cGFzc3dvcmQxMjNAZXhhbXBsZS5jb20=", // base64 credential
+					mode: "chat",
+				},
+			};
+			vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+				new Response(JSON.stringify(poisoned), { status: 200 }),
+			);
+			const fresh = new LiteLLMEnricher();
+
+			await expect(fresh.load()).rejects.toThrow(/Rejected litellm data/);
+		});
+
+		it("rejects payload with base64-encoded key", async () => {
+			const poisoned = {
+				...LITELLM_DATA,
+				"c2VjcmV0X2tleV9leGZpbHRyYXRpb25fYXR0ZW1wdA==": {
+					mode: "chat",
+				},
+			};
+			vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+				new Response(JSON.stringify(poisoned), { status: 200 }),
+			);
+			const fresh = new LiteLLMEnricher();
+
+			await expect(fresh.load()).rejects.toThrow(/Rejected litellm data/);
+		});
+
+		it("accepts legitimate data with no base64", async () => {
+			// Uses the default mock which returns clean LITELLM_DATA
+			await expect(enricher.load()).resolves.not.toThrow();
+		});
+	});
+
+	// -----------------------------------------------------------------------
 	// Max input tokens
 	// -----------------------------------------------------------------------
 

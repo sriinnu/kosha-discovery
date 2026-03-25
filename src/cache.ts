@@ -11,6 +11,7 @@ import { mkdir, readFile, readdir, rename, rm, unlink, writeFile } from "fs/prom
 import { randomBytes } from "crypto";
 import { homedir } from "os";
 import { join } from "path";
+import { assertCleanPayload } from "./security.js";
 
 interface CacheEntry<T> {
 	data: T;
@@ -39,9 +40,14 @@ export class KoshaCache {
 			const filePath = this.keyToPath(key);
 			const raw = await readFile(filePath, "utf-8");
 			const entry = JSON.parse(raw) as CacheEntry<T>;
+			assertCleanPayload(entry, `cache/${key}`);
 			return entry;
 		} catch (err: unknown) {
-			if (err instanceof SyntaxError) {
+			if (err instanceof Error && err.message.startsWith("Rejected")) {
+				// Security violation — poisoned cache file. Log loudly, invalidate, return miss.
+				console.error(`KoshaCache SECURITY: ${err.message}`);
+				await this.invalidate(key);
+			} else if (err instanceof SyntaxError) {
 				console.warn(`KoshaCache: corrupted cache file for key "${key}"`);
 			}
 			return null;

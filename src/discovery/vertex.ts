@@ -17,6 +17,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { assertSafeShellArg } from "../shell-safe.js";
+import { assertCleanPayload } from "../security.js";
 import type { CredentialResult, ModelCard, ModelMode } from "../types.js";
 import { BaseDiscoverer } from "./base.js";
 
@@ -288,6 +289,7 @@ export class VertexDiscoverer extends BaseDiscoverer {
 			).toString();
 
 			const models = JSON.parse(raw) as GcloudModel[];
+			assertCleanPayload(models, "Vertex AI gcloud CLI");
 			if (!Array.isArray(models)) return [];
 			return models.map((m) => this.gcloudModelToCard(m, region, projectId));
 		} catch (err: unknown) {

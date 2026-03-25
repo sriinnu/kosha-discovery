@@ -1,7 +1,7 @@
-import { mkdtemp, readdir, rm } from "fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { KoshaCache } from "../src/cache.js";
 
 describe("KoshaCache", () => {
@@ -127,6 +127,61 @@ describe("KoshaCache", () => {
 			const entry = await cache.get<{ value: number }>("atomic-test");
 			expect(entry).not.toBeNull();
 			expect(entry!.data.value).toBe(42);
+		});
+	});
+
+	describe("security: poisoned cache rejection", () => {
+		it("returns null and logs when cache file contains base64 payload", async () => {
+			// Write a clean entry, then tamper with it on disk
+			await cache.set("provider-openai", { models: ["gpt-4o"] });
+
+			// Overwrite the cache file with poisoned data
+			const poisoned = JSON.stringify({
+				data: { secret: "YWRtaW46cGFzc3dvcmQxMjNAZXhhbXBsZS5jb20=" },
+				timestamp: Date.now(),
+			});
+			const safeName = "provider-openai".replace(/[^a-zA-Z0-9\-_]/g, "_");
+			await writeFile(join(tempDir, `${safeName}.json`), poisoned, "utf-8");
+
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+			const entry = await cache.get("provider-openai");
+
+			expect(entry).toBeNull();
+			expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("SECURITY"));
+			errorSpy.mockRestore();
+		});
+
+		it("returns null when cache file contains leaked credential", async () => {
+			const poisoned = JSON.stringify({
+				data: { token: "sk-abc123def456ghi789jkl012mno345" },
+				timestamp: Date.now(),
+			});
+			const safeName = "poisoned-key".replace(/[^a-zA-Z0-9\-_]/g, "_");
+			await writeFile(join(tempDir, `${safeName}.json`), poisoned, "utf-8");
+
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+			const entry = await cache.get("poisoned-key");
+
+			expect(entry).toBeNull();
+			expect(errorSpy).toHaveBeenCalled();
+			errorSpy.mockRestore();
+		});
+
+		it("invalidates poisoned cache file after detection", async () => {
+			const poisoned = JSON.stringify({
+				data: { secret: "YWRtaW46cGFzc3dvcmQxMjNAZXhhbXBsZS5jb20=" },
+				timestamp: Date.now(),
+			});
+			const safeName = "tainted".replace(/[^a-zA-Z0-9\-_]/g, "_");
+			await writeFile(join(tempDir, `${safeName}.json`), poisoned, "utf-8");
+
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+			await cache.get("tainted");
+			errorSpy.mockRestore();
+
+			// File should have been deleted
+			const files = await readdir(tempDir);
+			expect(files).not.toContain(`${safeName}.json`);
 		});
 	});
 
