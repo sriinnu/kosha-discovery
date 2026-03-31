@@ -1,6 +1,6 @@
 {
-	"name": "kosha-discovery",
-	"version": "0.4.1",
+	"name": "@sriinnu/kosha-discovery",
+	"version": "0.5.0",
 	"description": "AI Model & Provider Discovery Registry -- kosha (कोश) treasury of models",
 	"type": "module",
 	"license": "MIT",
