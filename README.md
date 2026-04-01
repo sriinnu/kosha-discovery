@@ -7,9 +7,14 @@
 <p align="center"><strong>AI Model & Provider Discovery Registry</strong></p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/kosha-discovery"><img src="https://img.shields.io/npm/v/kosha-discovery?color=7C3AED&label=npm" alt="npm version" /></a>
-  <a href="https://github.com/sriinnu/kosha-discovery/blob/main/LICENSE"><img src="https://img.shields.io/npm/l/kosha-discovery?color=F59E0B" alt="license" /></a>
-  <img src="https://img.shields.io/node/v/kosha-discovery?color=5B21B6" alt="node version" />
+  <a href="https://www.npmjs.com/package/@sriinnu/kosha-discovery"><img src="https://img.shields.io/npm/v/%40sriinnu%2Fkosha-discovery?color=7C3AED&label=npm" alt="npm version" /></a>
+  <a href="https://www.npmjs.com/package/@sriinnu/kosha-discovery"><img src="https://img.shields.io/npm/dm/%40sriinnu%2Fkosha-discovery?color=0EA5E9&label=downloads" alt="npm downloads" /></a>
+  <a href="https://github.com/sriinnu/kosha-discovery/blob/main/LICENSE"><img src="https://img.shields.io/github/license/sriinnu/kosha-discovery?color=F59E0B" alt="license" /></a>
+  <a href="https://www.npmjs.com/package/@sriinnu/kosha-discovery"><img src="https://img.shields.io/node/v/%40sriinnu%2Fkosha-discovery?color=5B21B6" alt="node version" /></a>
+  <a href="https://github.com/sriinnu/kosha-discovery/actions/workflows/release-npm.yml"><img src="https://img.shields.io/github/actions/workflow/status/sriinnu/kosha-discovery/release-npm.yml?label=release%20workflow" alt="release workflow status" /></a>
+  <a href="https://github.com/sriinnu/kosha-discovery/actions/workflows/update-kosha-snapshot.yml"><img src="https://img.shields.io/github/actions/workflow/status/sriinnu/kosha-discovery/update-kosha-snapshot.yml?label=snapshot%20workflow" alt="snapshot workflow status" /></a>
+  <a href="https://github.com/sriinnu/kosha-discovery/actions/workflows/provider-smoke.yml"><img src="https://img.shields.io/github/actions/workflow/status/sriinnu/kosha-discovery/provider-smoke.yml?label=provider%20smoke" alt="provider smoke status" /></a>
+  <a href="https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json"><img src="https://img.shields.io/badge/pricing%20source-LiteLLM-2563EB" alt="LiteLLM pricing source" /></a>
 </p>
 
 Kosha (कोश — treasury/repository) automatically discovers AI models across providers, resolves credentials from CLI tools and environment variables, enriches models with pricing data, and exposes the catalog via library, CLI, and HTTP API.
