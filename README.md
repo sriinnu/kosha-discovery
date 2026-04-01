@@ -237,7 +237,7 @@ See [docs/security.md](docs/security.md) for the full threat catalogue and archi
 
 | Doc | What's in it |
 |-----|-------------|
-| [Credentials](docs/credentials.md) | Setup for all 16 providers (env vars, CLI tools, config files) |
+| [Credentials](docs/credentials.md) | Setup for all 21 providers (env vars, CLI tools, config files) |
 | [CLI Reference](docs/cli.md) | All commands, flags, and example output |
 | [HTTP API](docs/api.md) | All endpoints, parameters, and response schemas |
 | [Configuration](docs/configuration.md) | Aliases, routing, pricing enrichment, programmatic config |
@@ -245,6 +245,24 @@ See [docs/security.md](docs/security.md) for the full threat catalogue and archi
 | [Resilience](docs/resilience.md) | Circuit breakers, stale cache fallback, health monitoring |
 | [Security](docs/security.md) | Threat catalogue, runtime scanning, pre-commit hook |
 | [Discovery Plane v1](docs/discovery-plane-v1.md) | Stable daemon contract (deltas, SSE watch, binding hints) |
+
+## Release & Tagging
+
+Package: `@sriinnu/kosha-discovery`
+
+This repo uses a human-in-the-loop release flow:
+
+1. Update version in `package.json` and lockfiles locally.
+2. Create a signed tag and push it:
+   ```bash
+   git tag -s v0.6.0 -m "v0.6.0"
+   git push origin v0.6.0
+   ```
+3. In GitHub Actions, run `Manual Release (Tag + npm)` and provide `tag=v0.6.0`.
+4. Workflow verifies tag/version match, builds/tests, then publishes to npm (if enabled) and creates a GitHub Release.
+
+Required secret for publish:
+- `NPM_TOKEN` (publish rights for `@sriinnu` scope)
 
 ## Credits
 

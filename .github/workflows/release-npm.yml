@@ -1,0 +1,85 @@
+name: Manual Release (Tag + npm)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Signed git tag to release (example: v0.6.0)"
+        required: true
+        type: string
+      publish_npm:
+        description: "Publish @sriinnu/kosha-discovery to npm"
+        required: false
+        default: true
+        type: boolean
+      create_github_release:
+        description: "Create/update GitHub Release for this tag"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag }}
+          fetch-depth: 0
+
+      - name: Ensure tag exists and is reachable
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse "${{ github.event.inputs.tag }}^{tag}" >/dev/null
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate tag matches package version
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag }}"
+          VERSION_FROM_TAG="${TAG#v}"
+          VERSION_FROM_PKG="$(node -p "JSON.parse(require('fs').readFileSync('package.json','utf8')).version")"
+          if [[ "$VERSION_FROM_TAG" != "$VERSION_FROM_PKG" ]]; then
+            echo "Tag version ($VERSION_FROM_TAG) does not match package.json version ($VERSION_FROM_PKG)."
+            exit 1
+          fi
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Test
+        run: pnpm test
+
+      - name: Publish to npm
+        if: ${{ github.event.inputs.publish_npm == 'true' }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
+
+      - name: Create GitHub release
+        if: ${{ github.event.inputs.create_github_release == 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+          generate_release_notes: true
+

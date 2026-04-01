@@ -279,6 +279,26 @@ jobs:
           sha256sum "$OUTPUT_PATH" > "$CHECKSUM_PATH"
           echo "Generated checksum at $CHECKSUM_PATH" >> "$OBS_LOG"
 
+      - name: Evaluate commit guard
+        id: guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          AUTH_COUNT="$(node --input-type=module <<'NODE'
+          import { readFile } from "node:fs/promises";
+          const snapshot = JSON.parse(await readFile(process.env.OUTPUT_PATH, "utf8"));
+          const authenticatedProviders = snapshot.providers.filter((provider) => provider.authenticated === true);
+          process.stdout.write(String(authenticatedProviders.length));
+          NODE
+          )"
+          echo "AUTHENTICATED_PROVIDER_COUNT=$AUTH_COUNT" >> "$GITHUB_ENV"
+          if [[ "${AUTH_COUNT}" == "0" ]]; then
+            echo "ALLOW_COMMIT=false" >> "$GITHUB_ENV"
+            echo "No authenticated providers detected. Commit will be skipped." >> "$OBS_LOG"
+          else
+            echo "ALLOW_COMMIT=true" >> "$GITHUB_ENV"
+          fi
+
       - name: Safety scan snapshot for secrets
         id: scan
         shell: bash
@@ -301,6 +321,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ "${ALLOW_COMMIT:-false}" != "true" ]]; then
+            echo "Skipping commit because commit guard blocked unauthenticated snapshot." >> "$OBS_LOG"
+            exit 0
+          fi
           if [[ -z "$(git status --porcelain -- "$OUTPUT_PATH" "$CHECKSUM_PATH")" ]]; then
             echo "No snapshot changes to commit."
             exit 0
