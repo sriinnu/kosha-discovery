@@ -128,6 +128,26 @@ describe("ModelRegistry", () => {
 			const registry = new ModelRegistry();
 			expect(registry.model("non-existent")).toBeUndefined();
 		});
+
+		it("finds canonical models via normalized fallback (dot/hyphen + prefix insensitive)", () => {
+			const proxied = makeModel({
+				id: "anthropic/claude-sonnet-4.6",
+				provider: "openrouter",
+				originProvider: "anthropic",
+				name: "Claude Sonnet 4.6",
+			});
+			const openrouter = makeProvider("openrouter", "OpenRouter", [proxied]);
+
+			const registry = ModelRegistry.fromJSON({
+				providers: [openrouter],
+				aliases: {},
+				discoveredAt: Date.now(),
+			});
+
+			const found = registry.model("claude-sonnet-4-6-20250514");
+			expect(found).toBeDefined();
+			expect(found!.id).toBe("anthropic/claude-sonnet-4.6");
+		});
 	});
 
 	describe("models() with filters", () => {

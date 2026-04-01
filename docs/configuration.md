@@ -91,3 +91,4 @@ Model pricing is sourced from [litellm's model pricing database](https://github.
 - Context window sizes
 - Cache read/write costs
 - Capability flags (vision, function calling, etc.)
+- Origin-provider reference pricing for proxied routes (e.g. OpenRouter vs direct provider)

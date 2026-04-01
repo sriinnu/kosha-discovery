@@ -51,9 +51,12 @@ describe("AnthropicDiscoverer", () => {
 		expect(discoverer.baseUrl).toBe("https://api.anthropic.com");
 	});
 
-	it("should return empty array when no API key provided", async () => {
+	it("should return curated fallback models when no API key provided", async () => {
 		const result = await discoverer.discover(noCredential);
-		expect(result).toEqual([]);
+		expect(result.length).toBeGreaterThan(0);
+		expect(result.some((m) => m.id === "claude-sonnet-4-6")).toBe(true);
+		expect(result.every((m) => m.provider === "anthropic")).toBe(true);
+		expect(result.every((m) => m.source === "manual")).toBe(true);
 	});
 
 	it("should discover models from API and create correct ModelCards", async () => {

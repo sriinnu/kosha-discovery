@@ -133,6 +133,25 @@ describe("LiteLLMEnricher", () => {
 			expect(enriched.pricing!.inputPerMillion).toBe(99);
 			expect(enriched.pricing!.outputPerMillion).toBe(199);
 		});
+
+		it("keeps proxy route pricing and adds originPricing for proxied models", async () => {
+			const models = [makeModel({
+				id: "openai/gpt-4o",
+				provider: "openrouter",
+				originProvider: "openai",
+				pricing: { inputPerMillion: 5, outputPerMillion: 25 },
+			})];
+			const [enriched] = await enricher.enrich(models);
+
+			// Preserve route/provider pricing (OpenRouter markup)
+			expect(enriched.pricing!.inputPerMillion).toBe(5);
+			expect(enriched.pricing!.outputPerMillion).toBe(25);
+
+			// Add origin reference pricing (OpenAI direct)
+			expect(enriched.originPricing).toBeDefined();
+			expect(enriched.originPricing!.inputPerMillion).toBe(2.5);
+			expect(enriched.originPricing!.outputPerMillion).toBe(10);
+		});
 	});
 
 	// -----------------------------------------------------------------------

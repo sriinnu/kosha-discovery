@@ -88,11 +88,14 @@ export class LiteLLMEnricher implements Enricher {
 		const enriched: ModelCard = { ...model };
 
 		// Pricing — only when the model has no pricing yet
-		if (!enriched.pricing) {
-			const pricing = this.extractPricing(entry);
-			if (pricing) {
-				enriched.pricing = pricing;
-			}
+		const entryPricing = this.extractPricing(entry);
+		if (!enriched.pricing && entryPricing) {
+			enriched.pricing = entryPricing;
+		}
+
+		// Preserve proxy-route pricing while surfacing direct-origin reference pricing.
+		if (entryPricing && enriched.originProvider && enriched.originProvider !== enriched.provider && !enriched.originPricing) {
+			enriched.originPricing = entryPricing;
 		}
 
 		// Context window — only when unset (0)

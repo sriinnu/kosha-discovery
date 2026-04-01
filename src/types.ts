@@ -101,6 +101,8 @@ export interface ModelCard {
 	maxOutputTokens: number;
 	/** Token pricing information (filled by enrichment or API). */
 	pricing?: ModelPricing;
+	/** Reference direct-provider pricing for proxied routes (optional). */
+	originPricing?: ModelPricing;
 	/** Output vector dimensionality (only for embedding models). */
 	dimensions?: number;
 	/** Maximum input chunk size in tokens (only for embedding models). */

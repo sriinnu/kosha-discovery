@@ -487,6 +487,12 @@ export async function cmdModel(registry: ModelRegistry, idOrAlias: string, flags
 	const reasoningStr = model.pricing?.reasoningInputPerMillion !== undefined || model.pricing?.reasoningOutputPerMillion !== undefined
 		? `\nReasoning Pricing: ${formatPrice(model.pricing?.reasoningInputPerMillion)} in / ${formatPrice(model.pricing?.reasoningOutputPerMillion)} out per million tokens`
 		: "";
+	const originPricingStr = model.originPricing
+		? `\nOrigin Pricing: ${formatPrice(model.originPricing.inputPerMillion)} / ${formatPrice(model.originPricing.outputPerMillion)} per million tokens (in/out)` +
+			((model.originPricing.reasoningInputPerMillion !== undefined || model.originPricing.reasoningOutputPerMillion !== undefined)
+				? `\nOrigin Reasoning Pricing: ${formatPrice(model.originPricing.reasoningInputPerMillion)} in / ${formatPrice(model.originPricing.reasoningOutputPerMillion)} out per million tokens`
+				: "")
+		: "";
 
 	// Origin provider line: only shown when distinct from the serving-layer provider
 	const originLine = model.originProvider && model.originProvider !== model.provider
@@ -505,7 +511,7 @@ ${c(BOLD, "Aliases:")} ${model.aliases.length > 0 ? model.aliases.join(", ") : c
 ${c(BOLD, "Context Window:")} ${model.contextWindow > 0 ? formatNumber(model.contextWindow) + " tokens" : c(DIM, "unknown")}
 ${c(BOLD, "Max Output:")} ${model.maxOutputTokens > 0 ? formatNumber(model.maxOutputTokens) + " tokens" : c(DIM, "unknown")}${model.dimensions ? `\n${c(BOLD, "Dimensions:")} ${formatNumber(model.dimensions)}` : ""}
 ${c(BOLD, "Capabilities:")} ${model.capabilities.join(", ")}
-${c(BOLD, "Pricing:")} ${pricingStr}${cacheStr}${reasoningStr}
+${c(BOLD, "Pricing:")} ${pricingStr}${cacheStr}${reasoningStr}${originPricingStr}
 ${c(BOLD, "Source:")} ${model.source}
 ${c(BOLD, "Discovered:")} ${formatTimestamp(model.discoveredAt)}
 `.trim());
