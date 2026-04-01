@@ -125,6 +125,36 @@ export async function cmdDiscover(registry: ModelRegistry, flags: Record<string,
 	printProviderSummary(providers);
 }
 
+// ── latest ───────────────────────────────────────────────────────────────
+
+/**
+ * Fetch the latest provider/model details by forcing live discovery.
+ *
+ * Unlike regular list/search commands, this bypasses cache and always
+ * performs a fresh discovery pass (plus LiteLLM enrichment).
+ *
+ * @param registry  The model registry to discover into.
+ * @param flags     CLI flags (supports `--provider`, `--json`).
+ */
+export async function cmdLatest(registry: ModelRegistry, flags: Record<string, string | boolean>): Promise<void> {
+	const provider = typeof flags.provider === "string" ? flags.provider : undefined;
+	console.log(c(DIM, provider
+		? `Fetching latest details for provider "${provider}"...`
+		: "Fetching latest details for all providers..."));
+
+	const result = await registry.fetchLatestDetails({
+		providers: provider ? [provider] : undefined,
+	});
+
+	if (flags.json) {
+		console.log(JSON.stringify(result, null, 2));
+		return;
+	}
+
+	printProviderSummary(result.providers);
+	console.log(c(DIM, `\nFetched at: ${formatTimestamp(result.discoveredAt)}`));
+}
+
 // ── list ─────────────────────────────────────────────────────────────────
 
 /**
@@ -607,10 +637,17 @@ export async function cmdRoutes(registry: ModelRegistry, modelId: string, flags:
  * @param flags     CLI flags (supports `--json`).
  */
 export async function cmdRefresh(registry: ModelRegistry, flags: Record<string, string | boolean>): Promise<void> {
-	console.log(c(DIM, "Refreshing all providers..."));
-	await registry.refresh();
+	const provider = typeof flags.provider === "string" ? flags.provider : undefined;
+	console.log(c(DIM, provider ? `Refreshing provider "${provider}"...` : "Refreshing all providers..."));
+	await registry.refresh(provider);
 
-	if (flags.json) { console.log(JSON.stringify(registry.toJSON(), null, 2)); return; }
+	if (flags.json) {
+		console.log(JSON.stringify({
+			...registry.toJSON(),
+			modelCount: registry.models().length,
+		}, null, 2));
+		return;
+	}
 
 	const providers = registry.providers_list();
 	printProviderSummary(providers);
@@ -685,7 +722,10 @@ ${c(BOLD, "COMMANDS")}
   ${c(CYAN, "routes")} <id|alias>             Show all provider routes for a model
   ${c(CYAN, "providers")}                     List all providers and their status
   ${c(CYAN, "resolve")} <alias>               Resolve an alias to canonical model ID
+  ${c(CYAN, "latest")}                        Force-fetch latest model/provider details
+    --provider <name>             Scope latest fetch to one provider
   ${c(CYAN, "refresh")}                       Force re-discover all providers (bypass cache)
+    --provider <name>             Refresh only one provider
   ${c(CYAN, "serve")} [--port 3000]           Start HTTP API server
 
 ${c(BOLD, "OPTIONS")}
@@ -709,7 +749,10 @@ ${c(BOLD, "EXAMPLES")}
   ${c(DIM, "$")} kosha routes claude-opus-4-6
   ${c(DIM, "$")} kosha routes gpt-4o --json
   ${c(DIM, "$")} kosha providers
+  ${c(DIM, "$")} kosha latest
+  ${c(DIM, "$")} kosha latest --provider openai --json
   ${c(DIM, "$")} kosha resolve haiku
+  ${c(DIM, "$")} kosha refresh --provider anthropic
   ${c(DIM, "$")} kosha serve --port 8080
 `.trim());
 }
@@ -758,6 +801,7 @@ ${c(MAGENTA, "  ╚════════════════════�
     ${c(CYAN, "kosha cheapest")}       Cheapest models for a role
     ${c(CYAN, "kosha routes")} ${c(DIM, "<id>")}    All provider routes for a model
     ${c(CYAN, "kosha providers")}      Show provider status
+    ${c(CYAN, "kosha latest")}         Force-fetch latest provider/model details
     ${c(CYAN, "kosha serve")}          Start the HTTP API server
 
   ${c(DIM, "Run")} ${c(CYAN, "kosha --help")} ${c(DIM, "for full usage.")}

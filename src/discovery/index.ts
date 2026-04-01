@@ -15,6 +15,11 @@ export { DeepInfraDiscoverer } from "./deepinfra.js";
 export { CohereDiscoverer } from "./cohere.js";
 export { CerebrasDiscoverer } from "./cerebras.js";
 export { PerplexityDiscoverer } from "./perplexity.js";
+export { DeepSeekDiscoverer } from "./deepseek.js";
+export { MoonshotDiscoverer } from "./moonshot.js";
+export { GLMDiscoverer } from "./glm.js";
+export { ZAIDiscoverer } from "./zai.js";
+export { MiniMaxDiscoverer } from "./minimax.js";
 export { OpenAICompatibleDiscoverer } from "./openai-compatible.js";
 export { BaseDiscoverer } from "./base.js";
 
@@ -36,6 +41,11 @@ import { OpenRouterDiscoverer } from "./openrouter.js";
 import { PerplexityDiscoverer } from "./perplexity.js";
 import { TogetherDiscoverer } from "./together.js";
 import { VertexDiscoverer } from "./vertex.js";
+import { DeepSeekDiscoverer } from "./deepseek.js";
+import { MoonshotDiscoverer } from "./moonshot.js";
+import { GLMDiscoverer } from "./glm.js";
+import { ZAIDiscoverer } from "./zai.js";
+import { MiniMaxDiscoverer } from "./minimax.js";
 import { normalizeProviderId } from "../provider-catalog.js";
 
 /**
@@ -63,6 +73,11 @@ export function getAllDiscoverers(options?: { ollamaBaseUrl?: string; llamaCppBa
 		new CohereDiscoverer(),
 		new CerebrasDiscoverer(),
 		new PerplexityDiscoverer(),
+		new DeepSeekDiscoverer(),
+		new MoonshotDiscoverer(),
+		new GLMDiscoverer(),
+		new ZAIDiscoverer(),
+		new MiniMaxDiscoverer(),
 	];
 }
 
@@ -70,7 +85,10 @@ export function getAllDiscoverers(options?: { ollamaBaseUrl?: string; llamaCppBa
  * Returns a single discoverer by provider ID, or undefined if not found.
  *
  * Supported IDs: `"anthropic"`, `"openai"`, `"google"`, `"ollama"`,
- * `"openrouter"`, `"bedrock"`, `"vertex"`.
+ * `"openrouter"`, `"bedrock"`, `"vertex"`, `"nvidia"`, `"together"`,
+ * `"fireworks"`, `"groq"`, `"mistral"`, `"deepinfra"`, `"cohere"`,
+ * `"cerebras"`, `"perplexity"`, `"deepseek"`, `"moonshot"`,
+ * `"glm"`, `"zai"`, `"minimax"`.
  */
 export function getDiscoverer(providerId: string, options?: { baseUrl?: string }): ProviderDiscoverer | undefined {
 	const map: Record<string, () => ProviderDiscoverer> = {
@@ -91,6 +109,11 @@ export function getDiscoverer(providerId: string, options?: { baseUrl?: string }
 		cohere: () => new CohereDiscoverer(),
 		cerebras: () => new CerebrasDiscoverer(),
 		perplexity: () => new PerplexityDiscoverer(),
+		deepseek: () => new DeepSeekDiscoverer(),
+		moonshot: () => new MoonshotDiscoverer(),
+		glm: () => new GLMDiscoverer(),
+		zai: () => new ZAIDiscoverer(),
+		minimax: () => new MiniMaxDiscoverer(),
 	};
 	return map[normalizeProviderId(providerId) ?? providerId]?.();
 }

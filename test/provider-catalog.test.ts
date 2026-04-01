@@ -12,4 +12,11 @@ describe("provider-catalog", () => {
 		expect(normalizeProviderId("gemini")).toBe("google");
 		expect(getProviderDescriptor("google")?.transport).toBe("native-http");
 	});
+
+	it("normalizes new provider aliases", () => {
+		expect(normalizeProviderId("kimi")).toBe("moonshot");
+		expect(normalizeProviderId("zhipu")).toBe("glm");
+		expect(normalizeProviderId("z.ai")).toBe("zai");
+		expect(getProviderDescriptor("moonshot")?.credentialRequired).toBe(true);
+	});
 });

@@ -1,0 +1,112 @@
+name: Branch Protection Check
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Audit branch protection
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          BRANCH: main
+        run: |
+          set -euo pipefail
+
+          artifact_dir="${RUNNER_TEMP}/branch-protection"
+          mkdir -p "$artifact_dir"
+
+          report_file="${artifact_dir}/report.txt"
+          response_file="${artifact_dir}/branch-protection.json"
+          api_url="https://api.github.com/repos/${REPOSITORY}/branches/${BRANCH}/protection"
+
+          http_status="$(curl -sS \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -o "$response_file" \
+            -w '%{http_code}' \
+            "$api_url" || true)"
+
+          if [[ "$http_status" == "401" || "$http_status" == "403" || "$http_status" == "404" ]]; then
+            {
+              echo "Branch protection could not be read for ${REPOSITORY}@${BRANCH}."
+              echo "GitHub API returned HTTP ${http_status}."
+              echo
+              echo "This usually means the workflow token cannot read repository administration settings."
+              echo "Grant the workflow token read access to branch protection, or rerun the audit with a token that can read the branch protection rule."
+              if [[ -s "$response_file" ]]; then
+                echo
+                echo "GitHub response:"
+                jq -r '.message? // .' "$response_file" 2>/dev/null || cat "$response_file"
+              fi
+            } > "$report_file"
+            exit 0
+          fi
+
+          if [[ "$http_status" != "200" ]]; then
+            {
+              echo "Unexpected GitHub API response while reading branch protection for ${REPOSITORY}@${BRANCH}."
+              echo "HTTP status: ${http_status:-unknown}"
+            } | tee "$report_file"
+            exit 1
+          fi
+
+          mapfile -t required_checks < <(
+            jq -r '
+              [
+                (.required_status_checks.checks // [] | map(.context)[]?),
+                (.required_status_checks.contexts // [] | .[])
+              ]
+              | flatten
+              | unique
+              | .[]
+            ' "$response_file"
+          )
+
+          expected_checks=("Branch Protection Check / audit")
+          missing_checks=()
+
+          for expected in "${expected_checks[@]}"; do
+            if ! printf '%s\n' "${required_checks[@]}" | grep -Fxq "$expected"; then
+              missing_checks+=("$expected")
+            fi
+          done
+
+          {
+            echo "Branch protection checks for ${REPOSITORY}@${BRANCH}:"
+            if ((${#required_checks[@]} == 0)); then
+              echo "- <none>"
+            else
+              printf '%s\n' "${required_checks[@]}" | sed 's/^/- /'
+            fi
+
+            if ((${#missing_checks[@]} > 0)); then
+              echo
+              echo "Missing required checks:"
+              printf '%s\n' "${missing_checks[@]}" | sed 's/^/- /'
+            fi
+          } | tee "$report_file"
+
+          if ((${#required_checks[@]} == 0)) || ((${#missing_checks[@]} > 0)); then
+            exit 1
+          fi
+
+      - name: Upload branch protection report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: branch-protection-audit
+          path: |
+            ${{ runner.temp }}/branch-protection/report.txt
+            ${{ runner.temp }}/branch-protection/branch-protection.json
+          if-no-files-found: ignore

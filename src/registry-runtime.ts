@@ -35,6 +35,11 @@ const FALLBACK_ENV_MAP: Record<string, string> = {
 	cohere: "CO_API_KEY",
 	cerebras: "CEREBRAS_API_KEY",
 	perplexity: "PERPLEXITY_API_KEY",
+	deepseek: "DEEPSEEK_API_KEY",
+	moonshot: "MOONSHOT_API_KEY",
+	glm: "GLM_API_KEY",
+	zai: "ZAI_API_KEY",
+	minimax: "MINIMAX_API_KEY",
 };
 
 /**

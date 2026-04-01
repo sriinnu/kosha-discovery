@@ -3,6 +3,7 @@
 	"version": "0.5.0",
 	"description": "AI Model & Provider Discovery Registry -- kosha (कोश) treasury of models",
 	"type": "module",
+	"packageManager": "pnpm@10.33.0",
 	"license": "MIT",
 	"author": "sriinnu",
 	"repository": {
@@ -60,6 +61,9 @@
 		"clean": "rm -rf dist",
 		"start": "node dist/server.js",
 		"kosha": "node dist/cli.js",
+		"latest": "node dist/cli.js latest --json",
+		"autofetch": "node scripts/auto-fetch-latest.mjs",
+		"autofetch:once": "node scripts/auto-fetch-latest.mjs --once",
 		"prepare": "cp hooks/pre-commit .git/hooks/pre-commit 2>/dev/null && chmod +x .git/hooks/pre-commit || true"
 	},
 	"files": [

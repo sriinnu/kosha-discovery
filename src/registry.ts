@@ -66,6 +66,8 @@ import type {
 	DiscoveryError,
 	DiscoveryOptions,
 	KoshaConfig,
+	LatestDiscoveryOptions,
+	LatestDiscoveryResult,
 	ModelCard,
 	ModelMode,
 	ModelRouteInfo,
@@ -113,6 +115,21 @@ export class ModelRegistry {
 	 */
 	async refresh(providerId?: string): Promise<void> {
 		await registryRefresh(this.state, (options) => this.discover(options), providerId);
+	}
+
+	/**
+	 * Force a live discovery fetch and return a summary payload.
+	 *
+	 * This always bypasses cache, so callers can ask for "latest now"
+	 * without relying on TTL expiry.
+	 */
+	async fetchLatestDetails(options?: LatestDiscoveryOptions): Promise<LatestDiscoveryResult> {
+		const providers = await this.discover({ ...options, force: true });
+		return {
+			providers,
+			modelCount: providers.reduce((sum, provider) => sum + provider.models.length, 0),
+			discoveredAt: this.discoveredAt,
+		};
 	}
 
 	/** Return all known models with optional provider/origin/mode filters. */

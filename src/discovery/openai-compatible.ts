@@ -26,6 +26,12 @@ export interface OpenAICompatibleModel {
 	type?: string;
 	/** Some providers (Groq) include a context_window field. */
 	context_window?: number;
+	/** Some providers expose explicit max output tokens. */
+	max_output_tokens?: number;
+	/** Some providers expose explicit max input tokens. */
+	max_input_tokens?: number;
+	/** Some embedding providers expose vector dimensionality. */
+	output_vector_size?: number;
 }
 
 /** Standard response shape from `GET /v1/models`. */
@@ -40,6 +46,9 @@ export interface ModelClassification {
 	mode: ModelMode;
 	capabilities: string[];
 	contextWindow?: number;
+	maxOutputTokens?: number;
+	maxInputTokens?: number;
+	dimensions?: number;
 }
 
 /**
@@ -80,15 +89,37 @@ export abstract class OpenAICompatibleDiscoverer extends BaseDiscoverer {
 			Authorization: `Bearer ${apiKey}`,
 		};
 
-		const response = await this.fetchJSON<OpenAICompatibleListResponse>(
-			`${this.baseUrl}/v1/models`,
-			headers,
-			timeoutMs,
-		);
+		let response: OpenAICompatibleListResponse | null = null;
+		let lastError: unknown;
+		for (const endpoint of this.modelListEndpoints()) {
+			try {
+				response = await this.fetchJSON<OpenAICompatibleListResponse>(
+					endpoint,
+					headers,
+					timeoutMs,
+				);
+				break;
+			} catch (error: unknown) {
+				lastError = error;
+			}
+		}
+		if (!response) {
+			throw lastError instanceof Error ? lastError : new Error(`${this.providerName} API request failed`);
+		}
 
 		return response.data
 			.filter((model) => this.isRelevantModel(model))
 			.map((model) => this.toCard(model));
+	}
+
+	/**
+	 * Ordered model-list endpoints to try.
+	 *
+	 * Most providers use `/v1/models`. Some OpenAI-compatible APIs expose
+	 * `/models` at versioned base URLs; subclasses can override this.
+	 */
+	protected modelListEndpoints(): string[] {
+		return [`${this.baseUrl}/v1/models`];
 	}
 
 	/**
@@ -183,6 +214,9 @@ export abstract class OpenAICompatibleDiscoverer extends BaseDiscoverer {
 			mode: classification.mode,
 			capabilities: classification.capabilities,
 			contextWindow: classification.contextWindow ?? model.context_window ?? 0,
+			maxOutputTokens: classification.maxOutputTokens ?? model.max_output_tokens ?? 0,
+			maxInputTokens: classification.maxInputTokens ?? model.max_input_tokens,
+			dimensions: classification.dimensions ?? model.output_vector_size,
 		});
 	}
 }

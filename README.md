@@ -30,7 +30,15 @@ AI applications hardcode model IDs, pricing, and provider configs. When provider
 ## Install
 
 ```bash
-npm install kosha-discovery
+pnpm add kosha-discovery
+```
+
+## Development (pnpm)
+
+```bash
+pnpm install
+pnpm run build
+pnpm run test
 ```
 
 ## Quick Start
@@ -61,8 +69,92 @@ kosha model sonnet                      # model details
 kosha cheapest --role embeddings        # cheapest for a task
 kosha routes gpt-4o                     # all provider routes
 kosha providers                         # provider status
+kosha latest                            # force-fetch latest provider/model details
+kosha latest --provider openai          # latest for one provider
 kosha serve --port 3000                 # start HTTP API
 ```
+
+### Auto-Fetch JSON Snapshot
+
+```bash
+# one-shot latest snapshot
+pnpm run autofetch:once
+
+# custom output/provider
+pnpm run autofetch:once -- --provider openai --output ./data/openai-latest.json
+
+# continuous loop (default 3600s)
+pnpm run autofetch -- --interval-seconds 900
+```
+
+By default this writes JSON to `./data/kosha-latest.json`.
+
+### CI / Smoke Checks
+
+Workflow files:
+
+- `.github/workflows/update-kosha-snapshot.yml`
+- `.github/workflows/provider-smoke.yml`
+
+Snapshot workflow:
+
+- Scheduled: weekly (Monday 06:00 UTC)
+- Manual: GitHub UI -> Actions -> `Update Kosha Snapshot` -> `Run workflow`
+- Optional manual inputs:
+  - `provider` (empty = all providers)
+  - `output` (default `data/kosha-latest.json`)
+- Disable scheduled runs without removing the workflow by setting `KOSHA_SNAPSHOT_SCHEDULE_ENABLED=false`
+- Manual `Run workflow` still works even when schedule is disabled
+
+Provider smoke workflow:
+
+- Scheduled: nightly (03:00 UTC)
+- Manual: GitHub UI -> Actions -> `Provider Smoke Checks` -> `Run workflow`
+- Runs only when repository variable `KOSHA_PROVIDER_SMOKE_ENABLED=true`
+- Manual dispatch can override that gate with `force=true`
+- Installs with pnpm, builds, then runs a node inline smoke script against real provider endpoints
+- Providers without the required secrets are skipped instead of failing the job
+- Always uploads `artifacts/provider-smoke-report.json`
+
+Provider smoke secrets:
+
+- OpenAI: `OPENAI_API_KEY`
+- Google/Gemini: `GOOGLE_API_KEY` or `GEMINI_API_KEY`
+- Mistral: `MISTRAL_API_KEY`
+- DeepSeek: `DEEPSEEK_API_KEY`
+- Moonshot: `MOONSHOT_API_KEY` or `KIMI_API_KEY`
+- GLM: `GLM_API_KEY` or `ZHIPUAI_API_KEY`
+- Z.AI: `ZAI_API_KEY`
+- MiniMax: `MINIMAX_API_KEY`
+- OpenRouter: optional `OPENROUTER_API_KEY`
+- Bedrock: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`
+- Vertex AI: `GOOGLE_APPLICATION_CREDENTIALS_JSON`, `GOOGLE_CLOUD_PROJECT`
+
+Security controls in these workflows:
+
+- Snapshot workflow commits only the configured snapshot file path plus its checksum file, never broad `git add -A`
+- Snapshot workflow validates the generated snapshot against a local JSON schema before commit
+- Snapshot workflow runs a high-signal secret-pattern scan on snapshot output before commit
+- Snapshot workflow writes `data/kosha-latest.sha256` alongside the snapshot
+- Snapshot workflow uploads an always-on artifact with run metadata, provider summaries, and failure details
+- Provider smoke workflow never echoes secret values and records a machine-readable JSON report
+
+### Branch Protection Audit
+
+Workflow file: `.github/workflows/branch-protection-check.yml`
+
+- Runs on `main` and via `workflow_dispatch`
+- Reads the `main` branch protection rule through the GitHub API
+- Expects the required status checks list to include `Branch Protection Check / audit`
+- Uploads a warning artifact instead of failing when the token cannot read branch protection settings
+
+Keep that check name stable when you rename the workflow or job, and update the protection rule whenever you add more required checks.
+
+### Where Data Is Stored
+
+- Git repo: model/provider discovery data is **not** committed by default.
+- Runtime cache: `~/.kosha/cache/*.json` (machine-local, TTL-based).
+- Exported snapshot: only if you run `autofetch`/`autofetch:once` with an output file and commit it yourself.
 
 ### HTTP API
 
@@ -101,6 +193,11 @@ GET /health                        — Health check
 | Cohere | API | `CO_API_KEY` |
 | Cerebras | API | `CEREBRAS_API_KEY` |
 | Perplexity | API | `PERPLEXITY_API_KEY` |
+| DeepSeek | API | `DEEPSEEK_API_KEY` |
+| Moonshot (Kimi) | API | `MOONSHOT_API_KEY` / `KIMI_API_KEY` |
+| GLM (Zhipu) | API | `GLM_API_KEY` / `ZHIPUAI_API_KEY` |
+| Z.AI | API | `ZAI_API_KEY` |
+| MiniMax | API | `MINIMAX_API_KEY` |
 
 ## Security
 

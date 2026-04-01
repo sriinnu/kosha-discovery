@@ -132,6 +132,64 @@ describe("CredentialResolver", () => {
 			expect(result.apiKey).toBe("sk-or-test");
 			expect(result.source).toBe("env");
 		});
+
+		it("resolves DEEPSEEK_API_KEY from env", async () => {
+			process.env.DEEPSEEK_API_KEY = "deepseek-test";
+			const result = await resolver.resolve("deepseek");
+
+			expect(result.apiKey).toBe("deepseek-test");
+			expect(result.source).toBe("env");
+		});
+
+		it("resolves MOONSHOT_API_KEY from env", async () => {
+			process.env.MOONSHOT_API_KEY = "moonshot-test";
+			const result = await resolver.resolve("moonshot");
+
+			expect(result.apiKey).toBe("moonshot-test");
+			expect(result.source).toBe("env");
+		});
+
+		it("resolves KIMI_API_KEY from env when MOONSHOT_API_KEY is not set", async () => {
+			delete process.env.MOONSHOT_API_KEY;
+			process.env.KIMI_API_KEY = "kimi-test";
+			const result = await resolver.resolve("moonshot");
+
+			expect(result.apiKey).toBe("kimi-test");
+			expect(result.source).toBe("env");
+		});
+
+		it("resolves GLM_API_KEY from env", async () => {
+			process.env.GLM_API_KEY = "glm-test";
+			const result = await resolver.resolve("glm");
+
+			expect(result.apiKey).toBe("glm-test");
+			expect(result.source).toBe("env");
+		});
+
+		it("resolves ZHIPUAI_API_KEY from env when GLM_API_KEY is not set", async () => {
+			delete process.env.GLM_API_KEY;
+			process.env.ZHIPUAI_API_KEY = "zhipu-test";
+			const result = await resolver.resolve("glm");
+
+			expect(result.apiKey).toBe("zhipu-test");
+			expect(result.source).toBe("env");
+		});
+
+		it("resolves ZAI_API_KEY from env", async () => {
+			process.env.ZAI_API_KEY = "zai-test";
+			const result = await resolver.resolve("zai");
+
+			expect(result.apiKey).toBe("zai-test");
+			expect(result.source).toBe("env");
+		});
+
+		it("resolves MINIMAX_API_KEY from env", async () => {
+			process.env.MINIMAX_API_KEY = "minimax-test";
+			const result = await resolver.resolve("minimax");
+
+			expect(result.apiKey).toBe("minimax-test");
+			expect(result.source).toBe("env");
+		});
 	});
 
 	// -----------------------------------------------------------------------
