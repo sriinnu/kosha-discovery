@@ -25,7 +25,7 @@ AI applications hardcode model IDs, pricing, and provider configs. When provider
 
 - **Dynamic discovery** — fetches real model lists from provider APIs
 - **Smart credentials** — finds API keys from env vars, CLI tools (Claude, Copilot, Gemini CLI), and config files
-- **Pricing enrichment** — fills in costs and context windows from litellm's community-maintained dataset
+- **Pricing enrichment** — fills in input/output/reasoning/cache costs and context windows from litellm's community-maintained dataset
 - **Model aliases** — `sonnet` → `claude-sonnet-4-20250514`, updated as models evolve
 - **Role matrix** — query provider -> model -> roles (`chat`, `embedding`, `image_generation`, etc.)
 - **Cheapest routing** — rank cheapest eligible models for tasks like embeddings or image generation

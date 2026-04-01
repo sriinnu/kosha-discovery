@@ -13,6 +13,7 @@ const LITELLM_DATA: Record<string, any> = {
 		max_output_tokens: 16384,
 		input_cost_per_token: 0.000003,
 		output_cost_per_token: 0.000015,
+		output_cost_per_reasoning_token: 0.00006,
 		cache_read_input_token_cost: 0.0000003,
 		cache_creation_input_token_cost: 0.00000375,
 		litellm_provider: "anthropic",
@@ -112,6 +113,13 @@ describe("LiteLLMEnricher", () => {
 
 			expect(enriched.pricing!.cacheReadPerMillion).toBe(0.3); // 0.0000003 * 1_000_000
 			expect(enriched.pricing!.cacheWritePerMillion).toBe(3.75); // 0.00000375 * 1_000_000
+		});
+
+		it("fills reasoning pricing when available", async () => {
+			const models = [makeModel()];
+			const [enriched] = await enricher.enrich(models);
+
+			expect(enriched.pricing!.reasoningOutputPerMillion).toBe(60); // 0.00006 * 1_000_000
 		});
 
 		it("does not overwrite existing pricing", async () => {

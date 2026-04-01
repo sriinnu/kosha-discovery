@@ -87,6 +87,7 @@ curl "http://localhost:3000/api/models/cheapest?role=embeddings&priceMetric=inpu
 Model pricing is sourced from [litellm's model pricing database](https://github.com/BerriAI/litellm) -- a community-maintained dataset covering 300+ models. Kosha fetches this data and enriches discovered models with:
 
 - Input/output token pricing
+- Reasoning token pricing (when provided by upstream)
 - Context window sizes
 - Cache read/write costs
 - Capability flags (vision, function calling, etc.)

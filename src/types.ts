@@ -28,6 +28,10 @@ export interface ModelPricing {
 	inputPerMillion: number;
 	/** USD cost per 1 million output tokens. */
 	outputPerMillion: number;
+	/** USD cost per 1 million reasoning-input tokens (optional). */
+	reasoningInputPerMillion?: number;
+	/** USD cost per 1 million reasoning-output tokens (optional). */
+	reasoningOutputPerMillion?: number;
 	/** USD cost per 1 million cache-read tokens (optional). */
 	cacheReadPerMillion?: number;
 	/** USD cost per 1 million cache-write tokens (optional). */

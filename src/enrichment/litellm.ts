@@ -18,6 +18,12 @@ interface LiteLLMModelEntry {
 	max_output_tokens?: number;
 	input_cost_per_token?: number;
 	output_cost_per_token?: number;
+	// LiteLLM includes reasoning/tokenized-thinking pricing for some models.
+	// Keep multiple key variants for forward/backward compatibility.
+	input_cost_per_reasoning_token?: number;
+	output_cost_per_reasoning_token?: number;
+	reasoning_input_cost_per_token?: number;
+	reasoning_output_cost_per_token?: number;
 	cache_read_input_token_cost?: number;
 	cache_creation_input_token_cost?: number;
 	litellm_provider?: string;
@@ -203,7 +209,23 @@ export class LiteLLMEnricher implements Enricher {
 
 	/** Convert litellm per-token costs to per-million pricing. */
 	private extractPricing(entry: LiteLLMModelEntry): ModelPricing | undefined {
-		if (entry.input_cost_per_token === undefined && entry.output_cost_per_token === undefined) {
+		const reasoningInputCost = this.firstFinite(
+			entry.input_cost_per_reasoning_token,
+			entry.reasoning_input_cost_per_token,
+		);
+		const reasoningOutputCost = this.firstFinite(
+			entry.output_cost_per_reasoning_token,
+			entry.reasoning_output_cost_per_token,
+		);
+		const hasAnyPriceSignal =
+			entry.input_cost_per_token !== undefined ||
+			entry.output_cost_per_token !== undefined ||
+			entry.cache_read_input_token_cost !== undefined ||
+			entry.cache_creation_input_token_cost !== undefined ||
+			reasoningInputCost !== undefined ||
+			reasoningOutputCost !== undefined;
+
+		if (!hasAnyPriceSignal) {
 			return undefined;
 		}
 
@@ -211,6 +233,12 @@ export class LiteLLMEnricher implements Enricher {
 			inputPerMillion: (entry.input_cost_per_token ?? 0) * PER_MILLION,
 			outputPerMillion: (entry.output_cost_per_token ?? 0) * PER_MILLION,
 		};
+		if (reasoningInputCost !== undefined) {
+			pricing.reasoningInputPerMillion = reasoningInputCost * PER_MILLION;
+		}
+		if (reasoningOutputCost !== undefined) {
+			pricing.reasoningOutputPerMillion = reasoningOutputCost * PER_MILLION;
+		}
 
 		if (entry.cache_read_input_token_cost !== undefined) {
 			pricing.cacheReadPerMillion = entry.cache_read_input_token_cost * PER_MILLION;
@@ -220,6 +248,19 @@ export class LiteLLMEnricher implements Enricher {
 		}
 
 		return pricing;
+	}
+
+	/**
+	 * Return the first defined finite number from a list of optional values.
+	 * This allows tolerant support for field-name variants in upstream data.
+	 */
+	private firstFinite(...values: Array<number | undefined>): number | undefined {
+		for (const value of values) {
+			if (typeof value === "number" && Number.isFinite(value)) {
+				return value;
+			}
+		}
+		return undefined;
 	}
 
 	/** Map litellm mode strings to our ModelMode type. */
