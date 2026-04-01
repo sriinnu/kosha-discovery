@@ -24,8 +24,10 @@ Kosha (कोश — treasury/repository) automatically discovers AI models acro
 AI applications hardcode model IDs, pricing, and provider configs. When providers add models or change pricing, every app breaks. Kosha solves this:
 
 - **Dynamic discovery** — fetches real model lists from provider APIs
+- **Offline direct catalogs** — OpenAI, Anthropic, and Google fallback model coverage even without API keys
 - **Smart credentials** — finds API keys from env vars, CLI tools (Claude, Copilot, Gemini CLI), and config files
-- **Pricing enrichment** — fills in costs and context windows from litellm's community-maintained dataset
+- **Pricing enrichment** — fills in input/output/reasoning/cache costs and context windows from litellm's community-maintained dataset
+- **Proxy vs origin pricing** — preserves route pricing and exposes origin-provider reference pricing for proxy-served models
 - **Model aliases** — `sonnet` → `claude-sonnet-4-20250514`, updated as models evolve
 - **Role matrix** — query provider -> model -> roles (`chat`, `embedding`, `image_generation`, etc.)
 - **Cheapest routing** — rank cheapest eligible models for tasks like embeddings or image generation

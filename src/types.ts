@@ -28,6 +28,10 @@ export interface ModelPricing {
 	inputPerMillion: number;
 	/** USD cost per 1 million output tokens. */
 	outputPerMillion: number;
+	/** USD cost per 1 million reasoning-input tokens (optional). */
+	reasoningInputPerMillion?: number;
+	/** USD cost per 1 million reasoning-output tokens (optional). */
+	reasoningOutputPerMillion?: number;
 	/** USD cost per 1 million cache-read tokens (optional). */
 	cacheReadPerMillion?: number;
 	/** USD cost per 1 million cache-write tokens (optional). */
@@ -97,6 +101,8 @@ export interface ModelCard {
 	maxOutputTokens: number;
 	/** Token pricing information (filled by enrichment or API). */
 	pricing?: ModelPricing;
+	/** Reference direct-provider pricing for proxied routes (optional). */
+	originPricing?: ModelPricing;
 	/** Output vector dimensionality (only for embedding models). */
 	dimensions?: number;
 	/** Maximum input chunk size in tokens (only for embedding models). */

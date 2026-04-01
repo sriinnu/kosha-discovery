@@ -13,6 +13,7 @@ const LITELLM_DATA: Record<string, any> = {
 		max_output_tokens: 16384,
 		input_cost_per_token: 0.000003,
 		output_cost_per_token: 0.000015,
+		output_cost_per_reasoning_token: 0.00006,
 		cache_read_input_token_cost: 0.0000003,
 		cache_creation_input_token_cost: 0.00000375,
 		litellm_provider: "anthropic",
@@ -114,6 +115,13 @@ describe("LiteLLMEnricher", () => {
 			expect(enriched.pricing!.cacheWritePerMillion).toBe(3.75); // 0.00000375 * 1_000_000
 		});
 
+		it("fills reasoning pricing when available", async () => {
+			const models = [makeModel()];
+			const [enriched] = await enricher.enrich(models);
+
+			expect(enriched.pricing!.reasoningOutputPerMillion).toBe(60); // 0.00006 * 1_000_000
+		});
+
 		it("does not overwrite existing pricing", async () => {
 			const existingPricing = {
 				inputPerMillion: 99,
@@ -124,6 +132,25 @@ describe("LiteLLMEnricher", () => {
 
 			expect(enriched.pricing!.inputPerMillion).toBe(99);
 			expect(enriched.pricing!.outputPerMillion).toBe(199);
+		});
+
+		it("keeps proxy route pricing and adds originPricing for proxied models", async () => {
+			const models = [makeModel({
+				id: "openai/gpt-4o",
+				provider: "openrouter",
+				originProvider: "openai",
+				pricing: { inputPerMillion: 5, outputPerMillion: 25 },
+			})];
+			const [enriched] = await enricher.enrich(models);
+
+			// Preserve route/provider pricing (OpenRouter markup)
+			expect(enriched.pricing!.inputPerMillion).toBe(5);
+			expect(enriched.pricing!.outputPerMillion).toBe(25);
+
+			// Add origin reference pricing (OpenAI direct)
+			expect(enriched.originPricing).toBeDefined();
+			expect(enriched.originPricing!.inputPerMillion).toBe(2.5);
+			expect(enriched.originPricing!.outputPerMillion).toBe(10);
 		});
 	});
 

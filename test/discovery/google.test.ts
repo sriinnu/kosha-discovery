@@ -57,10 +57,13 @@ describe("GoogleDiscoverer", () => {
 		expect(discoverer.baseUrl).toBe("https://generativelanguage.googleapis.com");
 	});
 
-	/** When no API key is present, discover should short-circuit with an empty array. */
-	it("should return empty array when no API key provided", async () => {
+	/** When no API key is present, discover should return curated fallback coverage. */
+	it("should return curated fallback models when no API key provided", async () => {
 		const result = await discoverer.discover(noCredential);
-		expect(result).toEqual([]);
+		expect(result.length).toBeGreaterThan(0);
+		expect(result.some((m) => m.id === "gemini-2.5-pro-preview-05-06")).toBe(true);
+		expect(result.every((m) => m.provider === "google")).toBe(true);
+		expect(result.every((m) => m.source === "manual")).toBe(true);
 	});
 
 	/** Verify that a full API response is correctly mapped to ModelCards. */

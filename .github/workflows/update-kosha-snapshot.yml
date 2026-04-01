@@ -135,6 +135,20 @@ jobs:
                             properties: {
                               inputPerMillion: { type: "number", minimum: 0 },
                               outputPerMillion: { type: "number", minimum: 0 },
+                              reasoningInputPerMillion: { type: "number", minimum: 0 },
+                              reasoningOutputPerMillion: { type: "number", minimum: 0 },
+                              cacheReadPerMillion: { type: "number", minimum: 0 },
+                              cacheWritePerMillion: { type: "number", minimum: 0 },
+                            },
+                          },
+                          originPricing: {
+                            type: "object",
+                            required: ["inputPerMillion", "outputPerMillion"],
+                            properties: {
+                              inputPerMillion: { type: "number", minimum: 0 },
+                              outputPerMillion: { type: "number", minimum: 0 },
+                              reasoningInputPerMillion: { type: "number", minimum: 0 },
+                              reasoningOutputPerMillion: { type: "number", minimum: 0 },
                               cacheReadPerMillion: { type: "number", minimum: 0 },
                               cacheWritePerMillion: { type: "number", minimum: 0 },
                             },
