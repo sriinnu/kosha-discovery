@@ -19,6 +19,7 @@ import {
 	cmdCapable,
 	cmdCheapest,
 	cmdDiscover,
+	cmdLatest,
 	cmdList,
 	cmdModel,
 	cmdProviders,
@@ -131,6 +132,10 @@ async function main(): Promise<void> {
 	switch (command) {
 		case "discover":
 			await cmdDiscover(registry, flags);
+			break;
+
+		case "latest":
+			await cmdLatest(registry, flags);
 			break;
 
 		case "list":

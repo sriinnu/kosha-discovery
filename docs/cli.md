@@ -39,7 +39,10 @@ COMMANDS
   routes <id|alias>             Show all provider routes for a model
   providers                     List all providers and their status
   resolve <alias>               Resolve an alias to canonical model ID
+  latest                        Force-fetch latest model/provider details (bypass cache)
+    --provider <name>             Scope latest fetch to one provider
   refresh                       Force re-discover all providers (bypass cache)
+    --provider <name>             Refresh only one provider
   serve [--port 3000]           Start HTTP API server
 
 OPTIONS

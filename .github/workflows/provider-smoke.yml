@@ -1,0 +1,275 @@
+name: Provider Smoke Checks
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Run even when KOSHA_PROVIDER_SMOKE_ENABLED is not true."
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    - cron: "0 3 * * *"
+
+jobs:
+  smoke:
+    if: >-
+      ${{
+        (github.event_name == 'schedule' && vars.KOSHA_PROVIDER_SMOKE_ENABLED == 'true') ||
+        (github.event_name == 'workflow_dispatch' && (inputs.force || vars.KOSHA_PROVIDER_SMOKE_ENABLED == 'true'))
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize smoke report
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          cat > artifacts/provider-smoke-report.json <<'JSON'
+          {
+            "generatedAt": null,
+            "workflow": {},
+            "summary": {
+              "pass": 0,
+              "fail": 0,
+              "skip": 0
+            },
+            "providers": [],
+            "status": "not-run"
+          }
+          JSON
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Run provider smoke checks
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+          GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
+          ZHIPUAI_API_KEY: ${{ secrets.ZHIPUAI_API_KEY }}
+          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+          GOOGLE_APPLICATION_CREDENTIALS_JSON: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
+          GOOGLE_CLOUD_REGION: ${{ secrets.GOOGLE_CLOUD_REGION }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          node --input-type=module <<'NODE'
+          import { mkdtemp, writeFile, rm } from "node:fs/promises";
+          import { tmpdir } from "node:os";
+          import path from "node:path";
+          import { spawnSync } from "node:child_process";
+
+          const providerSpecs = [
+            { id: "openai", required: [["OPENAI_API_KEY"]] },
+            { id: "google", required: [["GOOGLE_API_KEY"], ["GEMINI_API_KEY"]] },
+            { id: "mistral", required: [["MISTRAL_API_KEY"]] },
+            { id: "deepseek", required: [["DEEPSEEK_API_KEY"]] },
+            { id: "moonshot", required: [["MOONSHOT_API_KEY"], ["KIMI_API_KEY"]] },
+            { id: "glm", required: [["GLM_API_KEY"], ["ZHIPUAI_API_KEY"]] },
+            { id: "zai", required: [["ZAI_API_KEY"]] },
+            { id: "minimax", required: [["MINIMAX_API_KEY"]] },
+            { id: "openrouter", required: [] },
+            { id: "bedrock", required: [["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_DEFAULT_REGION"]] },
+            { id: "vertex", required: [["GOOGLE_APPLICATION_CREDENTIALS_JSON", "GOOGLE_CLOUD_PROJECT"]] },
+          ];
+
+          const reportPath = path.resolve("artifacts/provider-smoke-report.json");
+          const report = {
+            generatedAt: new Date().toISOString(),
+            workflow: {
+              name: process.env.GITHUB_WORKFLOW,
+              runId: process.env.GITHUB_RUN_ID,
+              runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+              eventName: process.env.GITHUB_EVENT_NAME,
+              ref: process.env.GITHUB_REF,
+              sha: process.env.GITHUB_SHA,
+            },
+            summary: {
+              pass: 0,
+              fail: 0,
+              skip: 0,
+            },
+            providers: [],
+          };
+
+          const isPresent = (name) => {
+            const value = process.env[name];
+            return typeof value === "string" && value.trim().length > 0;
+          };
+
+          const hasAll = (names) => names.every((name) => isPresent(name));
+
+          const commandExists = (command) => {
+            const result = spawnSync(command, ["--version"], { stdio: "ignore" });
+            return !result.error && result.status === 0;
+          };
+
+          const missingNames = (groups) => {
+            for (const group of groups) {
+              if (hasAll(group)) {
+                return [];
+              }
+            }
+            return groups.flat().filter((name, index, all) => all.indexOf(name) === index && !isPresent(name));
+          };
+
+          const availableProviders = [];
+          const providerEntries = new Map();
+          const tempResources = [];
+
+          try {
+            if (isPresent("GOOGLE_APPLICATION_CREDENTIALS_JSON") && !isPresent("GOOGLE_APPLICATION_CREDENTIALS")) {
+              const tempDir = await mkdtemp(path.join(tmpdir(), "kosha-vertex-"));
+              tempResources.push(tempDir);
+              const credentialsPath = path.join(tempDir, "google-application-credentials.json");
+              await writeFile(credentialsPath, process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON, "utf8");
+              process.env.GOOGLE_APPLICATION_CREDENTIALS = credentialsPath;
+            }
+
+            for (const spec of providerSpecs) {
+              if (spec.id === "bedrock" && !commandExists("aws")) {
+                report.providers.push({
+                  provider: spec.id,
+                  status: "skip",
+                  reason: "aws cli unavailable on runner",
+                });
+                report.summary.skip += 1;
+                continue;
+              }
+
+              const requiredNames = missingNames(spec.required);
+              if (requiredNames.length > 0) {
+                report.providers.push({
+                  provider: spec.id,
+                  status: "skip",
+                  reason: "missing required secrets",
+                });
+                report.summary.skip += 1;
+                continue;
+              }
+
+              availableProviders.push(spec.id);
+            }
+
+            if (availableProviders.length > 0) {
+              const { ModelRegistry } = await import("./dist/index.js");
+              const registry = new ModelRegistry();
+              const latest = await registry.fetchLatestDetails({
+                providers: availableProviders,
+                enrichWithPricing: false,
+              });
+
+              for (const provider of latest.providers) {
+                providerEntries.set(provider.id, provider);
+              }
+
+              for (const error of registry.discoveryErrors()) {
+                providerEntries.set(error.providerId, {
+                  error: error.error,
+                  name: error.providerName,
+                });
+              }
+            }
+
+            for (const spec of providerSpecs) {
+              const existingIndex = report.providers.findIndex((entry) => entry.provider === spec.id);
+              if (existingIndex !== -1) {
+                continue;
+              }
+
+              const provider = providerEntries.get(spec.id);
+              if (provider?.error) {
+                report.providers.push({
+                  provider: spec.id,
+                  status: "fail",
+                  error: provider.error,
+                });
+                report.summary.fail += 1;
+                continue;
+              }
+
+              if (provider) {
+                report.providers.push({
+                  provider: spec.id,
+                  status: "pass",
+                  modelCount: Array.isArray(provider.models) ? provider.models.length : 0,
+                });
+                report.summary.pass += 1;
+                continue;
+              }
+
+              if (!availableProviders.includes(spec.id)) {
+                continue;
+              }
+
+              report.providers.push({
+                provider: spec.id,
+                status: "fail",
+                reason: "provider returned no discovery result",
+              });
+              report.summary.fail += 1;
+            }
+
+            report.providers.sort((left, right) => left.provider.localeCompare(right.provider));
+            report.summary.pass = report.providers.filter((entry) => entry.status === "pass").length;
+            report.summary.fail = report.providers.filter((entry) => entry.status === "fail").length;
+            report.summary.skip = report.providers.filter((entry) => entry.status === "skip").length;
+            await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+            if (report.summary.fail > 0) {
+              process.exitCode = 1;
+            }
+          } catch (error) {
+            report.providers.push({
+              provider: "__workflow__",
+              status: "fail",
+              error: error instanceof Error ? error.message : String(error),
+            });
+            report.summary.fail = 1;
+            await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+            process.exitCode = 1;
+          } finally {
+            for (const resource of tempResources) {
+              await rm(resource, { recursive: true, force: true });
+            }
+          }
+          NODE
+
+      - name: Upload smoke report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: provider-smoke-report
+          path: artifacts/provider-smoke-report.json
+          if-no-files-found: error

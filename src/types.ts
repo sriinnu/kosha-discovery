@@ -303,6 +303,19 @@ export interface DiscoveryOptions {
 	force?: boolean;
 }
 
+/** Options for explicit cache-bypassing latest discovery fetches. */
+export interface LatestDiscoveryOptions extends Omit<DiscoveryOptions, "force"> {}
+
+/** Result payload returned by explicit latest discovery fetches. */
+export interface LatestDiscoveryResult {
+	/** Providers discovered during this latest fetch. */
+	providers: ProviderInfo[];
+	/** Total number of models across returned providers. */
+	modelCount: number;
+	/** Unix timestamp (ms) when discovery completed. */
+	discoveredAt: number;
+}
+
 /**
  * Top-level configuration for the kosha registry.
  */

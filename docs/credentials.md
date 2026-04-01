@@ -144,6 +144,49 @@ export CEREBRAS_API_KEY=...
 export PERPLEXITY_API_KEY=pplx-...
 ```
 
+## DeepSeek
+
+```bash
+export DEEPSEEK_API_KEY=...
+```
+
+## Moonshot (Kimi)
+
+```bash
+# Either variable is accepted
+export MOONSHOT_API_KEY=...
+# or
+export KIMI_API_KEY=...
+```
+
+## GLM (Zhipu)
+
+```bash
+# Either variable is accepted
+export GLM_API_KEY=...
+# or
+export ZHIPUAI_API_KEY=...
+```
+
+## Z.AI
+
+```bash
+export ZAI_API_KEY=...
+```
+
+## MiniMax
+
+```bash
+export MINIMAX_API_KEY=...
+```
+
+## GitHub Actions smoke checks
+
+If you enable `.github/workflows/provider-smoke.yml`, set only the secrets for providers you want to exercise. Providers without matching secrets are skipped, and the workflow always uploads a JSON report artifact without printing secret values.
+
+- Bedrock: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`
+- Vertex AI: `GOOGLE_APPLICATION_CREDENTIALS_JSON`, `GOOGLE_CLOUD_PROJECT`
+
 ## Ollama (Local)
 
 ```bash
