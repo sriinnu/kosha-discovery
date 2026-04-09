@@ -719,7 +719,7 @@ ${c(BOLD, "COMMANDS")}
   ${c(CYAN, "serve")} [--port 3000]           Start HTTP API server
 
 ${c(BOLD, "CACHING & OUTPUT")}
-  Results are cached at ${c(CYAN, "~/.kosha/cache")} for 24h.
+  Results are cached at ${c(CYAN, "~/.kosha/cache")} for 24h by default.
   Subsequent ${c(CYAN, "kosha list")}, ${c(CYAN, "search")}, etc. load instantly from disk.
   Run ${c(CYAN, "kosha update")} to force a fresh pull from all provider APIs.
 
