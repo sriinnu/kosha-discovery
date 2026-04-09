@@ -294,7 +294,8 @@ export async function saveRegistryToCache(state: RegistryState): Promise<void> {
  */
 export async function exportRegistryManifest(state: RegistryState): Promise<void> {
 	try {
-		const snapshot = registryDiscoverySnapshot(state);
+		const snapshot = state.lastSnapshotCache ?? registryDiscoverySnapshot(state);
+		state.lastSnapshotCache = snapshot;
 		await mkdir(join(homedir(), ".kosha"), { recursive: true });
 		await writeFile(REGISTRY_MANIFEST_PATH, JSON.stringify(snapshot, null, 2), "utf-8");
 	} catch {
