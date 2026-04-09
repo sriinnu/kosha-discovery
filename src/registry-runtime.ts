@@ -65,10 +65,12 @@ export async function registryDiscover(
 		const loaded = await dependencies.loadFromCache(providers);
 		if (loaded) {
 			dependencies.recordDiscoveryMutation(beforeSnapshot);
-			// I also refresh the manifest on cache hits so third-party readers
-			// always see a file that matches whatever the cache just rehydrated —
-			// otherwise the manifest would drift whenever it was manually deleted.
-			await exportRegistryManifest(state);
+			// Only refresh the canonical manifest for full-registry cache hits.
+			// Scoped provider rehydration can carry cache-derived state that should
+			// not be published as a fresh top-level manifest snapshot.
+			if (!providers || providers.length === 0) {
+				await exportRegistryManifest(state);
+			}
 			return Array.from(state.providerMap.values());
 		}
 	}
