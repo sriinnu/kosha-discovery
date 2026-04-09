@@ -56,16 +56,21 @@ Every discovery path — `kosha discover`, `kosha update`, `kosha refresh`,
 
 | Path | Purpose | Format |
 |------|---------|--------|
-| `~/.kosha/cache/*.json` | Internal TTL cache (24h default) | Cache envelope `{ data, timestamp }` — **do not parse directly** |
+| Default: `~/.kosha/cache/*.json` | Internal TTL cache (24h default) | Cache envelope `{ data, timestamp }` — **do not parse directly** |
 | `~/.kosha/registry.json` | Stable, third-party-readable manifest | v1 `DiscoverySnapshot` — safe for any consumer |
+
+The cache directory defaults to `~/.kosha/cache`, but it can be overridden via
+the `cacheDir` configuration option. Third-party consumers should not hardcode
+the default cache path.
 
 ### How it behaves
 
 - **Cold start** — `kosha` hits every provider API, runs LiteLLM enrichment,
   writes both the cache and the manifest, and prints
   `Discovered N models from M providers.`
-- **Warm start (within TTL)** — `kosha` hydrates from `~/.kosha/cache` in
-  milliseconds, rewrites the manifest to match, and prints
+- **Warm start (within TTL)** — `kosha` hydrates from the configured cache
+  directory (default `~/.kosha/cache`) in milliseconds, rewrites the manifest
+  to match, and prints
   `Loaded N models from cache (Xh ago). Run "kosha update" to refresh.`
 - **Force refresh** — `kosha update` (alias for `kosha refresh`) invalidates
   the cache, re-runs discovery, and rewrites both artifacts.
