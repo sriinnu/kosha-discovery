@@ -6,8 +6,12 @@
  * @module
  */
 
+import { mkdir, writeFile } from "fs/promises";
+import { homedir } from "os";
+import { join } from "path";
 import { StaleCachePolicy } from "./resilience.js";
 import { getProviderConfig, isLocalProvider, normalizeProviderId } from "./provider-catalog.js";
+import { registryDiscoverySnapshot } from "./registry-discovery.js";
 import type { RegistryState, DiscoveryDependencies } from "./registry-state.js";
 import type {
 	CredentialResult,
@@ -20,6 +24,14 @@ import type {
 const DEFAULT_CACHE_TTL_MS = 86_400_000;
 const DEFAULT_TIMEOUT_MS = 10_000;
 const CACHE_KEY_PREFIX = "provider_";
+
+/**
+ * Canonical, third-party consumable registry manifest path.
+ * I keep it outside the TTL cache directory so tools like jq, duckdb, or
+ * language SDKs can read a single stable file without worrying about
+ * cache envelopes or internal layout changes.
+ */
+export const REGISTRY_MANIFEST_PATH = join(homedir(), ".kosha", "registry.json");
 
 const FALLBACK_ENV_MAP: Record<string, string> = {
 	anthropic: "ANTHROPIC_API_KEY",
@@ -53,6 +65,10 @@ export async function registryDiscover(
 		const loaded = await dependencies.loadFromCache(providers);
 		if (loaded) {
 			dependencies.recordDiscoveryMutation(beforeSnapshot);
+			// I also refresh the manifest on cache hits so third-party readers
+			// always see a file that matches whatever the cache just rehydrated —
+			// otherwise the manifest would drift whenever it was manually deleted.
+			await exportRegistryManifest(state);
 			return Array.from(state.providerMap.values());
 		}
 	}
@@ -90,6 +106,10 @@ export async function registryDiscover(
 	state.discoveredAt = Date.now();
 	await dependencies.saveToCache();
 	dependencies.recordDiscoveryMutation(beforeSnapshot);
+	// Write the consumer-facing manifest last, after recordDiscoveryMutation
+	// has advanced the cursor — that way the snapshot's cursor reflects the
+	// post-discovery revision instead of a stale pre-mutation value.
+	await exportRegistryManifest(state);
 	return Array.from(state.providerMap.values());
 }
 
@@ -258,6 +278,27 @@ export async function saveRegistryToCache(state: RegistryState): Promise<void> {
 		await Promise.all(saves);
 	} catch {
 		// I intentionally ignore cache write failures so discovery still succeeds.
+	}
+}
+
+/**
+ * Export a stable, human-and-machine-readable manifest of the current
+ * registry state to `~/.kosha/registry.json`. Third-party consumers
+ * (CLIs in other languages, jq pipelines, CI jobs, dashboards) can read
+ * this file directly — it holds the stable v1 discovery snapshot schema,
+ * not the internal cache envelope.
+ *
+ * I make this a best-effort write: if the filesystem refuses, discovery
+ * still completed successfully, so I swallow errors rather than failing
+ * the whole command.
+ */
+export async function exportRegistryManifest(state: RegistryState): Promise<void> {
+	try {
+		const snapshot = registryDiscoverySnapshot(state);
+		await mkdir(join(homedir(), ".kosha"), { recursive: true });
+		await writeFile(REGISTRY_MANIFEST_PATH, JSON.stringify(snapshot, null, 2), "utf-8");
+	} catch {
+		// I keep manifest export non-fatal — the cache still works either way.
 	}
 }
 

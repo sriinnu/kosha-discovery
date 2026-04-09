@@ -21,6 +21,7 @@ AI applications hardcode model IDs, pricing, and provider configs. When provider
 - **Dynamic discovery** — fetches real model lists from provider APIs
 - **Smart credentials** — finds API keys from env vars, CLI tools (Claude, Copilot, Gemini CLI), and config files
 - **Pricing enrichment** — fills in costs and context windows from litellm's community-maintained dataset
+- **Persistent cache + portable manifest** — 24h on-disk cache at `~/.kosha/cache`, plus a stable v1 JSON manifest at `~/.kosha/registry.json` that any language or tool can read directly
 - **Model aliases** — `sonnet` → `claude-sonnet-4-20250514`, updated as models evolve
 - **Role matrix** — query provider -> model -> roles (`chat`, `embedding`, `image_generation`, etc.)
 - **Cheapest routing** — rank cheapest eligible models for tasks like embeddings or image generation
@@ -30,7 +31,39 @@ AI applications hardcode model IDs, pricing, and provider configs. When provider
 ## Install
 
 ```bash
-npm install kosha-discovery
+npm install kosha-discovery      # library or HTTP server
+npm install -g kosha-discovery   # global `kosha` CLI
+```
+
+## Getting Started (CLI)
+
+```bash
+# 1. First run — discovers all reachable providers and writes the cache + manifest
+kosha discover
+# → Anthropic: 3 models, OpenAI: 7 models, ...
+# → Cached to ~/.kosha/cache  ·  Manifest: ~/.kosha/registry.json
+
+# 2. Subsequent commands read instantly from the 24h on-disk cache
+kosha list
+# → Loaded 380 models from cache (9h ago). Run "kosha update" to refresh.
+
+# 3. Force a fresh pull from all provider APIs
+kosha update     # alias for `kosha refresh`
+```
+
+After any discovery, a **stable, third-party-readable manifest** is written to
+`~/.kosha/registry.json`. It holds the full v1 snapshot — providers, models,
+pricing, capabilities, and health — in a documented schema. Any tool that can
+read JSON can consume it:
+
+```bash
+jq '.models[] | select(.pricing.inputPerMillion < 0.1) | .modelId' ~/.kosha/registry.json
+```
+
+```python
+import json, pathlib
+data = json.loads(pathlib.Path("~/.kosha/registry.json").expanduser().read_text())
+print(len(data["models"]), "models from", len(data["providers"]), "providers")
 ```
 
 ## Quick Start
@@ -53,16 +86,20 @@ console.log(model.pricing); // { inputPerMillion: 3, outputPerMillion: 15, ... }
 ### CLI
 
 ```bash
-kosha discover                          # discover all providers
-kosha list                              # list models
+kosha discover                          # discover all providers (writes cache + manifest)
+kosha list                              # list models (instant from cache)
 kosha list --provider anthropic         # filter by provider
 kosha search gemini                     # fuzzy search
 kosha model sonnet                      # model details
 kosha cheapest --role embeddings        # cheapest for a task
 kosha routes gpt-4o                     # all provider routes
 kosha providers                         # provider status
+kosha update                            # force re-discover (alias: refresh)
 kosha serve --port 3000                 # start HTTP API
 ```
+
+Results live at `~/.kosha/cache` (24h TTL) and `~/.kosha/registry.json` (stable
+v1 manifest). See [docs/cli.md](docs/cli.md) for the full reference.
 
 ### HTTP API
 

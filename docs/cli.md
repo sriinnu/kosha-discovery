@@ -39,7 +39,7 @@ COMMANDS
   routes <id|alias>             Show all provider routes for a model
   providers                     List all providers and their status
   resolve <alias>               Resolve an alias to canonical model ID
-  refresh                       Force re-discover all providers (bypass cache)
+  refresh (update)              Force re-discover all providers (bypass cache)
   serve [--port 3000]           Start HTTP API server
 
 OPTIONS
@@ -47,6 +47,70 @@ OPTIONS
   --help                          Show this help message
   --version                       Show version
 ```
+
+## Caching & Manifest
+
+Every discovery path — `kosha discover`, `kosha update`, `kosha refresh`,
+`kosha serve`, and any command that triggers a cold-start discovery
+(`list`, `search`, `model`, `cheapest`, etc.) — writes two artifacts:
+
+| Path | Purpose | Format |
+|------|---------|--------|
+| `~/.kosha/cache/*.json` | Internal TTL cache (24h default) | Cache envelope `{ data, timestamp }` — **do not parse directly** |
+| `~/.kosha/registry.json` | Stable, third-party-readable manifest | v1 `DiscoverySnapshot` — safe for any consumer |
+
+### How it behaves
+
+- **Cold start** — `kosha` hits every provider API, runs LiteLLM enrichment,
+  writes both the cache and the manifest, and prints
+  `Discovered N models from M providers.`
+- **Warm start (within TTL)** — `kosha` hydrates from `~/.kosha/cache` in
+  milliseconds, rewrites the manifest to match, and prints
+  `Loaded N models from cache (Xh ago). Run "kosha update" to refresh.`
+- **Force refresh** — `kosha update` (alias for `kosha refresh`) invalidates
+  the cache, re-runs discovery, and rewrites both artifacts.
+
+### Consuming the manifest
+
+The manifest follows the [Discovery Plane v1](./discovery-plane-v1.md) schema,
+so it is stable across kosha versions. Any language or tool that reads JSON
+can use it directly:
+
+```bash
+# jq — list free models
+jq '.models[] | select(.pricing.inputPerMillion == 0) | .modelId' ~/.kosha/registry.json
+
+# jq — group model counts by provider
+jq '.providers | map({providerId, modelCount}) | sort_by(-.modelCount)' ~/.kosha/registry.json
+```
+
+```python
+import json, pathlib
+data = json.loads(pathlib.Path("~/.kosha/registry.json").expanduser().read_text())
+chat = [m for m in data["models"] if m["mode"] == "chat"]
+print(f"{len(chat)} chat models across {len(data['providers'])} providers")
+```
+
+```go
+// Go — read the manifest with encoding/json
+f, _ := os.ReadFile(os.Getenv("HOME") + "/.kosha/registry.json")
+var snap struct {
+    SchemaVersion int              `json:"schemaVersion"`
+    Providers     []map[string]any `json:"providers"`
+    Models        []map[string]any `json:"models"`
+}
+json.Unmarshal(f, &snap)
+```
+
+### Configuring the TTL
+
+Set `cacheTtlMs` in `~/.kosharc.json` or `./kosha.config.json`:
+
+```json
+{ "cacheTtlMs": 3600000 }
+```
+
+See [configuration.md](./configuration.md) for the full config surface.
 
 ## Examples
 
