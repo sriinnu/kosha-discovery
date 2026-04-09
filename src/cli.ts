@@ -184,6 +184,7 @@ async function main(): Promise<void> {
 			break;
 
 		case "refresh":
+		case "update":
 			await cmdRefresh(registry, flags);
 			break;
 

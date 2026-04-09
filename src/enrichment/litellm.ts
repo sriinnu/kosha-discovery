@@ -87,10 +87,34 @@ export class LiteLLMEnricher implements Enricher {
 
 		const enriched: ModelCard = { ...model };
 
-		// Pricing — only when the model has no pricing yet
+		// Pricing — fill in base pricing when missing, AND top up cache rates
+		// even when base pricing already exists. The discoverer (e.g. OpenRouter)
+		// often provides input/output rates but skips cache_read/cache_write,
+		// while litellm has them — so I merge per-field rather than all-or-nothing.
 		const entryPricing = this.extractPricing(entry);
-		if (!enriched.pricing && entryPricing) {
-			enriched.pricing = entryPricing;
+		if (entryPricing) {
+			if (!enriched.pricing) {
+				enriched.pricing = entryPricing;
+			} else {
+				if (
+					enriched.pricing.cacheReadPerMillion === undefined &&
+					entryPricing.cacheReadPerMillion !== undefined
+				) {
+					enriched.pricing = {
+						...enriched.pricing,
+						cacheReadPerMillion: entryPricing.cacheReadPerMillion,
+					};
+				}
+				if (
+					enriched.pricing.cacheWritePerMillion === undefined &&
+					entryPricing.cacheWritePerMillion !== undefined
+				) {
+					enriched.pricing = {
+						...enriched.pricing,
+						cacheWritePerMillion: entryPricing.cacheWritePerMillion,
+					};
+				}
+			}
 		}
 
 		// Preserve proxy-route pricing while surfacing direct-origin reference pricing.

@@ -12,7 +12,7 @@ import type { ModelMode, ProviderInfo } from "./types.js";
 import type { ModelRegistry } from "./registry.js";
 import {
 	BOLD, CYAN, DIM, GREEN, MAGENTA, RED, YELLOW,
-	c, formatContextWindow, formatNumber, formatPrice, formatTimestamp,
+	c, formatContextWindow, formatNumber, formatPrice, formatRelativeTime, formatTimestamp,
 	line, renderTable,
 } from "./cli-format.js";
 import type { Column } from "./cli-format.js";
@@ -50,14 +50,44 @@ function formatCredentialSource(provider: ProviderInfo): string {
 
 /**
  * Ensure the registry has at least one provider loaded.
- * If empty (first run or stale cache), triggers a full discovery pass.
+ *
+ * The registry's `discover()` transparently hydrates from the on-disk cache
+ * at `~/.kosha/cache` when that cache is still within TTL, and only hits
+ * provider APIs on a cold start or a stale cache. I look at the resulting
+ * `discoveredAt` timestamp to tell the user which path actually ran — the
+ * old "No cached data. Running discovery..." message was misleading because
+ * it fired on every invocation regardless of whether the cache was used.
+ *
+ * Honesty here matters: users need to trust that `kosha list` is fast
+ * because the cache exists, and that `kosha update` is the way to refresh.
  *
  * @param registry  The shared model registry instance.
  */
 async function ensureDiscovered(registry: ModelRegistry): Promise<void> {
-	if (registry.providers_list().length === 0) {
-		console.log(c(DIM, "No cached data. Running discovery..."));
-		await registry.discover();
+	if (registry.providers_list().length > 0) return;
+
+	const beforeMs = Date.now();
+	await registry.discover();
+	const { discoveredAt } = registry.toJSON();
+	const providers = registry.providers_list();
+	const totalModels = providers.reduce((sum, p) => sum + p.models.length, 0);
+
+	// If the timestamp on the hydrated registry is older than "basically now",
+	// we know the disk cache was loaded rather than a live discovery running.
+	const usedCache = discoveredAt > 0 && beforeMs - discoveredAt > 2_000;
+
+	if (usedCache) {
+		const age = formatRelativeTime(discoveredAt, beforeMs);
+		console.log(c(DIM,
+			`Loaded ${totalModels} models from cache (${age}). Run "kosha update" to refresh.`,
+		));
+	} else {
+		console.log(c(DIM,
+			`Discovered ${totalModels} models from ${providers.length} providers.`,
+		));
+		console.log(c(DIM,
+			`Saved to ~/.kosha/cache and exported manifest to ~/.kosha/registry.json`,
+		));
 	}
 }
 
@@ -123,6 +153,7 @@ export async function cmdDiscover(registry: ModelRegistry, flags: Record<string,
 		return;
 	}
 	printProviderSummary(providers);
+	console.log(c(DIM, `\nCached to ~/.kosha/cache  ·  Manifest: ~/.kosha/registry.json`));
 }
 
 // ── latest ───────────────────────────────────────────────────────────────
@@ -567,14 +598,52 @@ export async function cmdResolve(registry: ModelRegistry, alias: string, flags: 
 
 	await ensureDiscovered(registry);
 	const resolved = registry.resolve(alias);
+	// I look the model up after resolving so callers get pricing (incl. cache
+	// read/write rates), context window, and capabilities — not just an ID.
+	// Downstream tools that pipe `kosha resolve --json` were missing all of
+	// this and had to follow up with `kosha model`. Now one call is enough.
+	//
+	// Fallback: aliases like `sonnet → claude-sonnet-4-6` may resolve to
+	// canonical IDs that no provider serves directly (e.g. when Anthropic
+	// API discovery is unauthenticated and OpenRouter exposes the same
+	// model as `anthropic/claude-sonnet-4.6`). In that case I lean on
+	// modelRoutes(), which normalizes IDs and returns every provider route
+	// — picking the first as the representative for pricing display.
+	let model = registry.model(resolved);
+	if (!model) {
+		const routes = registry.modelRoutes(resolved);
+		if (routes.length > 0) model = routes[0];
+	}
 
-	if (flags.json) { console.log(JSON.stringify({ alias, resolved }, null, 2)); return; }
+	if (flags.json) {
+		console.log(JSON.stringify({ alias, resolved, model: model ?? null }, null, 2));
+		return;
+	}
 
-	if (resolved === alias) {
+	if (resolved === alias && !model) {
 		// resolve() returns input unchanged when no alias mapping exists
 		console.log(c(YELLOW, `"${alias}" is not a known alias (returned as-is)`));
-	} else {
+		return;
+	}
+
+	if (resolved !== alias) {
 		console.log(`${c(DIM, alias)} ${c(DIM, "\u2192")} ${c(CYAN, resolved)}`);
+	} else {
+		console.log(c(CYAN, resolved));
+	}
+
+	if (model?.pricing) {
+		const base = `${formatPrice(model.pricing.inputPerMillion)} / ${formatPrice(model.pricing.outputPerMillion)} per M tokens (in/out)`;
+		console.log(`${c(DIM, "Pricing:")} ${base}`);
+		if (model.pricing.cacheReadPerMillion !== undefined || model.pricing.cacheWritePerMillion !== undefined) {
+			const read = model.pricing.cacheReadPerMillion !== undefined
+				? formatPrice(model.pricing.cacheReadPerMillion)
+				: c(DIM, "—");
+			const write = model.pricing.cacheWritePerMillion !== undefined
+				? formatPrice(model.pricing.cacheWritePerMillion)
+				: c(DIM, "—");
+			console.log(`${c(DIM, "Cache:  ")} ${read} read / ${write} write per M tokens`);
+		}
 	}
 }
 
@@ -661,8 +730,7 @@ export async function cmdRefresh(registry: ModelRegistry, flags: Record<string, 
 
 	const providers = registry.providers_list();
 	printProviderSummary(providers);
-	// Overwrite the last summary line to include "Refreshed:" prefix
-	// (printProviderSummary already printed the count, so we add context)
+	console.log(c(DIM, `\nManifest exported to ~/.kosha/registry.json`));
 }
 
 // ── serve ────────────────────────────────────────────────────────────────
@@ -734,9 +802,20 @@ ${c(BOLD, "COMMANDS")}
   ${c(CYAN, "resolve")} <alias>               Resolve an alias to canonical model ID
   ${c(CYAN, "latest")}                        Force-fetch latest model/provider details
     --provider <name>             Scope latest fetch to one provider
-  ${c(CYAN, "refresh")}                       Force re-discover all providers (bypass cache)
+  ${c(CYAN, "refresh")} ${c(DIM, "(update)")}              Force re-discover all providers (bypass cache)
     --provider <name>             Refresh only one provider
   ${c(CYAN, "serve")} [--port 3000]           Start HTTP API server
+
+${c(BOLD, "CACHING & OUTPUT")}
+  Results are cached at ${c(CYAN, "~/.kosha/cache")} for 24h by default.
+  Subsequent ${c(CYAN, "kosha list")}, ${c(CYAN, "search")}, etc. load instantly from disk.
+  Run ${c(CYAN, "kosha update")} to force a fresh pull from all provider APIs.
+
+  A stable, third-party-readable manifest is also written to
+    ${c(CYAN, "~/.kosha/registry.json")}
+  after every discover / update, containing the full v1 snapshot
+  (providers, models, pricing, capabilities, health). Any language or
+  tool that can read JSON can consume it directly.
 
 ${c(BOLD, "OPTIONS")}
   --json                          Output as JSON (works with any command)

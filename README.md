@@ -9,6 +9,7 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/@sriinnu/kosha-discovery"><img src="https://img.shields.io/npm/v/%40sriinnu%2Fkosha-discovery?color=7C3AED&label=npm" alt="npm version" /></a>
   <a href="https://www.npmjs.com/package/@sriinnu/kosha-discovery"><img src="https://img.shields.io/npm/dm/%40sriinnu%2Fkosha-discovery?color=0EA5E9&label=downloads" alt="npm downloads" /></a>
+  <a href="https://github.com/sriinnu/kosha-discovery/releases/tag/v0.6.1"><img src="https://img.shields.io/badge/release-v0.6.1-7C3AED?logo=github" alt="release v0.6.1" /></a>
   <a href="https://github.com/sriinnu/kosha-discovery/blob/main/LICENSE"><img src="https://img.shields.io/github/license/sriinnu/kosha-discovery?color=F59E0B" alt="license" /></a>
   <a href="https://www.npmjs.com/package/@sriinnu/kosha-discovery"><img src="https://img.shields.io/node/v/%40sriinnu%2Fkosha-discovery?color=5B21B6" alt="node version" /></a>
   <a href="https://github.com/sriinnu/kosha-discovery/actions/workflows/release-npm.yml"><img src="https://img.shields.io/github/actions/workflow/status/sriinnu/kosha-discovery/release-npm.yml?label=release%20workflow" alt="release workflow status" /></a>
@@ -16,6 +17,8 @@
   <a href="https://github.com/sriinnu/kosha-discovery/actions/workflows/provider-smoke.yml"><img src="https://img.shields.io/github/actions/workflow/status/sriinnu/kosha-discovery/provider-smoke.yml?label=provider%20smoke" alt="provider smoke status" /></a>
   <a href="https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json"><img src="https://img.shields.io/badge/pricing%20source-LiteLLM-2563EB" alt="LiteLLM pricing source" /></a>
 </p>
+
+> **v0.6.1** — adds OpenRouter prompt-cache read/write rates, a portable v1 registry manifest at `~/.kosha/registry.json`, honest cache-hit feedback on the CLI, a `kosha update` alias for `refresh`, and patches for two security-scanner false positives that were silently breaking OpenRouter ingestion.
 
 Kosha (कोश — treasury/repository) automatically discovers AI models across providers, resolves credentials from CLI tools and environment variables, enriches models with pricing data, and exposes the catalog via library, CLI, and HTTP API.
 
@@ -28,6 +31,7 @@ AI applications hardcode model IDs, pricing, and provider configs. When provider
 - **Smart credentials** — finds API keys from env vars, CLI tools (Claude, Copilot, Gemini CLI), and config files
 - **Pricing enrichment** — fills in input/output/reasoning/cache costs and context windows from litellm's community-maintained dataset
 - **Proxy vs origin pricing** — preserves route pricing and exposes origin-provider reference pricing for proxy-served models
+- **Persistent cache + portable manifest** — 24h on-disk cache at `~/.kosha/cache`, plus a stable v1 JSON manifest at `~/.kosha/registry.json` that any language or tool can read directly
 - **Model aliases** — `sonnet` → `claude-sonnet-4-20250514`, updated as models evolve
 - **Role matrix** — query provider -> model -> roles (`chat`, `embedding`, `image_generation`, etc.)
 - **Cheapest routing** — rank cheapest eligible models for tasks like embeddings or image generation
@@ -37,7 +41,45 @@ AI applications hardcode model IDs, pricing, and provider configs. When provider
 ## Install
 
 ```bash
+npm install kosha-discovery      # library or HTTP server
+npm install -g kosha-discovery   # global `kosha` CLI
+```
+
+Or with pnpm:
+
+```bash
 pnpm add kosha-discovery
+```
+
+## Getting Started (CLI)
+
+```bash
+# 1. First run — discovers all reachable providers and writes the cache + manifest
+kosha discover
+# → Anthropic: 3 models, OpenAI: 7 models, ...
+# → Cached to ~/.kosha/cache  ·  Manifest: ~/.kosha/registry.json
+
+# 2. Subsequent commands read instantly from the 24h on-disk cache
+kosha list
+# → Loaded 380 models from cache (9h ago). Run "kosha update" to refresh.
+
+# 3. Force a fresh pull from all provider APIs
+kosha update     # alias for `kosha refresh`
+```
+
+After any discovery, a **stable, third-party-readable manifest** is written to
+`~/.kosha/registry.json`. It holds the full v1 snapshot — providers, models,
+pricing, capabilities, and health — in a documented schema. Any tool that can
+read JSON can consume it:
+
+```bash
+jq '.models[] | select(.pricing.inputPerMillion < 0.1) | .modelId' ~/.kosha/registry.json
+```
+
+```python
+import json, pathlib
+data = json.loads(pathlib.Path("~/.kosha/registry.json").expanduser().read_text())
+print(len(data["models"]), "models from", len(data["providers"]), "providers")
 ```
 
 ## Development (pnpm)
@@ -68,18 +110,22 @@ console.log(model.pricing); // { inputPerMillion: 3, outputPerMillion: 15, ... }
 ### CLI
 
 ```bash
-kosha discover                          # discover all providers
-kosha list                              # list models
+kosha discover                          # discover all providers (writes cache + manifest)
+kosha list                              # list models (instant from cache)
 kosha list --provider anthropic         # filter by provider
 kosha search gemini                     # fuzzy search
 kosha model sonnet                      # model details
 kosha cheapest --role embeddings        # cheapest for a task
 kosha routes gpt-4o                     # all provider routes
 kosha providers                         # provider status
+kosha update                            # force re-discover (alias: refresh)
 kosha latest                            # force-fetch latest provider/model details
 kosha latest --provider openai          # latest for one provider
 kosha serve --port 3000                 # start HTTP API
 ```
+
+Results live at `~/.kosha/cache` (24h TTL) and `~/.kosha/registry.json` (stable
+v1 manifest). See [docs/cli.md](docs/cli.md) for the full reference.
 
 ### Auto-Fetch JSON Snapshot
 
@@ -162,6 +208,7 @@ Keep that check name stable when you rename the workflow or job, and update the 
 - Git repo: model/provider discovery data is **not** committed by default.
 - Runtime cache: `~/.kosha/cache/*.json` (machine-local, TTL-based).
 - Exported snapshot: only if you run `autofetch`/`autofetch:once` with an output file and commit it yourself.
+- Stable manifest: `~/.kosha/registry.json` is rewritten after every discovery and holds the full v1 snapshot for third-party consumers.
 
 ### HTTP API
 

@@ -17,6 +17,10 @@ interface OpenRouterPricing {
 	completion: string;
 	image?: string;
 	request?: string;
+	/** Per-token cost for reading a cached prompt (Anthropic-style prompt caching). */
+	input_cache_read?: string;
+	/** Per-token cost for writing a prompt to the cache. */
+	input_cache_write?: string;
 }
 
 /** Architecture / modality metadata for an OpenRouter model. */
@@ -246,10 +250,30 @@ export class OpenRouterDiscoverer extends BaseDiscoverer {
 			return undefined;
 		}
 
-		return {
+		// I parse cache pricing optionally because most providers don't expose it.
+		// Anthropic models (and a growing list of others) support prompt caching
+		// and OpenRouter forwards the rates as `input_cache_read` / `input_cache_write`.
+		// Both are stringified per-token costs that need the same /1e6 conversion.
+		const result: ModelPricing = {
 			// Convert per-token cost to per-million-token cost
 			inputPerMillion: promptCost * 1_000_000,
 			outputPerMillion: completionCost * 1_000_000,
 		};
+
+		const cacheReadCost = pricing.input_cache_read !== undefined
+			? Number.parseFloat(pricing.input_cache_read)
+			: NaN;
+		if (Number.isFinite(cacheReadCost)) {
+			result.cacheReadPerMillion = cacheReadCost * 1_000_000;
+		}
+
+		const cacheWriteCost = pricing.input_cache_write !== undefined
+			? Number.parseFloat(pricing.input_cache_write)
+			: NaN;
+		if (Number.isFinite(cacheWriteCost)) {
+			result.cacheWritePerMillion = cacheWriteCost * 1_000_000;
+		}
+
+		return result;
 	}
 }
