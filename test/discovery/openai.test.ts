@@ -46,9 +46,12 @@ describe("OpenAIDiscoverer", () => {
 		expect(discoverer.baseUrl).toBe("https://api.openai.com");
 	});
 
-	it("should return empty array when no API key provided", async () => {
+	it("should return curated fallback models when no API key provided", async () => {
 		const result = await discoverer.discover(noCredential);
-		expect(result).toEqual([]);
+		expect(result.length).toBeGreaterThan(0);
+		expect(result.some((m) => m.id === "gpt-4o")).toBe(true);
+		expect(result.every((m) => m.provider === "openai")).toBe(true);
+		expect(result.every((m) => m.source === "manual")).toBe(true);
 	});
 
 	it("should discover models and filter correctly", async () => {

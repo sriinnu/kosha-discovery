@@ -138,6 +138,22 @@ export function normalizeModelId(modelId: string): string {
 }
 
 /**
+ * Looser ID form for cross-provider matching only.
+ *
+ * Different providers format the same Claude / GPT / Gemini version
+ * differently — OpenRouter uses dots (`claude-sonnet-4.6`), aliases and
+ * litellm use dashes (`claude-sonnet-4-6`), some services use underscores.
+ * `normalizeModelId` is intentionally non-destructive and preserves the
+ * original separators because callers serialize its output. This helper
+ * is for *matching* only: collapse every `<digit><sep><digit>` to a dash
+ * so that `modelRoutes("claude-sonnet-4-6")` finds the OpenRouter entry
+ * `anthropic/claude-sonnet-4.6`.
+ */
+export function matchableModelId(modelId: string): string {
+	return normalizeModelId(modelId).replace(/(\d)[._](\d)/g, "$1-$2");
+}
+
+/**
  * Extract a best-effort model version hint from an identifier.
  *
  * Supported patterns (in priority order):

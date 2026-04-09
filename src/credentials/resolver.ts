@@ -81,6 +81,16 @@ export class CredentialResolver {
 				return this.resolveSimpleEnvKey(explicitKey, "CEREBRAS_API_KEY");
 			case "perplexity":
 				return this.resolveSimpleEnvKey(explicitKey, "PERPLEXITY_API_KEY");
+			case "deepseek":
+				return this.resolveSimpleEnvKey(explicitKey, "DEEPSEEK_API_KEY");
+			case "moonshot":
+				return this.resolveMultiEnvKey(explicitKey, ["MOONSHOT_API_KEY", "KIMI_API_KEY"]);
+			case "glm":
+				return this.resolveMultiEnvKey(explicitKey, ["GLM_API_KEY", "ZHIPUAI_API_KEY"]);
+			case "zai":
+				return this.resolveSimpleEnvKey(explicitKey, "ZAI_API_KEY");
+			case "minimax":
+				return this.resolveSimpleEnvKey(explicitKey, "MINIMAX_API_KEY");
 			default:
 				return { source: "none" };
 		}
@@ -581,6 +591,21 @@ export class CredentialResolver {
 		const envKey = process.env[envVarName];
 		if (envKey) {
 			return Promise.resolve({ apiKey: envKey, source: "env" });
+		}
+
+		return Promise.resolve({ source: "none" });
+	}
+
+	private resolveMultiEnvKey(explicitKey: string | undefined, envVarNames: string[]): Promise<CredentialResult> {
+		if (explicitKey) {
+			return Promise.resolve({ apiKey: explicitKey, source: "config" });
+		}
+
+		for (const envVarName of envVarNames) {
+			const envKey = process.env[envVarName];
+			if (envKey) {
+				return Promise.resolve({ apiKey: envKey, source: "env" });
+			}
 		}
 
 		return Promise.resolve({ source: "none" });

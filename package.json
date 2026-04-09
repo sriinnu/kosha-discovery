@@ -1,8 +1,9 @@
 {
-	"name": "kosha-discovery",
-	"version": "0.4.1",
+	"name": "@sriinnu/kosha-discovery",
+	"version": "0.6.1",
 	"description": "AI Model & Provider Discovery Registry -- kosha (कोश) treasury of models",
 	"type": "module",
+	"packageManager": "pnpm@10.33.0",
 	"license": "MIT",
 	"author": "sriinnu",
 	"repository": {
@@ -60,6 +61,9 @@
 		"clean": "rm -rf dist",
 		"start": "node dist/server.js",
 		"kosha": "node dist/cli.js",
+		"latest": "node dist/cli.js latest --json",
+		"autofetch": "node scripts/auto-fetch-latest.mjs",
+		"autofetch:once": "node scripts/auto-fetch-latest.mjs --once",
 		"prepare": "cp hooks/pre-commit .git/hooks/pre-commit 2>/dev/null && chmod +x .git/hooks/pre-commit || true"
 	},
 	"files": [
@@ -69,8 +73,8 @@
 		"LICENSE"
 	],
 	"dependencies": {
-		"hono": "^4.7.0",
-		"@hono/node-server": "^1.13.0"
+		"hono": "^4.12.9",
+		"@hono/node-server": "^1.19.10"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.3.14",

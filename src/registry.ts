@@ -10,6 +10,7 @@ import { readFile } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
 import { normalizeProviderId } from "./provider-catalog.js";
+import { normalizeModelId } from "./normalize.js";
 import {
 	registryBuildSnapshot,
 	registryClassifyError,
@@ -66,6 +67,8 @@ import type {
 	DiscoveryError,
 	DiscoveryOptions,
 	KoshaConfig,
+	LatestDiscoveryOptions,
+	LatestDiscoveryResult,
 	ModelCard,
 	ModelMode,
 	ModelRouteInfo,
@@ -115,6 +118,21 @@ export class ModelRegistry {
 		await registryRefresh(this.state, (options) => this.discover(options), providerId);
 	}
 
+	/**
+	 * Force a live discovery fetch and return a summary payload.
+	 *
+	 * This always bypasses cache, so callers can ask for "latest now"
+	 * without relying on TTL expiry.
+	 */
+	async fetchLatestDetails(options?: LatestDiscoveryOptions): Promise<LatestDiscoveryResult> {
+		const providers = await this.discover({ ...options, force: true });
+		return {
+			providers,
+			modelCount: providers.reduce((sum, provider) => sum + provider.models.length, 0),
+			discoveredAt: this.discoveredAt,
+		};
+	}
+
 	/** Return all known models with optional provider/origin/mode filters. */
 	models(filter?: { provider?: string; originProvider?: string; mode?: ModelMode; capability?: string }): ModelCard[] {
 		return registryModels(this.state, filter);
@@ -148,7 +166,20 @@ export class ModelRegistry {
 	/** Resolve a model by canonical ID or configured alias. */
 	model(idOrAlias: string): ModelCard | undefined {
 		const resolvedId = this.aliasResolver.resolve(idOrAlias);
-		return registryModels(this.state).find((model) => model.id === resolvedId);
+		const models = registryModels(this.state);
+
+		// 1) Exact canonical/alias-resolved ID.
+		const exact = models.find((model) => model.id === resolvedId);
+		if (exact) return exact;
+
+		// 2) Normalized ID fallback (prefix/date/tag-insensitive).
+		const targetNormalized = normalizeModelId(resolvedId).toLowerCase();
+		const normalizedMatch = models.find((model) => normalizeModelId(model.id).toLowerCase() === targetNormalized);
+		if (normalizedMatch) return normalizedMatch;
+
+		// 3) Loose fallback for punctuation variants (dot/hyphen/underscore).
+		const targetLoose = toLooseLookupKey(targetNormalized);
+		return models.find((model) => toLooseLookupKey(normalizeModelId(model.id).toLowerCase()) === targetLoose);
 	}
 
 	/** Return a single provider by canonical or alias provider ID. */
@@ -329,4 +360,8 @@ export class ModelRegistry {
 			return null;
 		}
 	}
+}
+
+function toLooseLookupKey(value: string): string {
+	return value.replace(/[._-]+/g, "");
 }

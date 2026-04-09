@@ -248,6 +248,7 @@ export function registrySerializeModel(state: RegistryState, model: ModelCard): 
 		contextWindow: model.contextWindow > 0 ? model.contextWindow : null,
 		maxOutputTokens: model.maxOutputTokens > 0 ? model.maxOutputTokens : null,
 		pricing: model.pricing ?? null,
+		originPricing: model.originPricing ?? null,
 		dimensions: model.dimensions ?? null,
 		maxInputTokens: model.maxInputTokens ?? null,
 		discoveredAt: model.discoveredAt,

@@ -8,6 +8,7 @@
 
 import type { CredentialResult, ModelCard, ModelMode } from "../types.js";
 import { BaseDiscoverer } from "./base.js";
+import { STATIC_OPENAI_MODELS } from "./static-direct.js";
 
 /** Shape of a single model object from the OpenAI list endpoint. */
 interface OpenAIModel {
@@ -44,7 +45,7 @@ export class OpenAIDiscoverer extends BaseDiscoverer {
 	async discover(credential: CredentialResult, options?: { timeout?: number }): Promise<ModelCard[]> {
 		const apiKey = credential.apiKey ?? credential.accessToken;
 		if (!apiKey) {
-			return [];
+			return this.staticFallbackModels();
 		}
 
 		const timeoutMs = this.validateTimeout(options?.timeout);
@@ -192,5 +193,20 @@ export class OpenAIDiscoverer extends BaseDiscoverer {
 		}
 
 		return ["chat"];
+	}
+
+	/** Return curated fallback models when no API key is configured. */
+	private staticFallbackModels(): ModelCard[] {
+		return STATIC_OPENAI_MODELS.map((model) => this.makeCard({
+			id: model.id,
+			name: model.name,
+			provider: this.providerId,
+			mode: model.mode,
+			capabilities: model.capabilities,
+			contextWindow: model.contextWindow ?? 0,
+			maxOutputTokens: model.maxOutputTokens ?? 0,
+			maxInputTokens: model.maxInputTokens,
+			source: "manual",
+		}));
 	}
 }

@@ -28,6 +28,10 @@ export interface ModelPricing {
 	inputPerMillion: number;
 	/** USD cost per 1 million output tokens. */
 	outputPerMillion: number;
+	/** USD cost per 1 million reasoning-input tokens (optional). */
+	reasoningInputPerMillion?: number;
+	/** USD cost per 1 million reasoning-output tokens (optional). */
+	reasoningOutputPerMillion?: number;
 	/** USD cost per 1 million cache-read tokens (optional). */
 	cacheReadPerMillion?: number;
 	/** USD cost per 1 million cache-write tokens (optional). */
@@ -97,6 +101,8 @@ export interface ModelCard {
 	maxOutputTokens: number;
 	/** Token pricing information (filled by enrichment or API). */
 	pricing?: ModelPricing;
+	/** Reference direct-provider pricing for proxied routes (optional). */
+	originPricing?: ModelPricing;
 	/** Output vector dimensionality (only for embedding models). */
 	dimensions?: number;
 	/** Maximum input chunk size in tokens (only for embedding models). */
@@ -301,6 +307,19 @@ export interface DiscoveryOptions {
 	enrichWithPricing?: boolean;
 	/** Bypass the disk cache and force fresh API calls. */
 	force?: boolean;
+}
+
+/** Options for explicit cache-bypassing latest discovery fetches. */
+export interface LatestDiscoveryOptions extends Omit<DiscoveryOptions, "force"> {}
+
+/** Result payload returned by explicit latest discovery fetches. */
+export interface LatestDiscoveryResult {
+	/** Providers discovered during this latest fetch. */
+	providers: ProviderInfo[];
+	/** Total number of models across returned providers. */
+	modelCount: number;
+	/** Unix timestamp (ms) when discovery completed. */
+	discoveredAt: number;
 }
 
 /**

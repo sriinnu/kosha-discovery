@@ -8,6 +8,7 @@
 
 import type { CredentialResult, ModelCard } from "../types.js";
 import { BaseDiscoverer, MAX_MODELS_PER_PROVIDER } from "./base.js";
+import { STATIC_ANTHROPIC_MODELS } from "./static-direct.js";
 
 /** Shape of a single model object returned by the Anthropic API. */
 interface AnthropicModel {
@@ -45,7 +46,7 @@ export class AnthropicDiscoverer extends BaseDiscoverer {
 	async discover(credential: CredentialResult, options?: { timeout?: number }): Promise<ModelCard[]> {
 		const apiKey = credential.apiKey ?? credential.accessToken;
 		if (!apiKey) {
-			return [];
+			return this.staticFallbackModels();
 		}
 
 		const timeoutMs = this.validateTimeout(options?.timeout);
@@ -128,5 +129,20 @@ export class AnthropicDiscoverer extends BaseDiscoverer {
 		// The regex captures a major version >= 3, covering all current and future multimodal Claude models.
 		const visionPattern = /claude-([3-9]|[1-9]\d)/;
 		return visionPattern.test(id);
+	}
+
+	/** Return curated fallback models when no API key is configured. */
+	private staticFallbackModels(): ModelCard[] {
+		return STATIC_ANTHROPIC_MODELS.map((model) => this.makeCard({
+			id: model.id,
+			name: model.name,
+			provider: this.providerId,
+			mode: model.mode,
+			capabilities: model.capabilities,
+			contextWindow: model.contextWindow ?? 0,
+			maxOutputTokens: model.maxOutputTokens ?? 0,
+			maxInputTokens: model.maxInputTokens,
+			source: "manual",
+		}));
 	}
 }

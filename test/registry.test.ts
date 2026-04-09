@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PROVIDER_CATALOG } from "../src/provider-catalog.js";
 import { ModelRegistry } from "../src/registry.js";
 import type { ModelCard, ProviderInfo } from "../src/types.js";
 
@@ -38,6 +39,12 @@ function makeProvider(
 		lastRefreshed: Date.now(),
 		...overrides,
 	};
+}
+
+function allProvidersDisabledConfig(): Record<string, { enabled: false }> {
+	return Object.fromEntries(
+		PROVIDER_CATALOG.map((descriptor) => [descriptor.providerId, { enabled: false as const }]),
+	);
 }
 
 describe("ModelRegistry", () => {
@@ -120,6 +127,26 @@ describe("ModelRegistry", () => {
 		it("returns undefined for unknown models", () => {
 			const registry = new ModelRegistry();
 			expect(registry.model("non-existent")).toBeUndefined();
+		});
+
+		it("finds canonical models via normalized fallback (dot/hyphen + prefix insensitive)", () => {
+			const proxied = makeModel({
+				id: "anthropic/claude-sonnet-4.6",
+				provider: "openrouter",
+				originProvider: "anthropic",
+				name: "Claude Sonnet 4.6",
+			});
+			const openrouter = makeProvider("openrouter", "OpenRouter", [proxied]);
+
+			const registry = ModelRegistry.fromJSON({
+				providers: [openrouter],
+				aliases: {},
+				discoveredAt: Date.now(),
+			});
+
+			const found = registry.model("claude-sonnet-4-6-20250514");
+			expect(found).toBeDefined();
+			expect(found!.id).toBe("anthropic/claude-sonnet-4.6");
 		});
 	});
 
@@ -596,25 +623,7 @@ describe("ModelRegistry", () => {
 		it("returns empty array after successful discovery with all providers disabled", async () => {
 			const registry = new ModelRegistry({
 				cacheDir: tempDir,
-				providers: {
-					anthropic: { enabled: false },
-					openai: { enabled: false },
-					google: { enabled: false },
-					ollama: { enabled: false },
-					"llama.cpp": { enabled: false },
-					openrouter: { enabled: false },
-					bedrock: { enabled: false },
-					vertex: { enabled: false },
-					nvidia: { enabled: false },
-					together: { enabled: false },
-					fireworks: { enabled: false },
-					groq: { enabled: false },
-					mistral: { enabled: false },
-					deepinfra: { enabled: false },
-					cohere: { enabled: false },
-					cerebras: { enabled: false },
-					perplexity: { enabled: false },
-				},
+				providers: allProvidersDisabledConfig(),
 			});
 			await registry.discover({ force: true });
 			expect(registry.discoveryErrors()).toEqual([]);
@@ -644,25 +653,7 @@ describe("ModelRegistry", () => {
 			const registry = new ModelRegistry({
 				cacheDir: tempDir,
 				// Disable all providers so loadDiscoverers returns empty
-				providers: {
-					anthropic: { enabled: false },
-					openai: { enabled: false },
-					google: { enabled: false },
-					ollama: { enabled: false },
-					"llama.cpp": { enabled: false },
-					openrouter: { enabled: false },
-					bedrock: { enabled: false },
-					vertex: { enabled: false },
-					nvidia: { enabled: false },
-					together: { enabled: false },
-					fireworks: { enabled: false },
-					groq: { enabled: false },
-					mistral: { enabled: false },
-					deepinfra: { enabled: false },
-					cohere: { enabled: false },
-					cerebras: { enabled: false },
-					perplexity: { enabled: false },
-				},
+				providers: allProvidersDisabledConfig(),
 			});
 
 			// With all providers disabled, discover should return empty

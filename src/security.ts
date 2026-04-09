@@ -31,6 +31,21 @@ interface Threat {
 
 /** 32+ chars of pure base64 alphabet with optional `=` padding. */
 const BASE64_PATTERN = /^[A-Za-z0-9+/]{32,}={0,2}$/;
+/**
+ * Real base64 from random binary data is virtually guaranteed to contain
+ * BOTH uppercase and lowercase letters once you cross 32 characters
+ * (probability of all-one-case > 32 chars is < 10^-15). URL paths,
+ * lowercase slugs, and snake_case identifiers do not — they fail the
+ * mixed-case test even when they happen to live in the base64 alphabet.
+ *
+ * I added this guard after a real false positive: OpenRouter's model
+ * payload includes `links.details = "/api/v1/models/openrouter/free/endpoints"`
+ * which is 40 chars from `[A-Za-z0-9/]`, matching the raw base64 pattern
+ * even though it is plainly a URL. The mixed-case requirement filters
+ * those URL-shaped strings without losing real base64 detection.
+ */
+const BASE64_HAS_UPPER = /[A-Z]/;
+const BASE64_HAS_LOWER = /[a-z]/;
 
 /** Known credential prefixes — each must be followed by enough chars to be a real key. */
 const CREDENTIAL_PATTERNS = [
@@ -56,10 +71,23 @@ const SCRIPT_PATTERN = /<script[\s>]/i;
 const EVENT_HANDLER_PATTERN = /\bon\w+\s*=\s*["'`]/i;
 const JAVASCRIPT_URI_PATTERN = /javascript\s*:/i;
 
-/** Shell injection — command substitution and chaining to exfiltration tools. */
+/**
+ * Shell injection — command substitution and chaining to exfiltration tools.
+ *
+ * The backtick rule has bitten me twice with markdown code spans inside
+ * model descriptions (e.g. OpenRouter's `relace-search` describes its
+ * own tools as `view_file` and `grep` — purely documentation, not
+ * injection). Real shell injection in a backtick block requires either
+ * a shell metacharacter (`$`, `;`, `|`, `>`, `<`, `&`) or a dangerous
+ * command name. I keep the chain-to-dangerous-command rule below as the
+ * primary defence; the backtick rule now only fires on backtick blocks
+ * that contain shell metacharacters, so plain `code spans` in docs pass
+ * through cleanly.
+ */
 const SHELL_INJECTION_PATTERNS = [
 	/\$\([^)]+\)/,                     // $(command)
-	/`[^`]{2,}`/,                      // `command` (backtick execution, 2+ chars to avoid markdown)
+	/`[^`\n]*[$;|&<>][^`\n]*`/,        // `…with shell metachar inside…`
+	/`[^`\n]*\b(curl|wget|nc|bash|sh|eval|rm|mv|cp|chmod|chown|kill|sudo|ssh|scp)\b[^`\n]*`/i, // backtick-wrapped dangerous command
 	/[;|&]\s*(curl|wget|nc|bash|sh|python|node|ruby|perl|php)\b/i, // chain to dangerous commands
 ];
 
@@ -119,7 +147,7 @@ const VALUE_THREATS: Threat[] = [
 	},
 	{
 		name: "base64",
-		test: (v) => BASE64_PATTERN.test(v),
+		test: (v) => BASE64_PATTERN.test(v) && BASE64_HAS_UPPER.test(v) && BASE64_HAS_LOWER.test(v),
 	},
 ];
 
@@ -139,7 +167,7 @@ const KEY_THREATS: Threat[] = [
 	},
 	{
 		name: "base64",
-		test: (v) => BASE64_PATTERN.test(v),
+		test: (v) => BASE64_PATTERN.test(v) && BASE64_HAS_UPPER.test(v) && BASE64_HAS_LOWER.test(v),
 	},
 ];
 

@@ -82,6 +82,7 @@ export interface DiscoveryModelV1 {
 	contextWindow: number | null;
 	maxOutputTokens: number | null;
 	pricing: ModelPricing | null;
+	originPricing?: ModelPricing | null;
 	dimensions: number | null;
 	maxInputTokens: number | null;
 	discoveredAt: number;

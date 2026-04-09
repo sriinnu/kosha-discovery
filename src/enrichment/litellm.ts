@@ -18,6 +18,12 @@ interface LiteLLMModelEntry {
 	max_output_tokens?: number;
 	input_cost_per_token?: number;
 	output_cost_per_token?: number;
+	// LiteLLM includes reasoning/tokenized-thinking pricing for some models.
+	// Keep multiple key variants for forward/backward compatibility.
+	input_cost_per_reasoning_token?: number;
+	output_cost_per_reasoning_token?: number;
+	reasoning_input_cost_per_token?: number;
+	reasoning_output_cost_per_token?: number;
 	cache_read_input_token_cost?: number;
 	cache_creation_input_token_cost?: number;
 	litellm_provider?: string;
@@ -81,12 +87,39 @@ export class LiteLLMEnricher implements Enricher {
 
 		const enriched: ModelCard = { ...model };
 
-		// Pricing — only when the model has no pricing yet
-		if (!enriched.pricing) {
-			const pricing = this.extractPricing(entry);
-			if (pricing) {
-				enriched.pricing = pricing;
+		// Pricing — fill in base pricing when missing, AND top up cache rates
+		// even when base pricing already exists. The discoverer (e.g. OpenRouter)
+		// often provides input/output rates but skips cache_read/cache_write,
+		// while litellm has them — so I merge per-field rather than all-or-nothing.
+		const entryPricing = this.extractPricing(entry);
+		if (entryPricing) {
+			if (!enriched.pricing) {
+				enriched.pricing = entryPricing;
+			} else {
+				if (
+					enriched.pricing.cacheReadPerMillion === undefined &&
+					entryPricing.cacheReadPerMillion !== undefined
+				) {
+					enriched.pricing = {
+						...enriched.pricing,
+						cacheReadPerMillion: entryPricing.cacheReadPerMillion,
+					};
+				}
+				if (
+					enriched.pricing.cacheWritePerMillion === undefined &&
+					entryPricing.cacheWritePerMillion !== undefined
+				) {
+					enriched.pricing = {
+						...enriched.pricing,
+						cacheWritePerMillion: entryPricing.cacheWritePerMillion,
+					};
+				}
 			}
+		}
+
+		// Preserve proxy-route pricing while surfacing direct-origin reference pricing.
+		if (entryPricing && enriched.originProvider && enriched.originProvider !== enriched.provider && !enriched.originPricing) {
+			enriched.originPricing = entryPricing;
 		}
 
 		// Context window — only when unset (0)
@@ -203,7 +236,23 @@ export class LiteLLMEnricher implements Enricher {
 
 	/** Convert litellm per-token costs to per-million pricing. */
 	private extractPricing(entry: LiteLLMModelEntry): ModelPricing | undefined {
-		if (entry.input_cost_per_token === undefined && entry.output_cost_per_token === undefined) {
+		const reasoningInputCost = this.firstFinite(
+			entry.input_cost_per_reasoning_token,
+			entry.reasoning_input_cost_per_token,
+		);
+		const reasoningOutputCost = this.firstFinite(
+			entry.output_cost_per_reasoning_token,
+			entry.reasoning_output_cost_per_token,
+		);
+		const hasAnyPriceSignal =
+			entry.input_cost_per_token !== undefined ||
+			entry.output_cost_per_token !== undefined ||
+			entry.cache_read_input_token_cost !== undefined ||
+			entry.cache_creation_input_token_cost !== undefined ||
+			reasoningInputCost !== undefined ||
+			reasoningOutputCost !== undefined;
+
+		if (!hasAnyPriceSignal) {
 			return undefined;
 		}
 
@@ -211,6 +260,12 @@ export class LiteLLMEnricher implements Enricher {
 			inputPerMillion: (entry.input_cost_per_token ?? 0) * PER_MILLION,
 			outputPerMillion: (entry.output_cost_per_token ?? 0) * PER_MILLION,
 		};
+		if (reasoningInputCost !== undefined) {
+			pricing.reasoningInputPerMillion = reasoningInputCost * PER_MILLION;
+		}
+		if (reasoningOutputCost !== undefined) {
+			pricing.reasoningOutputPerMillion = reasoningOutputCost * PER_MILLION;
+		}
 
 		if (entry.cache_read_input_token_cost !== undefined) {
 			pricing.cacheReadPerMillion = entry.cache_read_input_token_cost * PER_MILLION;
@@ -220,6 +275,19 @@ export class LiteLLMEnricher implements Enricher {
 		}
 
 		return pricing;
+	}
+
+	/**
+	 * Return the first defined finite number from a list of optional values.
+	 * This allows tolerant support for field-name variants in upstream data.
+	 */
+	private firstFinite(...values: Array<number | undefined>): number | undefined {
+		for (const value of values) {
+			if (typeof value === "number" && Number.isFinite(value)) {
+				return value;
+			}
+		}
+		return undefined;
 	}
 
 	/** Map litellm mode strings to our ModelMode type. */

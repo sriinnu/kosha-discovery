@@ -1,0 +1,464 @@
+name: Update Kosha Snapshot
+
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: "Optional provider scope (e.g. openai, google, deepseek). Leave empty for all."
+        required: false
+        type: string
+      output:
+        description: "Snapshot output path inside repo"
+        required: false
+        default: "data/kosha-latest.json"
+        type: string
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.KOSHA_SNAPSHOT_SCHEDULE_ENABLED != 'false' }}
+    runs-on: ubuntu-latest
+    env:
+      OBS_DIR: ${{ runner.temp }}/kosha-snapshot-observability
+      OBS_LOG: ${{ runner.temp }}/kosha-snapshot-observability/run.log
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Generate snapshot
+        id: generate
+        shell: bash
+        env:
+          PROVIDER_INPUT: ${{ github.event.inputs.provider }}
+          OUTPUT_INPUT: ${{ github.event.inputs.output }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$OBS_DIR"
+          OUTPUT_PATH="${OUTPUT_INPUT:-data/kosha-latest.json}"
+          CHECKSUM_PATH="${OUTPUT_PATH%.json}.sha256"
+          echo "OUTPUT_PATH=$OUTPUT_PATH" >> "$GITHUB_ENV"
+          echo "CHECKSUM_PATH=$CHECKSUM_PATH" >> "$GITHUB_ENV"
+          {
+            echo "[generate] provider=${PROVIDER_INPUT:-all}"
+            echo "[generate] output=$OUTPUT_PATH"
+            echo "[generate] checksum=$CHECKSUM_PATH"
+          } >> "$OBS_LOG"
+          if [[ -n "${PROVIDER_INPUT:-}" ]]; then
+            pnpm run autofetch:once -- --provider "$PROVIDER_INPUT" --output "$OUTPUT_PATH" |& tee -a "$OBS_LOG"
+          else
+            pnpm run autofetch:once -- --output "$OUTPUT_PATH" |& tee -a "$OBS_LOG"
+          fi
+
+      - name: Validate snapshot schema
+        id: validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE' >> "$OBS_LOG" 2>&1
+          import { readFile } from "node:fs/promises";
+
+          const schema = {
+            type: "object",
+            required: ["fetchedAt", "providerScope", "modelCount", "providerCount", "discoveredAt", "providers"],
+            properties: {
+              fetchedAt: { type: "string", format: "date-time" },
+              providerScope: { type: "string" },
+              modelCount: { type: "integer", minimum: 0 },
+              providerCount: { type: "integer", minimum: 0 },
+              discoveredAt: { type: "integer", minimum: 0 },
+              providers: {
+                type: "array",
+                items: {
+                  type: "object",
+                  required: ["id", "name", "baseUrl", "authenticated", "models", "lastRefreshed"],
+                  properties: {
+                    id: { type: "string" },
+                    name: { type: "string" },
+                    baseUrl: { type: "string" },
+                    authenticated: { type: "boolean" },
+                    credentialSource: {
+                      type: "string",
+                      enum: ["env", "cli", "config", "oauth", "none"],
+                    },
+                    models: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        required: [
+                          "id",
+                          "name",
+                          "provider",
+                          "mode",
+                          "capabilities",
+                          "contextWindow",
+                          "maxOutputTokens",
+                          "aliases",
+                          "discoveredAt",
+                          "source",
+                        ],
+                        properties: {
+                          id: { type: "string" },
+                          name: { type: "string" },
+                          provider: { type: "string" },
+                          originProvider: { type: "string" },
+                          mode: { type: "string" },
+                          capabilities: { type: "array", items: { type: "string" } },
+                          rawCapabilities: { type: "array", items: { type: "string" } },
+                          contextWindow: { type: "integer", minimum: 0 },
+                          maxOutputTokens: { type: "integer", minimum: 0 },
+                          pricing: {
+                            type: "object",
+                            required: ["inputPerMillion", "outputPerMillion"],
+                            properties: {
+                              inputPerMillion: { type: "number", minimum: 0 },
+                              outputPerMillion: { type: "number", minimum: 0 },
+                              reasoningInputPerMillion: { type: "number", minimum: 0 },
+                              reasoningOutputPerMillion: { type: "number", minimum: 0 },
+                              cacheReadPerMillion: { type: "number", minimum: 0 },
+                              cacheWritePerMillion: { type: "number", minimum: 0 },
+                            },
+                          },
+                          originPricing: {
+                            type: "object",
+                            required: ["inputPerMillion", "outputPerMillion"],
+                            properties: {
+                              inputPerMillion: { type: "number", minimum: 0 },
+                              outputPerMillion: { type: "number", minimum: 0 },
+                              reasoningInputPerMillion: { type: "number", minimum: 0 },
+                              reasoningOutputPerMillion: { type: "number", minimum: 0 },
+                              cacheReadPerMillion: { type: "number", minimum: 0 },
+                              cacheWritePerMillion: { type: "number", minimum: 0 },
+                            },
+                          },
+                          dimensions: { type: "integer", minimum: 0 },
+                          maxInputTokens: { type: "integer", minimum: 0 },
+                          aliases: { type: "array", items: { type: "string" } },
+                          discoveredAt: { type: "integer", minimum: 0 },
+                          source: { type: "string", enum: ["api", "litellm", "local", "manual"] },
+                          region: { type: "string" },
+                          projectId: { type: "string" },
+                          localRuntime: {
+                            type: "object",
+                            required: ["runtimeFamily", "transport"],
+                            properties: {
+                              runtimeFamily: { type: "string" },
+                              transport: {
+                                type: "string",
+                                enum: ["native-http", "openai-compatible-http", "cloud-sdk"],
+                              },
+                              tokenizerFamily: { type: "string" },
+                              quantization: { type: "string" },
+                              memoryFootprintBytes: { type: "integer", minimum: 0 },
+                              computeTarget: { type: "string", enum: ["cpu", "gpu", "hybrid", "unknown"] },
+                              supportsStructuredOutput: { type: "boolean" },
+                              supportsStreaming: { type: "boolean" },
+                            },
+                          },
+                        },
+                      },
+                    },
+                    lastRefreshed: { type: "integer", minimum: 0 },
+                  },
+                },
+              },
+            },
+          };
+
+          function fail(message) {
+            throw new Error(message);
+          }
+
+          function validate(schema, value, path = "$") {
+            if (schema.type === "object") {
+              if (value === null || typeof value !== "object" || Array.isArray(value)) {
+                fail(`${path}: expected object`);
+              }
+              if (Array.isArray(schema.required)) {
+                for (const key of schema.required) {
+                  if (!(key in value)) {
+                    fail(`${path}: missing required property "${key}"`);
+                  }
+                }
+              }
+              if (schema.properties) {
+                for (const [key, childSchema] of Object.entries(schema.properties)) {
+                  if (key in value) {
+                    validate(childSchema, value[key], `${path}.${key}`);
+                  }
+                }
+              }
+              return;
+            }
+
+            if (schema.type === "array") {
+              if (!Array.isArray(value)) {
+                fail(`${path}: expected array`);
+              }
+              if (schema.items) {
+                value.forEach((item, index) => validate(schema.items, item, `${path}[${index}]`));
+              }
+              return;
+            }
+
+            if (schema.type === "string") {
+              if (typeof value !== "string") {
+                fail(`${path}: expected string`);
+              }
+              if (schema.enum && !schema.enum.includes(value)) {
+                fail(`${path}: unexpected value "${value}"`);
+              }
+              if (schema.format === "date-time" && Number.isNaN(Date.parse(value))) {
+                fail(`${path}: expected ISO date-time string`);
+              }
+              return;
+            }
+
+            if (schema.type === "integer") {
+              if (!Number.isInteger(value)) {
+                fail(`${path}: expected integer`);
+              }
+              if (typeof schema.minimum === "number" && value < schema.minimum) {
+                fail(`${path}: expected value >= ${schema.minimum}`);
+              }
+              return;
+            }
+
+            if (schema.type === "number") {
+              if (typeof value !== "number" || Number.isNaN(value)) {
+                fail(`${path}: expected number`);
+              }
+              if (typeof schema.minimum === "number" && value < schema.minimum) {
+                fail(`${path}: expected value >= ${schema.minimum}`);
+              }
+              return;
+            }
+
+            if (schema.type === "boolean") {
+              if (typeof value !== "boolean") {
+                fail(`${path}: expected boolean`);
+              }
+            }
+          }
+
+          const snapshot = JSON.parse(await readFile(process.env.OUTPUT_PATH, "utf8"));
+          validate(schema, snapshot);
+
+          const providerCount = snapshot.providers.length;
+          const modelCount = snapshot.providers.reduce((sum, provider) => sum + provider.models.length, 0);
+          if (snapshot.providerCount !== providerCount) {
+            fail(`$.providerCount: expected ${providerCount}, found ${snapshot.providerCount}`);
+          }
+          if (snapshot.modelCount !== modelCount) {
+            fail(`$.modelCount: expected ${modelCount}, found ${snapshot.modelCount}`);
+          }
+          for (const [index, provider] of snapshot.providers.entries()) {
+            const providerModelCount = provider.models.length;
+            const nestedCount = provider.models.filter((model) => model.provider === provider.id).length;
+            if (providerModelCount !== nestedCount) {
+              fail(`$.providers[${index}].models: contains models with mismatched provider ids`);
+            }
+          }
+
+          console.log(`Validated snapshot schema for ${providerCount} providers and ${modelCount} models.`);
+          NODE
+
+      - name: Generate checksum
+        id: checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum "$OUTPUT_PATH" > "$CHECKSUM_PATH"
+          echo "Generated checksum at $CHECKSUM_PATH" >> "$OBS_LOG"
+
+      - name: Evaluate commit guard
+        id: guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          AUTH_COUNT="$(node --input-type=module <<'NODE'
+          import { readFile } from "node:fs/promises";
+          const snapshot = JSON.parse(await readFile(process.env.OUTPUT_PATH, "utf8"));
+          const authenticatedProviders = snapshot.providers.filter((provider) => provider.authenticated === true);
+          process.stdout.write(String(authenticatedProviders.length));
+          NODE
+          )"
+          echo "AUTHENTICATED_PROVIDER_COUNT=$AUTH_COUNT" >> "$GITHUB_ENV"
+          if [[ "${AUTH_COUNT}" == "0" ]]; then
+            echo "ALLOW_COMMIT=false" >> "$GITHUB_ENV"
+            echo "No authenticated providers detected. Commit will be skipped." >> "$OBS_LOG"
+          else
+            echo "ALLOW_COMMIT=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Safety scan snapshot for secrets
+        id: scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f "$OUTPUT_PATH" ]]; then
+            echo "Snapshot file not found: $OUTPUT_PATH"
+            exit 1
+          fi
+          if grep -E -i \
+            '(sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|Bearer[[:space:]]+[A-Za-z0-9._-]{20,}|-----BEGIN (RSA|EC|OPENSSH|PRIVATE) KEY-----)' \
+            "$OUTPUT_PATH"; then
+            echo "Potential secret pattern detected in snapshot output. Failing run."
+            exit 1
+          fi
+          echo "Secret scan passed for $OUTPUT_PATH" >> "$OBS_LOG"
+
+      - name: Commit and push if changed
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${ALLOW_COMMIT:-false}" != "true" ]]; then
+            echo "Skipping commit because commit guard blocked unauthenticated snapshot." >> "$OBS_LOG"
+            exit 0
+          fi
+          if [[ -z "$(git status --porcelain -- "$OUTPUT_PATH" "$CHECKSUM_PATH")" ]]; then
+            echo "No snapshot changes to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- "$OUTPUT_PATH" "$CHECKSUM_PATH"
+          git commit -m "chore(snapshot): refresh kosha latest data"
+          git push
+
+      - name: Collect observability
+        if: always()
+        shell: bash
+        env:
+          GENERATE_OUTCOME: ${{ steps.generate.outcome }}
+          VALIDATE_OUTCOME: ${{ steps.validate.outcome }}
+          CHECKSUM_OUTCOME: ${{ steps.checksum.outcome }}
+          SCAN_OUTCOME: ${{ steps.scan.outcome }}
+          COMMIT_OUTCOME: ${{ steps.commit.outcome }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$OBS_DIR"
+          node --input-type=module <<'NODE' >> "$OBS_LOG" 2>&1
+          import { readFile, writeFile } from "node:fs/promises";
+
+          const outcomes = [
+            ["generate", process.env.GENERATE_OUTCOME ?? "unknown"],
+            ["validate", process.env.VALIDATE_OUTCOME ?? "unknown"],
+            ["checksum", process.env.CHECKSUM_OUTCOME ?? "unknown"],
+            ["scan", process.env.SCAN_OUTCOME ?? "unknown"],
+            ["commit", process.env.COMMIT_OUTCOME ?? "unknown"],
+          ];
+
+          const snapshotPath = process.env.OUTPUT_PATH;
+          const checksumPath = process.env.CHECKSUM_PATH;
+          let snapshot = null;
+          let snapshotError = null;
+
+          try {
+            snapshot = JSON.parse(await readFile(snapshotPath, "utf8"));
+          } catch (error) {
+            snapshotError = error instanceof Error ? error.message : String(error);
+          }
+
+          const providerSummary = snapshot
+            ? {
+                snapshotPath,
+                checksumPath,
+                fetchedAt: snapshot.fetchedAt,
+                providerScope: snapshot.providerScope,
+                providerCount: snapshot.providers.length,
+                modelCount: snapshot.modelCount,
+                providers: snapshot.providers.map((provider) => ({
+                  id: provider.id,
+                  name: provider.name,
+                  authenticated: provider.authenticated,
+                  credentialSource: provider.credentialSource ?? "none",
+                  modelCount: provider.models.length,
+                  lastRefreshed: provider.lastRefreshed,
+                })),
+              }
+            : {
+                snapshotPath,
+                checksumPath,
+                error: snapshotError ?? "Snapshot file was not available.",
+                providers: [],
+              };
+
+          const runMetadata = {
+            workflow: process.env.GITHUB_WORKFLOW,
+            eventName: process.env.GITHUB_EVENT_NAME,
+            runId: process.env.GITHUB_RUN_ID,
+            runNumber: process.env.GITHUB_RUN_NUMBER,
+            runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            actor: process.env.GITHUB_ACTOR,
+            ref: process.env.GITHUB_REF,
+            sha: process.env.GITHUB_SHA,
+            outputPath: snapshotPath,
+            checksumPath,
+            outcomes,
+            status: outcomes.some(([, outcome]) => outcome !== "success") ? "failure" : "success",
+          };
+
+          const failureLines = outcomes
+            .filter(([, outcome]) => outcome !== "success")
+            .map(([step, outcome]) => `${step}: ${outcome}`);
+
+          const providerLines = providerSummary.providers.length > 0
+            ? providerSummary.providers.map((provider) =>
+                `${provider.id}: ${provider.modelCount} models, authenticated=${provider.authenticated}, credentialSource=${provider.credentialSource}`,
+              )
+            : [providerSummary.error ?? "No providers discovered in snapshot."];
+
+          await writeFile(`${process.env.OBS_DIR}/provider-summary.json`, `${JSON.stringify(providerSummary, null, 2)}\n`);
+          await writeFile(`${process.env.OBS_DIR}/provider-summary.txt`, `${providerLines.join("\n")}\n`);
+          await writeFile(`${process.env.OBS_DIR}/run-metadata.json`, `${JSON.stringify(runMetadata, null, 2)}\n`);
+          await writeFile(
+            `${process.env.OBS_DIR}/run-log.txt`,
+            [
+              `workflow=${runMetadata.workflow}`,
+              `event=${runMetadata.eventName}`,
+              `ref=${runMetadata.ref}`,
+              `sha=${runMetadata.sha}`,
+              `output=${snapshotPath}`,
+              `checksum=${checksumPath}`,
+              `status=${runMetadata.status}`,
+              `step-outcomes=${outcomes.map(([step, outcome]) => `${step}:${outcome}`).join(", ")}`,
+            ].join("\n") + "\n",
+          );
+          await writeFile(
+            `${process.env.OBS_DIR}/failure-report.txt`,
+            failureLines.length > 0
+              ? `Snapshot workflow failures:\n${failureLines.map((line) => `- ${line}`).join("\n")}\n`
+              : "No failing workflow steps recorded.\n",
+          );
+          NODE
+
+      - name: Upload observability artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kosha-snapshot-observability-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.OBS_DIR }}

@@ -9,11 +9,11 @@ importers:
   .:
     dependencies:
       '@hono/node-server':
-        specifier: ^1.13.0
-        version: 1.19.9(hono@4.12.3)
+        specifier: ^1.19.10
+        version: 1.19.13(hono@4.12.12)
       hono:
-        specifier: ^4.7.0
-        version: 4.12.3
+        specifier: ^4.12.9
+        version: 4.12.12
     devDependencies:
       '@biomejs/biome':
         specifier: ^2.3.14
@@ -243,8 +243,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@hono/node-server@1.19.9':
-    resolution: {integrity: sha512-vHL6w3ecZsky+8P5MD+eFfaGTyCeOHUIFYMGpQGbrBTSmNNoxv0if69rEZ5giu36weC5saFuznL411gRX7bJDw==}
+  '@hono/node-server@1.19.13':
+    resolution: {integrity: sha512-TsQLe4i2gvoTtrHje625ngThGBySOgSK3Xo2XRYOdqGN1teR8+I7vchQC46uLJi8OF62YTYA3AhSpumtkhsaKQ==}
     engines: {node: '>=18.14.1'}
     peerDependencies:
       hono: ^4
@@ -471,8 +471,8 @@ packages:
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
 
-  hono@4.12.3:
-    resolution: {integrity: sha512-SFsVSjp8sj5UumXOOFlkZOG6XS9SJDKw0TbwFeV+AJ8xlST8kxK5Z/5EYa111UY8732lK2S/xB653ceuaoGwpg==}
+  hono@4.12.12:
+    resolution: {integrity: sha512-p1JfQMKaceuCbpJKAPKVqyqviZdS0eUxH9v82oWo1kb9xjQ5wA6iP3FNVAPDFlz5/p7d45lO+BpSk1tuSZMF4Q==}
     engines: {node: '>=16.9.0'}
 
   magic-string@0.30.21:
@@ -735,9 +735,9 @@ snapshots:
   '@esbuild/win32-x64@0.27.3':
     optional: true
 
-  '@hono/node-server@1.19.9(hono@4.12.3)':
+  '@hono/node-server@1.19.13(hono@4.12.12)':
     dependencies:
-      hono: 4.12.3
+      hono: 4.12.12
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
 
@@ -918,7 +918,7 @@ snapshots:
   fsevents@2.3.3:
     optional: true
 
-  hono@4.12.3: {}
+  hono@4.12.12: {}
 
   magic-string@0.30.21:
     dependencies:

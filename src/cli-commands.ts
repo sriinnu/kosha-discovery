@@ -156,6 +156,36 @@ export async function cmdDiscover(registry: ModelRegistry, flags: Record<string,
 	console.log(c(DIM, `\nCached to ~/.kosha/cache  ·  Manifest: ~/.kosha/registry.json`));
 }
 
+// ── latest ───────────────────────────────────────────────────────────────
+
+/**
+ * Fetch the latest provider/model details by forcing live discovery.
+ *
+ * Unlike regular list/search commands, this bypasses cache and always
+ * performs a fresh discovery pass (plus LiteLLM enrichment).
+ *
+ * @param registry  The model registry to discover into.
+ * @param flags     CLI flags (supports `--provider`, `--json`).
+ */
+export async function cmdLatest(registry: ModelRegistry, flags: Record<string, string | boolean>): Promise<void> {
+	const provider = typeof flags.provider === "string" ? flags.provider : undefined;
+	console.log(c(DIM, provider
+		? `Fetching latest details for provider "${provider}"...`
+		: "Fetching latest details for all providers..."));
+
+	const result = await registry.fetchLatestDetails({
+		providers: provider ? [provider] : undefined,
+	});
+
+	if (flags.json) {
+		console.log(JSON.stringify(result, null, 2));
+		return;
+	}
+
+	printProviderSummary(result.providers);
+	console.log(c(DIM, `\nFetched at: ${formatTimestamp(result.discoveredAt)}`));
+}
+
 // ── list ─────────────────────────────────────────────────────────────────
 
 /**
@@ -484,6 +514,16 @@ export async function cmdModel(registry: ModelRegistry, idOrAlias: string, flags
 	const cacheStr = model.pricing?.cacheReadPerMillion !== undefined
 		? `\nCache Pricing: ${formatPrice(model.pricing.cacheReadPerMillion)} read / ${formatPrice(model.pricing.cacheWritePerMillion)} write per million tokens`
 		: "";
+	// Reasoning pricing is optional — shown when providers expose it.
+	const reasoningStr = model.pricing?.reasoningInputPerMillion !== undefined || model.pricing?.reasoningOutputPerMillion !== undefined
+		? `\nReasoning Pricing: ${formatPrice(model.pricing?.reasoningInputPerMillion)} in / ${formatPrice(model.pricing?.reasoningOutputPerMillion)} out per million tokens`
+		: "";
+	const originPricingStr = model.originPricing
+		? `\nOrigin Pricing: ${formatPrice(model.originPricing.inputPerMillion)} / ${formatPrice(model.originPricing.outputPerMillion)} per million tokens (in/out)` +
+			((model.originPricing.reasoningInputPerMillion !== undefined || model.originPricing.reasoningOutputPerMillion !== undefined)
+				? `\nOrigin Reasoning Pricing: ${formatPrice(model.originPricing.reasoningInputPerMillion)} in / ${formatPrice(model.originPricing.reasoningOutputPerMillion)} out per million tokens`
+				: "")
+		: "";
 
 	// Origin provider line: only shown when distinct from the serving-layer provider
 	const originLine = model.originProvider && model.originProvider !== model.provider
@@ -502,7 +542,7 @@ ${c(BOLD, "Aliases:")} ${model.aliases.length > 0 ? model.aliases.join(", ") : c
 ${c(BOLD, "Context Window:")} ${model.contextWindow > 0 ? formatNumber(model.contextWindow) + " tokens" : c(DIM, "unknown")}
 ${c(BOLD, "Max Output:")} ${model.maxOutputTokens > 0 ? formatNumber(model.maxOutputTokens) + " tokens" : c(DIM, "unknown")}${model.dimensions ? `\n${c(BOLD, "Dimensions:")} ${formatNumber(model.dimensions)}` : ""}
 ${c(BOLD, "Capabilities:")} ${model.capabilities.join(", ")}
-${c(BOLD, "Pricing:")} ${pricingStr}${cacheStr}
+${c(BOLD, "Pricing:")} ${pricingStr}${cacheStr}${reasoningStr}${originPricingStr}
 ${c(BOLD, "Source:")} ${model.source}
 ${c(BOLD, "Discovered:")} ${formatTimestamp(model.discoveredAt)}
 `.trim());
@@ -558,14 +598,52 @@ export async function cmdResolve(registry: ModelRegistry, alias: string, flags: 
 
 	await ensureDiscovered(registry);
 	const resolved = registry.resolve(alias);
+	// I look the model up after resolving so callers get pricing (incl. cache
+	// read/write rates), context window, and capabilities — not just an ID.
+	// Downstream tools that pipe `kosha resolve --json` were missing all of
+	// this and had to follow up with `kosha model`. Now one call is enough.
+	//
+	// Fallback: aliases like `sonnet → claude-sonnet-4-6` may resolve to
+	// canonical IDs that no provider serves directly (e.g. when Anthropic
+	// API discovery is unauthenticated and OpenRouter exposes the same
+	// model as `anthropic/claude-sonnet-4.6`). In that case I lean on
+	// modelRoutes(), which normalizes IDs and returns every provider route
+	// — picking the first as the representative for pricing display.
+	let model = registry.model(resolved);
+	if (!model) {
+		const routes = registry.modelRoutes(resolved);
+		if (routes.length > 0) model = routes[0];
+	}
 
-	if (flags.json) { console.log(JSON.stringify({ alias, resolved }, null, 2)); return; }
+	if (flags.json) {
+		console.log(JSON.stringify({ alias, resolved, model: model ?? null }, null, 2));
+		return;
+	}
 
-	if (resolved === alias) {
+	if (resolved === alias && !model) {
 		// resolve() returns input unchanged when no alias mapping exists
 		console.log(c(YELLOW, `"${alias}" is not a known alias (returned as-is)`));
-	} else {
+		return;
+	}
+
+	if (resolved !== alias) {
 		console.log(`${c(DIM, alias)} ${c(DIM, "\u2192")} ${c(CYAN, resolved)}`);
+	} else {
+		console.log(c(CYAN, resolved));
+	}
+
+	if (model?.pricing) {
+		const base = `${formatPrice(model.pricing.inputPerMillion)} / ${formatPrice(model.pricing.outputPerMillion)} per M tokens (in/out)`;
+		console.log(`${c(DIM, "Pricing:")} ${base}`);
+		if (model.pricing.cacheReadPerMillion !== undefined || model.pricing.cacheWritePerMillion !== undefined) {
+			const read = model.pricing.cacheReadPerMillion !== undefined
+				? formatPrice(model.pricing.cacheReadPerMillion)
+				: c(DIM, "—");
+			const write = model.pricing.cacheWritePerMillion !== undefined
+				? formatPrice(model.pricing.cacheWritePerMillion)
+				: c(DIM, "—");
+			console.log(`${c(DIM, "Cache:  ")} ${read} read / ${write} write per M tokens`);
+		}
 	}
 }
 
@@ -638,10 +716,17 @@ export async function cmdRoutes(registry: ModelRegistry, modelId: string, flags:
  * @param flags     CLI flags (supports `--json`).
  */
 export async function cmdRefresh(registry: ModelRegistry, flags: Record<string, string | boolean>): Promise<void> {
-	console.log(c(DIM, "Refreshing all providers..."));
-	await registry.refresh();
+	const provider = typeof flags.provider === "string" ? flags.provider : undefined;
+	console.log(c(DIM, provider ? `Refreshing provider "${provider}"...` : "Refreshing all providers..."));
+	await registry.refresh(provider);
 
-	if (flags.json) { console.log(JSON.stringify(registry.toJSON(), null, 2)); return; }
+	if (flags.json) {
+		console.log(JSON.stringify({
+			...registry.toJSON(),
+			modelCount: registry.models().length,
+		}, null, 2));
+		return;
+	}
 
 	const providers = registry.providers_list();
 	printProviderSummary(providers);
@@ -715,7 +800,10 @@ ${c(BOLD, "COMMANDS")}
   ${c(CYAN, "routes")} <id|alias>             Show all provider routes for a model
   ${c(CYAN, "providers")}                     List all providers and their status
   ${c(CYAN, "resolve")} <alias>               Resolve an alias to canonical model ID
+  ${c(CYAN, "latest")}                        Force-fetch latest model/provider details
+    --provider <name>             Scope latest fetch to one provider
   ${c(CYAN, "refresh")} ${c(DIM, "(update)")}              Force re-discover all providers (bypass cache)
+    --provider <name>             Refresh only one provider
   ${c(CYAN, "serve")} [--port 3000]           Start HTTP API server
 
 ${c(BOLD, "CACHING & OUTPUT")}
@@ -750,7 +838,10 @@ ${c(BOLD, "EXAMPLES")}
   ${c(DIM, "$")} kosha routes claude-opus-4-6
   ${c(DIM, "$")} kosha routes gpt-4o --json
   ${c(DIM, "$")} kosha providers
+  ${c(DIM, "$")} kosha latest
+  ${c(DIM, "$")} kosha latest --provider openai --json
   ${c(DIM, "$")} kosha resolve haiku
+  ${c(DIM, "$")} kosha refresh --provider anthropic
   ${c(DIM, "$")} kosha serve --port 8080
 `.trim());
 }
@@ -799,6 +890,7 @@ ${c(MAGENTA, "  ╚════════════════════�
     ${c(CYAN, "kosha cheapest")}       Cheapest models for a role
     ${c(CYAN, "kosha routes")} ${c(DIM, "<id>")}    All provider routes for a model
     ${c(CYAN, "kosha providers")}      Show provider status
+    ${c(CYAN, "kosha latest")}         Force-fetch latest provider/model details
     ${c(CYAN, "kosha serve")}          Start the HTTP API server
 
   ${c(DIM, "Run")} ${c(CYAN, "kosha --help")} ${c(DIM, "for full usage.")}

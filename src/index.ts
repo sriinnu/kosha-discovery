@@ -49,6 +49,8 @@ export type {
 	DiscoveryError,
 	DiscoveryOptions,
 	KoshaConfig,
+	LatestDiscoveryOptions,
+	LatestDiscoveryResult,
 	ModelMode,
 	ModelPricing,
 	ModelRoleCard,
