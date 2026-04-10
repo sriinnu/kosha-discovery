@@ -88,6 +88,7 @@ Model pricing is sourced from [litellm's model pricing database](https://github.
 
 - Input/output token pricing
 - Reasoning token pricing (when provided by upstream)
+- Batch API pricing (async batch input/output discounts, when available)
 - Context window sizes
 - Cache read/write costs
 - Capability flags (vision, function calling, etc.)

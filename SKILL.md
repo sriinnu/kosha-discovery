@@ -181,7 +181,7 @@ ModelCard {
   capabilities: string[];        // ["chat", "vision", "function_calling", "code"]
   contextWindow: number;         // 200000
   maxOutputTokens: number;       // 16384
-  pricing?: ModelPricing;        // { inputPerMillion: 3, outputPerMillion: 15 }
+  pricing?: ModelPricing;        // { inputPerMillion, outputPerMillion, reasoningInputPerMillion?, cacheReadPerMillion?, batchInputPerMillion?, ... }
   aliases: string[];             // ["sonnet", "sonnet-4"]
   source: string;                // "api" | "litellm" | "local" | "manual"
   region?: string;               // "us-east-1" (Bedrock)

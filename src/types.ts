@@ -36,6 +36,10 @@ export interface ModelPricing {
 	cacheReadPerMillion?: number;
 	/** USD cost per 1 million cache-write tokens (optional). */
 	cacheWritePerMillion?: number;
+	/** USD cost per 1 million input tokens via the Batch API (optional). */
+	batchInputPerMillion?: number;
+	/** USD cost per 1 million output tokens via the Batch API (optional). */
+	batchOutputPerMillion?: number;
 }
 
 /**
