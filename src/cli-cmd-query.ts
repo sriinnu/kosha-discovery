@@ -16,13 +16,66 @@ import {
 	c, formatPrice, line, renderTable,
 } from "./cli-format.js";
 import type { Column } from "./cli-format.js";
-import {
-	ensureDiscovered,
-	MODEL_TABLE_COLUMNS,
-	modelRow,
-	parseNumberFlag,
-} from "./cli-commands.js";
 
+async function ensureDiscovered(registry: ModelRegistry): Promise<void> {
+	const candidate = registry as unknown as {
+		discover?: () => Promise<unknown>;
+		ensureDiscovered?: () => Promise<unknown>;
+		isDiscovered?: () => boolean;
+	};
+
+	if (typeof candidate.ensureDiscovered === "function") {
+		await candidate.ensureDiscovered();
+		return;
+	}
+
+	if (typeof candidate.isDiscovered === "function" && candidate.isDiscovered()) {
+		return;
+	}
+
+	if (typeof candidate.discover === "function") {
+		await candidate.discover();
+	}
+}
+
+function parseNumberFlag(
+	flags: Record<string, string | boolean>,
+	name: string,
+	fallback?: number,
+): number | undefined {
+	const raw = flags[name];
+	if (typeof raw !== "string" || raw.trim() === "") {
+		return fallback;
+	}
+
+	const value = Number(raw);
+	return Number.isFinite(value) ? value : fallback;
+}
+
+const MODEL_TABLE_COLUMNS: Column[] = [
+	{ header: "Provider", width: 12 },
+	{ header: "Model", width: 40 },
+	{ header: "Mode", width: 10 },
+	{ header: "Input", width: 12 },
+	{ header: "Output", width: 12 },
+];
+
+function modelRow(model: {
+	providerId?: string;
+	provider?: string;
+	id?: string;
+	mode?: string;
+	inputPrice?: number | null;
+	outputPrice?: number | null;
+}): string[] {
+	return [
+		c(CYAN, model.providerId ?? model.provider ?? ""),
+		model.id ?? "",
+		model.mode ?? "",
+		formatPrice(model.inputPrice ?? undefined),
+		formatPrice(model.outputPrice ?? undefined),
+	];
+}
 // ── roles ────────────────────────────────────────────────────────────────
 
 /**
