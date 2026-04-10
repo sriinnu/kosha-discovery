@@ -139,6 +139,8 @@ jobs:
                               reasoningOutputPerMillion: { type: "number", minimum: 0 },
                               cacheReadPerMillion: { type: "number", minimum: 0 },
                               cacheWritePerMillion: { type: "number", minimum: 0 },
+                              batchInputPerMillion: { type: "number", minimum: 0 },
+                              batchOutputPerMillion: { type: "number", minimum: 0 },
                             },
                           },
                           originPricing: {
@@ -151,6 +153,8 @@ jobs:
                               reasoningOutputPerMillion: { type: "number", minimum: 0 },
                               cacheReadPerMillion: { type: "number", minimum: 0 },
                               cacheWritePerMillion: { type: "number", minimum: 0 },
+                              batchInputPerMillion: { type: "number", minimum: 0 },
+                              batchOutputPerMillion: { type: "number", minimum: 0 },
                             },
                           },
                           dimensions: { type: "integer", minimum: 0 },

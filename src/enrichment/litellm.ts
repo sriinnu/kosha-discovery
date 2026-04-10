@@ -26,6 +26,8 @@ interface LiteLLMModelEntry {
 	reasoning_output_cost_per_token?: number;
 	cache_read_input_token_cost?: number;
 	cache_creation_input_token_cost?: number;
+	input_cost_per_token_batches?: number;
+	output_cost_per_token_batches?: number;
 	litellm_provider?: string;
 	mode?: string;
 	supports_function_calling?: boolean;
@@ -112,6 +114,24 @@ export class LiteLLMEnricher implements Enricher {
 					enriched.pricing = {
 						...enriched.pricing,
 						cacheWritePerMillion: entryPricing.cacheWritePerMillion,
+					};
+				}
+				if (
+					enriched.pricing.batchInputPerMillion === undefined &&
+					entryPricing.batchInputPerMillion !== undefined
+				) {
+					enriched.pricing = {
+						...enriched.pricing,
+						batchInputPerMillion: entryPricing.batchInputPerMillion,
+					};
+				}
+				if (
+					enriched.pricing.batchOutputPerMillion === undefined &&
+					entryPricing.batchOutputPerMillion !== undefined
+				) {
+					enriched.pricing = {
+						...enriched.pricing,
+						batchOutputPerMillion: entryPricing.batchOutputPerMillion,
 					};
 				}
 			}
@@ -249,6 +269,8 @@ export class LiteLLMEnricher implements Enricher {
 			entry.output_cost_per_token !== undefined ||
 			entry.cache_read_input_token_cost !== undefined ||
 			entry.cache_creation_input_token_cost !== undefined ||
+			entry.input_cost_per_token_batches !== undefined ||
+			entry.output_cost_per_token_batches !== undefined ||
 			reasoningInputCost !== undefined ||
 			reasoningOutputCost !== undefined;
 
@@ -272,6 +294,13 @@ export class LiteLLMEnricher implements Enricher {
 		}
 		if (entry.cache_creation_input_token_cost !== undefined) {
 			pricing.cacheWritePerMillion = entry.cache_creation_input_token_cost * PER_MILLION;
+		}
+
+		if (entry.input_cost_per_token_batches !== undefined) {
+			pricing.batchInputPerMillion = entry.input_cost_per_token_batches * PER_MILLION;
+		}
+		if (entry.output_cost_per_token_batches !== undefined) {
+			pricing.batchOutputPerMillion = entry.output_cost_per_token_batches * PER_MILLION;
 		}
 
 		return pricing;

@@ -16,6 +16,8 @@ const LITELLM_DATA: Record<string, any> = {
 		output_cost_per_reasoning_token: 0.00006,
 		cache_read_input_token_cost: 0.0000003,
 		cache_creation_input_token_cost: 0.00000375,
+		input_cost_per_token_batches: 0.0000015,
+		output_cost_per_token_batches: 0.0000075,
 		litellm_provider: "anthropic",
 		mode: "chat",
 		supports_function_calling: true,
@@ -115,6 +117,14 @@ describe("LiteLLMEnricher", () => {
 			expect(enriched.pricing!.cacheWritePerMillion).toBe(3.75); // 0.00000375 * 1_000_000
 		});
 
+		it("fills batch pricing when available", async () => {
+			const models = [makeModel()];
+			const [enriched] = await enricher.enrich(models);
+
+			expect(enriched.pricing!.batchInputPerMillion).toBe(1.5); // 0.0000015 * 1_000_000
+			expect(enriched.pricing!.batchOutputPerMillion).toBe(7.5); // 0.0000075 * 1_000_000
+		});
+
 		it("fills reasoning pricing when available", async () => {
 			const models = [makeModel()];
 			const [enriched] = await enricher.enrich(models);
@@ -132,6 +142,22 @@ describe("LiteLLMEnricher", () => {
 
 			expect(enriched.pricing!.inputPerMillion).toBe(99);
 			expect(enriched.pricing!.outputPerMillion).toBe(199);
+		});
+
+		it("merges batch pricing into existing pricing that lacks it", async () => {
+			const existingPricing = {
+				inputPerMillion: 99,
+				outputPerMillion: 199,
+			};
+			const models = [makeModel({ pricing: existingPricing })];
+			const [enriched] = await enricher.enrich(models);
+
+			// Base pricing preserved
+			expect(enriched.pricing!.inputPerMillion).toBe(99);
+			expect(enriched.pricing!.outputPerMillion).toBe(199);
+			// Batch pricing filled in from litellm
+			expect(enriched.pricing!.batchInputPerMillion).toBe(1.5);
+			expect(enriched.pricing!.batchOutputPerMillion).toBe(7.5);
 		});
 
 		it("keeps proxy route pricing and adds originPricing for proxied models", async () => {
