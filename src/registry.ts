@@ -42,6 +42,8 @@ import { createRegistryState } from "./registry-state.js";
 import type { ProviderObservation, RegistryState, DiscoveryDependencies } from "./registry-state.js";
 import {
 	enrichRegistryModels,
+	registryEnrichOnly,
+	type EnrichOnlyResult,
 	fallbackRegistryCredential,
 	getRegistryCredentialResolver,
 	loadRegistryDiscoverers,
@@ -131,6 +133,17 @@ export class ModelRegistry {
 			modelCount: providers.reduce((sum, provider) => sum + provider.models.length, 0),
 			discoveredAt: this.discoveredAt,
 		};
+	}
+
+	/**
+	 * Re-run LiteLLM enrichment on cached models without re-discovering providers.
+	 *
+	 * This is the lightweight alternative to `refresh()` — no provider API calls,
+	 * just a fetch from the litellm community catalogue. Returns `null` when
+	 * no cached data is available (user should run `discover()` first).
+	 */
+	async enrichOnly(): Promise<EnrichOnlyResult | null> {
+		return registryEnrichOnly(this.state);
 	}
 
 	/** Return all known models with optional provider/origin/mode filters. */

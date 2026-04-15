@@ -100,6 +100,63 @@ export function formatPrice(price: number | undefined): string {
 	return `$${price.toFixed(2)}`;
 }
 
+/** Pricing shape accepted by tier/discount helpers (avoids importing the full type). */
+interface PricingLike {
+	inputPerMillion: number;
+	outputPerMillion: number;
+	batchInputPerMillion?: number;
+	batchOutputPerMillion?: number;
+}
+
+/**
+ * Classify a model's pricing into a display tier label.
+ *
+ * - `"free"` — both input and output prices are zero.
+ * - `"batch"` — has batch pricing available (discounted async tier).
+ * - `"standard"` — normal paid pricing.
+ * - `undefined` — no pricing data at all.
+ *
+ * @param pricing  The model's pricing object, or `undefined`.
+ * @returns        A short tier label for table display.
+ */
+export function formatPricingTier(pricing: PricingLike | undefined): string {
+	if (!pricing) return c(DIM, "\u2014");
+	const isFree = pricing.inputPerMillion === 0 && pricing.outputPerMillion === 0;
+	if (isFree) return c(GREEN, "free");
+	const hasBatch = pricing.batchInputPerMillion !== undefined || pricing.batchOutputPerMillion !== undefined;
+	if (hasBatch) return c(CYAN, "batch");
+	return "";
+}
+
+/**
+ * Compute the batch discount percentage relative to standard pricing.
+ *
+ * Compares the average of batch input+output against the average of standard
+ * input+output. Returns `undefined` when either side is missing or when the
+ * calculation would produce a nonsensical result (zero standard price, negative
+ * discount, or no actual discount).
+ *
+ * @param pricing  The model's pricing object.
+ * @returns        A string like `"(50% off)"`, or `undefined`.
+ */
+export function formatBatchDiscount(pricing: PricingLike | undefined): string | undefined {
+	if (!pricing) return undefined;
+	const stdIn = pricing.inputPerMillion;
+	const stdOut = pricing.outputPerMillion;
+	const batchIn = pricing.batchInputPerMillion;
+	const batchOut = pricing.batchOutputPerMillion;
+	if (batchIn === undefined && batchOut === undefined) return undefined;
+
+	const stdAvg = stdIn + stdOut;
+	if (stdAvg === 0) return undefined;
+
+	const batchAvg = (batchIn ?? stdIn) + (batchOut ?? stdOut);
+	const discount = 1 - batchAvg / stdAvg;
+	if (discount <= 0) return undefined;
+
+	return `(${Math.round(discount * 100)}% off)`;
+}
+
 /**
  * Format an integer with locale-aware thousand separators.
  *

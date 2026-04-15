@@ -27,6 +27,7 @@ ${c(BOLD, "USAGE")}
 
 ${c(BOLD, "COMMANDS")}
   ${c(CYAN, "discover")}                      Discover all providers and models
+  ${c(CYAN, "enrich")}                        Re-enrich cached models with latest pricing data
   ${c(CYAN, "list")}                          List all known models
     --provider <name>             Filter by serving-layer provider
     --origin <name>               Filter by origin/creator provider (e.g. anthropic)
@@ -141,6 +142,7 @@ ${c(MAGENTA, "  \u255A\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u25
   ${c(BOLD, "Quick start:")}
 
     ${c(CYAN, "kosha discover")}       Scan all providers for models
+    ${c(CYAN, "kosha enrich")}         Update pricing from LiteLLM without re-discovery
     ${c(CYAN, "kosha list")}           List all discovered models
     ${c(CYAN, "kosha search")} ${c(DIM, "<q>")}     Search by name or ID
     ${c(CYAN, "kosha model")} ${c(DIM, "<id>")}     Detailed info for one model

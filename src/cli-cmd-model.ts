@@ -13,7 +13,7 @@
 import type { ModelRegistry } from "./registry.js";
 import {
 	BOLD, CYAN, DIM, GREEN, RED, YELLOW,
-	c, formatNumber, formatPrice, formatTimestamp,
+	c, formatBatchDiscount, formatNumber, formatPrice, formatTimestamp,
 	renderTable,
 } from "./cli-format.js";
 import type { Column } from "./cli-format.js";
@@ -73,11 +73,12 @@ export async function cmdModel(registry: ModelRegistry, idOrAlias: string, flags
 	const reasoningStr = model.pricing?.reasoningInputPerMillion !== undefined || model.pricing?.reasoningOutputPerMillion !== undefined
 		? `\nReasoning Pricing: ${formatPrice(model.pricing?.reasoningInputPerMillion)} in / ${formatPrice(model.pricing?.reasoningOutputPerMillion)} out per million tokens`
 		: "";
-	// Batch API pricing — shown when providers offer async batch discounts.
-	const batchStr = model.pricing?.batchInputPerMillion !== undefined || model.pricing?.batchOutputPerMillion !== undefined
-		? `\nBatch Pricing: ${formatPrice(model.pricing?.batchInputPerMillion)} in / ${formatPrice(model.pricing?.batchOutputPerMillion)} out per million tokens`
-		: "";
-	const originPricingStr = model.originPricing
+		// Batch API pricing — shown when providers offer async batch discounts.
+		const batchDiscount = formatBatchDiscount(model.pricing);
+		const batchStr = model.pricing?.batchInputPerMillion !== undefined || model.pricing?.batchOutputPerMillion !== undefined
+			? `\nBatch Pricing: ${formatPrice(model.pricing?.batchInputPerMillion)} in / ${formatPrice(model.pricing?.batchOutputPerMillion)} out per million tokens${batchDiscount ? ` ${batchDiscount}` : ""}`
+			: "";
+		const originPricingStr = model.originPricing
 		? `\nOrigin Pricing: ${formatPrice(model.originPricing.inputPerMillion)} / ${formatPrice(model.originPricing.outputPerMillion)} per million tokens (in/out)` +
 			((model.originPricing.reasoningInputPerMillion !== undefined || model.originPricing.reasoningOutputPerMillion !== undefined)
 				? `\nOrigin Reasoning Pricing: ${formatPrice(model.originPricing.reasoningInputPerMillion)} in / ${formatPrice(model.originPricing.reasoningOutputPerMillion)} out per million tokens`
