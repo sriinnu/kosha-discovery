@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/@sriinnu/kosha-discovery"><img src="https://img.shields.io/npm/v/%40sriinnu%2Fkosha-discovery?color=7C3AED&label=npm" alt="npm version" /></a>
   <a href="https://www.npmjs.com/package/@sriinnu/kosha-discovery"><img src="https://img.shields.io/npm/dm/%40sriinnu%2Fkosha-discovery?color=0EA5E9&label=downloads" alt="npm downloads" /></a>
-  <a href="https://github.com/sriinnu/kosha-discovery/releases/tag/v0.7.0"><img src="https://img.shields.io/badge/release-v0.7.0-7C3AED?logo=github" alt="release v0.7.0" /></a>
+  <a href="https://github.com/sriinnu/kosha-discovery/releases/tag/v0.8.0"><img src="https://img.shields.io/badge/release-v0.8.0-7C3AED?logo=github" alt="release v0.8.0" /></a>
   <a href="https://github.com/sriinnu/kosha-discovery/blob/main/LICENSE"><img src="https://img.shields.io/github/license/sriinnu/kosha-discovery?color=F59E0B" alt="license" /></a>
   <a href="https://www.npmjs.com/package/@sriinnu/kosha-discovery"><img src="https://img.shields.io/node/v/%40sriinnu%2Fkosha-discovery?color=5B21B6" alt="node version" /></a>
   <a href="https://github.com/sriinnu/kosha-discovery/actions/workflows/release-npm.yml"><img src="https://img.shields.io/github/actions/workflow/status/sriinnu/kosha-discovery/release-npm.yml?label=release%20workflow" alt="release workflow status" /></a>
@@ -18,7 +18,7 @@
   <a href="https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json"><img src="https://img.shields.io/badge/pricing%20source-LiteLLM-2563EB" alt="LiteLLM pricing source" /></a>
 </p>
 
-> **v0.7.0** — adds Batch API pricing (batchInputPerMillion / batchOutputPerMillion) across the full pipeline, refactors the CLI into sub-modules (all files under 450 LOC), and updates documentation and schema validation to cover the complete pricing surface: input, output, reasoning, cache, and batch.
+> **v0.8.0** — adds tokenizer-family inference, tool-dialect & structured-output mode heuristics, multimodal pricing (image / audio / video / character / long-context tiers), deprecation metadata, and Llama 4 support. `ModelCard` gains `toolDialect`, `structuredOutputModes`, `supportsParallelToolCalls`, `status`, `deprecationDate`, and `replacedBy`. New `ProviderDescriptor.minCachePrefixTokens` exposes the provider's prompt-cache floor. Hono bumped to 4.12.14 (closes 7 security advisories).
 
 Kosha (कोश — treasury/repository) automatically discovers AI models across providers, resolves credentials from CLI tools and environment variables, enriches models with pricing data, and exposes the catalog via library, CLI, and HTTP API.
 
