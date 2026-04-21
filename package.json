@@ -84,8 +84,8 @@
 	},
 	"pnpm": {
 		"overrides": {
-			"vite": ">=7.3.2",
-			"picomatch": ">=4.0.4"
+			"vite": "7.3.2",
+			"picomatch": "4.0.4"
 		}
 	}
 }
