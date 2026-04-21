@@ -31,6 +31,17 @@ import type { StructuredOutputMode, ToolDialect } from "./types.js";
  * - Meta Llama 3.1+ (instruct variants)   → `"llama3-tools"`
  * - Embedding / image / audio-only models → `"none"`
  *
+ * NOTE on serving-layer proxies: this helper infers the model's *native*
+ * dialect from its origin provider. Managed serving layers such as Groq,
+ * Together, Fireworks, and OpenRouter expose open-weight models behind
+ * an OpenAI-compatible tools API regardless of the underlying family —
+ * so if you are calling a Llama 3.1 model through Groq, you should use
+ * `"openai-tools"` on the wire, not the `"llama3-tools"` hint returned
+ * here. Callers that care about the serving-layer wire format should
+ * check `ModelCard.provider` (the serving slug) first and fall back to
+ * this inference only for direct-origin routes. A future revision may
+ * take `servingProvider` as a second argument.
+ *
  * @param originProvider - Model creator slug (e.g. `"anthropic"`).
  * @param modelId        - Provider-canonical model ID.
  * @returns Best-effort dialect tag, or `undefined` when no safe guess exists.
@@ -89,8 +100,11 @@ export function inferToolDialect(
 		return "mistral-tools";
 	}
 
-	// Meta Llama — tool calling formalized in Llama 3.1 instruct tune.
+	// Meta Llama — tool calling formalized in Llama 3.1 instruct tune and
+	// carried forward in Llama 4 (Scout / Maverick / Behemoth) with the same
+	// JSON-in-prompt dialect, so both families share the "llama3-tools" tag.
 	if (origin === "meta" || /llama/.test(id)) {
+		if (/llama-?4/.test(id)) return "llama3-tools";
 		if (/llama-?3\.?[123]|llama-?3-(8b|70b|405b)-instruct/.test(id)) {
 			return "llama3-tools";
 		}
@@ -186,8 +200,10 @@ export function inferStructuredOutputModes(
 		return ["grammar", "json-mode"];
 	}
 
-	// Meta Llama 3.1+ instruct — tool-choice coercion is the honest fallback.
+	// Meta Llama 3.1+ instruct and Llama 4 — tool-choice coercion is the
+	// honest fallback; no native JSON-schema enforcement on the model side.
 	if (origin === "meta" || /llama/.test(id)) {
+		if (/llama-?4/.test(id)) return ["tool-choice"];
 		if (/llama-?3\.?[123]|llama-?3-(8b|70b|405b)-instruct/.test(id)) {
 			return ["tool-choice"];
 		}
@@ -229,9 +245,9 @@ export function inferParallelToolCalls(
 
 	const id = modelId.toLowerCase();
 
-	// OpenAI: parallel calls on GPT-4 Turbo + GPT-4o + Responses-API models.
+	// OpenAI: parallel calls ship on every tool-capable OpenAI model
+	// (gpt-3.5-turbo-1106+, gpt-4-turbo-preview+, gpt-4o, o-series).
 	if (dialect === "openai-tools" || dialect === "openai-responses") {
-		if (/gpt-3\.5-turbo-(1106|0125)/.test(id)) return false;
 		return true;
 	}
 

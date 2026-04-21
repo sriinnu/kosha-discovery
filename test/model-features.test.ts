@@ -63,6 +63,11 @@ describe("inferToolDialect — Anthropic", () => {
 		expect(inferToolDialect("anthropic", "claude-instant-1.2")).toBe("none");
 		expect(inferToolDialect("anthropic", "claude-2.0")).toBe("none");
 	});
+
+	it("keeps claude-2.1 in anthropic-tools (first Claude with tool_use)", () => {
+		// Regression guard: the `(instant|1|2\.0)` exclusion must not match 2.1.
+		expect(inferToolDialect("anthropic", "claude-2.1")).toBe("anthropic-tools");
+	});
 });
 
 describe("inferToolDialect — Google", () => {
@@ -99,6 +104,13 @@ describe("inferToolDialect — other providers", () => {
 		expect(inferToolDialect("meta", "llama-3.1-70b-instruct")).toBe("llama3-tools");
 		expect(inferToolDialect("meta", "llama-3.3-70b-instruct")).toBe("llama3-tools");
 		expect(inferToolDialect("meta", "llama-3-405b-instruct")).toBe("llama3-tools");
+	});
+
+	it("returns llama3-tools for Llama 4 family (Scout / Maverick / Behemoth)", () => {
+		expect(inferToolDialect("meta", "llama-4-scout-17b-16e")).toBe("llama3-tools");
+		expect(inferToolDialect("meta", "llama-4-maverick-17b-128e")).toBe("llama3-tools");
+		expect(inferToolDialect("meta", "llama-4-behemoth")).toBe("llama3-tools");
+		expect(inferToolDialect("meta", "llama4-scout")).toBe("llama3-tools");
 	});
 
 	it("returns openai-tools for DeepSeek V3 / R1 / chat variants", () => {
@@ -190,6 +202,11 @@ describe("inferStructuredOutputModes — other providers", () => {
 		expect(inferStructuredOutputModes("meta", "llama-3.1-70b-instruct")).toEqual(["tool-choice"]);
 	});
 
+	it("returns tool-choice for Llama 4 family", () => {
+		expect(inferStructuredOutputModes("meta", "llama-4-scout-17b-16e")).toEqual(["tool-choice"]);
+		expect(inferStructuredOutputModes("meta", "llama-4-maverick-17b-128e")).toEqual(["tool-choice"]);
+	});
+
 	it("returns empty array for unknown providers", () => {
 		expect(inferStructuredOutputModes("unknown", "mystery")).toEqual([]);
 		expect(inferStructuredOutputModes(undefined, "")).toEqual([]);
@@ -208,8 +225,12 @@ describe("inferParallelToolCalls", () => {
 		expect(inferParallelToolCalls("google", "gemini-2.5-pro")).toBe(true);
 	});
 
-	it("returns false for legacy serial-only tool-capable models", () => {
-		expect(inferParallelToolCalls("openai", "gpt-3.5-turbo-1106")).toBe(false);
+	it("returns true for gpt-3.5-turbo-1106+ (parallel calls shipped with first tool-capable 3.5 turbo)", () => {
+		expect(inferParallelToolCalls("openai", "gpt-3.5-turbo-1106")).toBe(true);
+		expect(inferParallelToolCalls("openai", "gpt-3.5-turbo-0125")).toBe(true);
+	});
+
+	it("returns false for legacy Gemini 1.0 (serial-only functionCall)", () => {
 		expect(inferParallelToolCalls("google", "gemini-1.0-pro")).toBe(false);
 	});
 

@@ -23,8 +23,9 @@
  * - `"cl100k_base"` — OpenAI GPT-4, GPT-3.5-turbo, text-embedding-3
  * - `"claude"` — Anthropic Claude family (proprietary tokenizer)
  * - `"gemini"` — Google Gemini family (proprietary tokenizer)
- * - `"llama3"` — Meta Llama 3.x family
- * - `"llama2"` — Meta Llama 2 / CodeLlama
+ * - `"llama4"` — Meta Llama 4 family (~200k vocab BPE)
+ * - `"llama3"` — Meta Llama 3.x family (128k vocab BPE)
+ * - `"llama2"` — Meta Llama 2 / CodeLlama (32k vocab)
  * - `"mistral"` — Mistral/Mixtral family
  * - `"cohere"` — Cohere Command/Embed family
  * - `"deepseek"` — DeepSeek family
@@ -66,12 +67,13 @@ export function inferTokenizerFamily(
 		return "gemini";
 	}
 
-	// Meta Llama — tokenizer differs between Llama 2 and Llama 3 families.
-	// Check llama-2 / codellama before llama-3 because IDs like "codellama-34b"
-	// contain the substring "llama-3" via "codellama-34b" → would false-positive
-	// the llama-3 branch otherwise.
+	// Meta Llama — tokenizer differs between Llama 2 (32k), Llama 3 (128k),
+	// and Llama 4 (200k) families. Check llama-2 / codellama before llama-3
+	// because IDs like "codellama-34b" contain the substring "llama-3" via
+	// "codellama-34b" → would false-positive the llama-3 branch otherwise.
 	if (origin === "meta" || /llama/.test(id)) {
 		if (/codellama|llama-?2\b|llama2/.test(id)) return "llama2";
+		if (/llama-?4/.test(id)) return "llama4";
 		if (/llama-?3|llama3/.test(id)) return "llama3";
 		return "llama3"; // Default new llama.* to llama3 (safer recent assumption).
 	}

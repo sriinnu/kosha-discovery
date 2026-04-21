@@ -90,6 +90,12 @@ describe("inferTokenizerFamily — Meta Llama", () => {
 	it("defaults unknown llama variants to llama3", () => {
 		expect(inferTokenizerFamily("meta", "llama-maverick")).toBe("llama3");
 	});
+
+	it("returns llama4 for Llama 4 family (Scout / Maverick / Behemoth)", () => {
+		expect(inferTokenizerFamily("meta", "llama-4-scout-17b-16e")).toBe("llama4");
+		expect(inferTokenizerFamily("meta", "llama-4-maverick-17b-128e")).toBe("llama4");
+		expect(inferTokenizerFamily("meta", "llama4-behemoth")).toBe("llama4");
+	});
 });
 
 // ---------------------------------------------------------------------------
