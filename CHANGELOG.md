@@ -99,7 +99,7 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ---
 
-## [0.7.0] — 2026-04
+## [0.7.0] — 2026-04-01
 
 ### Added
 
