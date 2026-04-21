@@ -265,6 +265,14 @@ export function registrySerializeModel(state: RegistryState, model: ModelCard): 
 		computeTarget: runtime?.computeTarget ?? null,
 		supportsStructuredOutput: runtime?.supportsStructuredOutput ?? null,
 		supportsStreaming: runtime?.supportsStreaming ?? null,
+		// Tool / structured-output / deprecation metadata — surfaced for
+		// consumers that build routing policies or deprecation warnings.
+		toolDialect: model.toolDialect ?? null,
+		structuredOutputModes: [...(model.structuredOutputModes ?? [])],
+		supportsParallelToolCalls: model.supportsParallelToolCalls ?? null,
+		status: model.status ?? null,
+		deprecationDate: model.deprecationDate ?? null,
+		replacedBy: model.replacedBy ?? null,
 	};
 }
 

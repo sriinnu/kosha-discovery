@@ -40,7 +40,131 @@ export interface ModelPricing {
 	batchInputPerMillion?: number;
 	/** USD cost per 1 million output tokens via the Batch API (optional). */
 	batchOutputPerMillion?: number;
+	/**
+	 * USD cost per input image for vision-capable models that bill per image
+	 * (OpenAI GPT-4o, Anthropic Claude vision) rather than per pixel-token.
+	 */
+	imageInputPerImage?: number;
+	/**
+	 * USD cost per output image for image-generation models (DALL-E, Imagen,
+	 * Stable Diffusion-style endpoints) that bill per rendered image.
+	 */
+	imageOutputPerImage?: number;
+	/**
+	 * USD cost per 1 million audio-input tokens for models that tokenize audio
+	 * (GPT-4o Realtime, Gemini 2.x native audio).
+	 */
+	audioInputPerMillion?: number;
+	/**
+	 * USD cost per 1 million audio-output tokens for speech-generation models
+	 * that emit audio as tokens.
+	 */
+	audioOutputPerMillion?: number;
+	/**
+	 * USD cost per second of audio input for providers that bill by duration
+	 * instead of token count (Whisper, AssemblyAI, Gemini audio-per-second).
+	 */
+	audioInputPerSecond?: number;
+	/**
+	 * USD cost per second of audio output for TTS providers that bill by
+	 * synthesised duration (ElevenLabs, Cartesia, OpenAI TTS per-second tier).
+	 */
+	audioOutputPerSecond?: number;
+	/**
+	 * USD cost per second of video input for multimodal models that bill
+	 * by video duration (Gemini 2.x video).
+	 */
+	videoInputPerSecond?: number;
+	/**
+	 * USD cost per 1 million video-input tokens for models that tokenize
+	 * video frames (newer Gemini long-video variants).
+	 */
+	videoInputPerMillion?: number;
+	/**
+	 * USD cost per 1 million characters for providers that bill by character
+	 * rather than token (Vertex AI text models, some Azure endpoints).
+	 */
+	inputPerMillionCharacters?: number;
+	/**
+	 * USD cost per 1 million output characters for character-billed providers.
+	 */
+	outputPerMillionCharacters?: number;
+	/**
+	 * USD cost per 1 million input tokens when the prompt exceeds the
+	 * long-context tier threshold (e.g. Gemini > 128k tokens tier).
+	 */
+	longContextInputPerMillion?: number;
+	/**
+	 * USD cost per 1 million output tokens when operating in the long-context
+	 * pricing tier.
+	 */
+	longContextOutputPerMillion?: number;
+	/**
+	 * Token-count threshold above which long-context pricing applies
+	 * (e.g. 128_000 for Gemini 1.5/2.5 tiered pricing).
+	 */
+	longContextThresholdTokens?: number;
 }
+
+/**
+ * Tool / function-calling dialect families.
+ *
+ * A dialect captures the JSON shape of the tool definition, the field names
+ * the API expects (`tools` vs. `functions`, `tool_choice` vs. `function_call`),
+ * and the runtime event stream used to deliver tool calls. Consumers build
+ * adapters per dialect; the model card surfaces which dialect to target.
+ */
+export type ToolDialect =
+	/** Classic OpenAI function/tool calling (`tools` array, `tool_choice`). */
+	| "openai-tools"
+	/** OpenAI Responses API tools (`input` events, `response.output_item.*`). */
+	| "openai-responses"
+	/** Anthropic Messages API `tool_use` / `tool_result` content blocks. */
+	| "anthropic-tools"
+	/** Google Gemini `function_declarations` + `functionCall` parts. */
+	| "gemini-functions"
+	/** Cohere `tools` parameter with `tool_calls` in the response body. */
+	| "cohere-tools"
+	/** Mistral `tools` array — OpenAI-compatible but with Mistral quirks. */
+	| "mistral-tools"
+	/** Meta Llama 3.x JSON tool-call format (`<|python_tag|>` style). */
+	| "llama3-tools"
+	/** Model does not expose first-class tool calling. */
+	| "none";
+
+/**
+ * Structured-output production modes a model can enforce.
+ *
+ * The enum describes how the caller can constrain the model's output shape.
+ * Multiple modes can apply to a single model (e.g. OpenAI GPT-4o supports
+ * both `json-mode` and `json-schema`). The registry surfaces the set so
+ * downstream consumers can pick the most precise mode they can use.
+ */
+export type StructuredOutputMode =
+	/** OpenAI `response_format: { type: "json_object" }`. */
+	| "json-mode"
+	/** OpenAI `response_format: { type: "json_schema" }` with strict validation. */
+	| "json-schema"
+	/** Gemini `response_schema` + `response_mime_type: "application/json"`. */
+	| "response-schema"
+	/** Generic `response_format` envelope (OpenRouter, Together, Fireworks). */
+	| "response-format"
+	/** llama.cpp / exllama grammar-constrained decoding (GBNF or JSON schema). */
+	| "grammar"
+	/** Anthropic tool-use coerced as structured-output trick. */
+	| "tool-choice"
+	/** Anthropic-style XML-tag guidance (prompt-level, not enforced). */
+	| "xml";
+
+/**
+ * Model lifecycle status used for routing and deprecation warnings.
+ *
+ * - `active` — fully supported, safe to bind long-term.
+ * - `preview` — usable but API/pricing may change without notice.
+ * - `deprecated` — still served, but replaced; plan migration.
+ * - `retired` — no longer served; kept in catalog for backfill / historical.
+ */
+export type ModelStatus = "active" | "preview" | "deprecated" | "retired";
 
 /**
  * Local-runtime metadata surfaced for first-class local providers.
@@ -134,6 +258,56 @@ export interface ModelCard {
 	 * compression and routing decisions.
 	 */
 	tokenizerFamily?: string;
+	/**
+	 * Tool-calling dialect the model speaks natively.
+	 *
+	 * Consumers use this to pick the correct adapter when binding a tool
+	 * registry to a model (OpenAI `tools` vs. Anthropic `tool_use` blocks
+	 * vs. Gemini `function_declarations` vs. Cohere/Mistral/Llama shapes).
+	 * Inferred via {@link inferToolDialect} when not provided by the API.
+	 */
+	toolDialect?: ToolDialect;
+	/**
+	 * Structured-output production modes the model supports.
+	 *
+	 * A model can advertise multiple modes (e.g. OpenAI GPT-4o supports both
+	 * `json-mode` and `json-schema`). Consumers should pick the most
+	 * precise mode available to them. Inferred via
+	 * {@link inferStructuredOutputModes} when not provided by the API.
+	 */
+	structuredOutputModes?: StructuredOutputMode[];
+	/**
+	 * Whether the model supports multiple tool calls in a single turn.
+	 *
+	 * Relevant for agent loops and parallel tool-use optimizations.
+	 * OpenAI GPT-4o and newer, Anthropic Claude 3.5+, and most modern
+	 * frontier models return true; legacy models return false.
+	 */
+	supportsParallelToolCalls?: boolean;
+	/**
+	 * Lifecycle status of the model.
+	 *
+	 * Used by routing policies to warn callers binding to deprecated models
+	 * and to filter retired entries out of active selection queries.
+	 * Defaults to `"active"` when unspecified.
+	 */
+	status?: ModelStatus;
+	/**
+	 * ISO-8601 deprecation date (e.g. `"2026-06-03"`).
+	 *
+	 * When set, the provider has announced an end-of-service date after
+	 * which the model will be retired. Consumers can surface warnings
+	 * or auto-migrate bindings ahead of the date.
+	 */
+	deprecationDate?: string;
+	/**
+	 * Canonical model ID suggested by the provider as a replacement.
+	 *
+	 * Only set for deprecated models when the provider publishes a
+	 * successor (e.g. `gpt-4` → `gpt-4o`). Consumers use it to build
+	 * automatic-migration suggestions.
+	 */
+	replacedBy?: string;
 }
 
 /**

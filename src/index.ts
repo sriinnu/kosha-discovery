@@ -33,6 +33,7 @@ export type {
 } from "./discovery-contract.js";
 export { extractModelVersion, extractOriginProvider, normalizeModelId } from "./normalize.js";
 export { inferTokenizerFamily } from "./tokenizer-family.js";
+export { inferParallelToolCalls, inferStructuredOutputModes, inferToolDialect } from "./model-features.js";
 export {
 	getProviderDescriptor,
 	isLocalProvider,
@@ -45,6 +46,7 @@ export type {
 	ComputeTarget,
 	LocalRuntimeMetadata,
 	ModelCard,
+	ModelStatus,
 	ProviderInfo,
 	ProviderRoleInfo,
 	DiscoveryError,
@@ -68,6 +70,8 @@ export type {
 	Enricher,
 	ProviderOrigin,
 	ProviderTransport,
+	StructuredOutputMode,
+	ToolDialect,
 } from "./types.js";
 
 /**
