@@ -123,6 +123,17 @@ export interface ModelCard {
 	projectId?: string;
 	/** Local-runtime metadata for Ollama / llama.cpp style providers. */
 	localRuntime?: LocalRuntimeMetadata;
+	/**
+	 * Best-effort tokenizer family identifier.
+	 *
+	 * Normalized string such as `"o200k_base"`, `"cl100k_base"`, `"claude"`,
+	 * `"gemini"`, `"llama3"`, `"mistral"`, `"cohere"`, `"deepseek"`. For local
+	 * runtimes this is copied from {@link LocalRuntimeMetadata.tokenizerFamily}
+	 * when present; for API-served models it is derived via
+	 * {@link inferTokenizerFamily}. Consumers use it for tokenizer-aware
+	 * compression and routing decisions.
+	 */
+	tokenizerFamily?: string;
 }
 
 /**

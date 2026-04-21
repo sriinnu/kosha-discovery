@@ -10,6 +10,7 @@
 import type { Enricher, ModelCard, ModelMode, ModelPricing } from "../types.js";
 import { normalizeModelId } from "../normalize.js";
 import { assertCleanPayload } from "../security.js";
+import { inferTokenizerFamily } from "../tokenizer-family.js";
 
 /** Shape of a single entry in the litellm pricing JSON. */
 interface LiteLLMModelEntry {
@@ -188,6 +189,15 @@ export class LiteLLMEnricher implements Enricher {
 		}
 		if (entry.supports_prompt_caching && !enriched.capabilities.includes("prompt_caching")) {
 			enriched.capabilities.push("prompt_caching");
+		}
+
+		// Tokenizer family — only fill when missing. Prefer a local-runtime value
+		// when the discoverer already supplied one; fall back to heuristic inference
+		// based on origin provider and model ID.
+		if (!enriched.tokenizerFamily) {
+			const localFamily = enriched.localRuntime?.tokenizerFamily;
+			enriched.tokenizerFamily =
+				localFamily ?? inferTokenizerFamily(enriched.originProvider, enriched.id);
 		}
 
 		return enriched;

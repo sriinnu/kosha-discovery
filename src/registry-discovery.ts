@@ -257,7 +257,9 @@ export function registrySerializeModel(state: RegistryState, model: ModelCard): 
 		region: model.region ?? null,
 		projectId: model.projectId ?? null,
 		runtimeFamily: runtime?.runtimeFamily ?? (descriptor.isLocal ? descriptor.canonicalProviderId : null),
-		tokenizerFamily: runtime?.tokenizerFamily ?? null,
+		// Prefer the local-runtime value, fall back to the top-level hint
+		// populated by the tokenizer-family inference for API-served models.
+		tokenizerFamily: runtime?.tokenizerFamily ?? model.tokenizerFamily ?? null,
 		quantization: runtime?.quantization ?? null,
 		memoryFootprintBytes: runtime?.memoryFootprintBytes ?? null,
 		computeTarget: runtime?.computeTarget ?? null,

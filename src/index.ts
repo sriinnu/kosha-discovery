@@ -32,6 +32,7 @@ export type {
 	TrustedCapability,
 } from "./discovery-contract.js";
 export { extractModelVersion, extractOriginProvider, normalizeModelId } from "./normalize.js";
+export { inferTokenizerFamily } from "./tokenizer-family.js";
 export {
 	getProviderDescriptor,
 	isLocalProvider,
