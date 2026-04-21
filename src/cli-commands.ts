@@ -16,7 +16,7 @@ import type { ModelMode, ProviderInfo } from "./types.js";
 import type { ModelRegistry } from "./registry.js";
 import {
 	BOLD, CYAN, DIM, GREEN, RED, YELLOW,
-	c, formatContextWindow, formatPrice, formatRelativeTime, formatTimestamp,
+	c, formatContextWindow, formatPrice, formatPricingTier, formatRelativeTime, formatTimestamp,
 	line, renderTable,
 } from "./cli-format.js";
 import type { Column } from "./cli-format.js";
@@ -36,6 +36,23 @@ export const MODEL_TABLE_COLUMNS: Column[] = [
 	{ header: "Context", width: 10 },
 	{ header: "$/M in", width: 8, align: "right" },
 	{ header: "$/M out", width: 8, align: "right" },
+];
+
+/**
+ * Extended pricing column layout used when `--pricing` flag is passed.
+ * Replaces context-window with tier, cache, and batch columns.
+ */
+const PRICING_TABLE_COLUMNS: Column[] = [
+	{ header: "Provider", width: 12 },
+	{ header: "Model", width: 34 },
+	{ header: "Mode", width: 10 },
+	{ header: "Tier", width: 6 },
+	{ header: "$/M in", width: 8, align: "right" },
+	{ header: "$/M out", width: 8, align: "right" },
+	{ header: "Cache R", width: 8, align: "right" },
+	{ header: "Cache W", width: 8, align: "right" },
+	{ header: "Batch in", width: 8, align: "right" },
+	{ header: "Batch out", width: 9, align: "right" },
 ];
 
 /**
@@ -109,11 +126,30 @@ export function modelRow(m: { provider: string; id: string; mode: string; contex
 	];
 }
 
-export function parseNumberFlag(value: string | boolean | undefined): number | undefined {
-	if (typeof value !== "string") return undefined;
-	const n = Number(value);
-	if (!Number.isFinite(n)) return undefined;
-	return n;
+/**
+ * Build an extended pricing-table row from a model card.
+ * Includes tier label, cache read/write, and batch pricing columns.
+ * @param m  A model card with full pricing detail.
+ * @returns  An array of formatted cell strings for the pricing column layout.
+ */
+function pricingRow(m: {
+	provider: string; id: string; mode: string;
+	pricing?: {
+		inputPerMillion: number; outputPerMillion: number;
+		cacheReadPerMillion?: number; cacheWritePerMillion?: number;
+		batchInputPerMillion?: number; batchOutputPerMillion?: number;
+	};
+}): string[] {
+	return [
+		c(CYAN, m.provider), m.id, m.mode,
+		formatPricingTier(m.pricing),
+		formatPrice(m.pricing?.inputPerMillion),
+		formatPrice(m.pricing?.outputPerMillion),
+		formatPrice(m.pricing?.cacheReadPerMillion),
+		formatPrice(m.pricing?.cacheWritePerMillion),
+		formatPrice(m.pricing?.batchInputPerMillion),
+		formatPrice(m.pricing?.batchOutputPerMillion),
+	];
 }
 
 /** Print a provider summary line (used by discover & refresh). */
@@ -190,6 +226,49 @@ export async function cmdLatest(registry: ModelRegistry, flags: Record<string, s
 	console.log(c(DIM, `\nFetched at: ${formatTimestamp(result.discoveredAt)}`));
 }
 
+// ── enrich ───────────────────────────────────────────────────────────────
+
+/**
+ * Re-run LiteLLM enrichment on cached models without re-discovering providers.
+ *
+ * This is the lightweight alternative to `kosha refresh` when you only need
+ * updated pricing data — no provider API calls, just a single fetch from the
+ * litellm community catalogue plus a cache + manifest update.
+ *
+ * @param registry  The model registry with cached data.
+ * @param flags     CLI flags (supports `--json`).
+ */
+export async function cmdEnrich(registry: ModelRegistry, flags: Record<string, string | boolean>): Promise<void> {
+	console.log(c(DIM, "Re-enriching cached models with LiteLLM pricing data..."));
+	const result = await registry.enrichOnly();
+
+	if (result === null) {
+		console.error(c(YELLOW, "No cached data found. Run `kosha discover` first."));
+		process.exit(1);
+	}
+
+	if (flags.json) {
+		console.log(JSON.stringify(result, null, 2));
+		return;
+	}
+
+	const totalModels = result.modelCount;
+	const cacheUpdated = result.cachePricingUpdated;
+	const batchUpdated = result.batchPricingUpdated;
+
+	console.log(c(DIM, `\nEnriched ${c(BOLD, String(totalModels))} models:`));
+	if (cacheUpdated > 0) {
+		console.log(c(DIM, `  Cache pricing updated: ${cacheUpdated} models`));
+	}
+	if (batchUpdated > 0) {
+		console.log(c(DIM, `  Batch pricing updated:  ${batchUpdated} models`));
+	}
+	if (cacheUpdated === 0 && batchUpdated === 0) {
+		console.log(c(DIM, "  No new pricing data found."));
+	}
+	console.log(c(DIM, `\nCache and manifest updated at ~/.kosha/`));
+}
+
 // ── list ─────────────────────────────────────────────────────────────────
 
 /**
@@ -197,13 +276,14 @@ export async function cmdLatest(registry: ModelRegistry, flags: Record<string, s
  * Supports filtering by `--provider`, `--origin`, `--mode`, and `--capability`.
  *
  * @param registry  The model registry to query.
- * @param flags     CLI flags (supports `--provider`, `--origin`, `--mode`, `--capability`, `--json`).
+ * @param flags     CLI flags (supports `--provider`, `--origin`, `--mode`, `--capability`, `--pricing`, `--json`).
  */
 export async function cmdList(registry: ModelRegistry, flags: Record<string, string | boolean>): Promise<void> {
 	const provider = typeof flags.provider === "string" ? flags.provider : undefined;
 	const originProvider = typeof flags.origin === "string" ? flags.origin : undefined;
 	const mode = typeof flags.mode === "string" ? (flags.mode as ModelMode) : undefined;
 	const capability = typeof flags.capability === "string" ? flags.capability : undefined;
+	const showPricing = flags.pricing === true;
 
 	await ensureDiscovered(registry);
 	const models = registry.models({ provider, originProvider, mode, capability });
@@ -211,9 +291,11 @@ export async function cmdList(registry: ModelRegistry, flags: Record<string, str
 	if (flags.json) { console.log(JSON.stringify(models, null, 2)); return; }
 	if (models.length === 0) { console.log(c(YELLOW, "No models found matching the given filters.")); return; }
 
-	console.log(renderTable(MODEL_TABLE_COLUMNS, models.map(modelRow)));
+	const listColumns = showPricing ? PRICING_TABLE_COLUMNS : MODEL_TABLE_COLUMNS;
+	const listRowFn = showPricing ? pricingRow : modelRow;
+	console.log(renderTable(listColumns, models.map(listRowFn)));
 	const providerCount = new Set(models.map((m) => m.provider)).size;
-	console.log(c(DIM, line("\u2500", 90)));
+	console.log(c(DIM, line("\u2500", showPricing ? 110 : 90)));
 	console.log(`${c(BOLD, String(models.length))} models from ${c(BOLD, String(providerCount))} providers`);
 }
 
@@ -225,7 +307,7 @@ export async function cmdList(registry: ModelRegistry, flags: Record<string, str
  *
  * @param registry  The model registry to search.
  * @param query     The search term (substring).
- * @param flags     CLI flags (supports `--origin`, `--json`).
+ * @param flags     CLI flags (supports `--origin`, `--pricing`, `--json`).
  */
 export async function cmdSearch(registry: ModelRegistry, query: string, flags: Record<string, string | boolean>): Promise<void> {
 	if (!query) { console.error(c(RED, "Usage: kosha search <query>")); process.exit(1); }
@@ -233,6 +315,7 @@ export async function cmdSearch(registry: ModelRegistry, query: string, flags: R
 	await ensureDiscovered(registry);
 	const needle = query.toLowerCase();
 	const originProvider = typeof flags.origin === "string" ? flags.origin : undefined;
+	const showPricing = flags.pricing === true;
 
 	// Apply optional origin filter first, then substring-match across id, name, and aliases
 	const matches = registry.models({ originProvider }).filter(
@@ -245,7 +328,9 @@ export async function cmdSearch(registry: ModelRegistry, query: string, flags: R
 	if (flags.json) { console.log(JSON.stringify(matches, null, 2)); return; }
 	if (matches.length === 0) { console.log(c(YELLOW, `No models matching "${query}"`)); return; }
 
-	console.log(renderTable(MODEL_TABLE_COLUMNS, matches.map(modelRow)));
+	const searchColumns = showPricing ? PRICING_TABLE_COLUMNS : MODEL_TABLE_COLUMNS;
+	const searchRowFn = showPricing ? pricingRow : modelRow;
+	console.log(renderTable(searchColumns, matches.map(searchRowFn)));
 	console.log(c(DIM, `\n${matches.length} result${matches.length !== 1 ? "s" : ""} for "${query}"`));
 }
 

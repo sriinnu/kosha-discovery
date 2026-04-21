@@ -223,7 +223,65 @@ export async function enrichRegistryModels(state: RegistryState): Promise<void> 
 		}
 	} catch {
 		// I silently skip enrichment when the optional module is not present.
+		}
 	}
+/**
+ * Enrichment-only result for the `kosha enrich` CLI command.
+ */
+export interface EnrichOnlyResult {
+	/** Total models across all providers. */
+	modelCount: number;
+	/** Models that gained new cache read/write pricing. */
+	cachePricingUpdated: number;
+	/** Models that gained new batch pricing. */
+	batchPricingUpdated: number;
+}
+
+/**
+ * Load cached provider data, re-run LiteLLM enrichment, and persist results.
+ *
+ * This is the lightweight alternative to full re-discovery — no provider API
+ * calls, just a fetch from the litellm community catalogue. Returns `null`
+ * when no cached data is available.
+ */
+export async function registryEnrichOnly(state: RegistryState): Promise<EnrichOnlyResult | null> {
+	const ttl = state.config.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
+	const allEntry = await state.cache.get<ProviderInfo[]>("providers_all");
+	if (!allEntry) return null;
+
+	// Accept stale cache too — enrichment-only shouldn't fail just because
+	// the TTL expired. The user explicitly asked for enrichment, not discovery.
+	for (const provider of allEntry.data) {
+		state.providerMap.set(provider.id, provider);
+	}
+	state.discoveredAt = allEntry.timestamp;
+
+	// Snapshot pricing before enrichment to count how many models get updates.
+	const before = countPricingFields(state);
+
+	await enrichRegistryModels(state);
+	populateRegistryModelAliases(state);
+	await saveRegistryToCache(state);
+	await exportRegistryManifest(state);
+
+	const after = countPricingFields(state);
+	return {
+		modelCount: Array.from(state.providerMap.values()).reduce((sum, p) => sum + p.models.length, 0),
+		cachePricingUpdated: Math.max(0, after.cachePricing - before.cachePricing),
+		batchPricingUpdated: Math.max(0, after.batchPricing - before.batchPricing),
+	};
+}
+
+function countPricingFields(state: RegistryState): { cachePricing: number; batchPricing: number } {
+	let cachePricing = 0;
+	let batchPricing = 0;
+	for (const providerInfo of state.providerMap.values()) {
+		for (const model of providerInfo.models) {
+			if (model.pricing?.cacheReadPerMillion !== undefined || model.pricing?.cacheWritePerMillion !== undefined) cachePricing++;
+			if (model.pricing?.batchInputPerMillion !== undefined || model.pricing?.batchOutputPerMillion !== undefined) batchPricing++;
+		}
+	}
+	return { cachePricing, batchPricing };
 }
 
 /**

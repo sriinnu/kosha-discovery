@@ -19,6 +19,7 @@ import {
 	cmdCapable,
 	cmdCheapest,
 	cmdDiscover,
+	cmdEnrich,
 	cmdLatest,
 	cmdList,
 	cmdModel,
@@ -130,6 +131,10 @@ async function main(): Promise<void> {
 	const registry = new ModelRegistry();
 
 	switch (command) {
+		case "enrich":
+			await cmdEnrich(registry, flags);
+			break;
+
 		case "discover":
 			await cmdDiscover(registry, flags);
 			break;

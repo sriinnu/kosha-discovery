@@ -13,7 +13,7 @@ import type { ModelMode } from "./types.js";
 import type { ModelRegistry } from "./registry.js";
 import {
 	BOLD, CYAN, DIM, RED, YELLOW,
-	c, formatPrice, line, renderTable,
+	c, formatPrice, formatPricingTier, line, renderTable,
 } from "./cli-format.js";
 import type { Column } from "./cli-format.js";
 
@@ -60,6 +60,19 @@ const MODEL_TABLE_COLUMNS: Column[] = [
 	{ header: "Output", width: 12 },
 ];
 
+const PRICING_TABLE_COLUMNS: Column[] = [
+	{ header: "Provider", width: 12 },
+	{ header: "Model", width: 34 },
+	{ header: "Mode", width: 10 },
+	{ header: "Tier", width: 6 },
+	{ header: "$/M in", width: 8, align: "right" },
+	{ header: "$/M out", width: 8, align: "right" },
+	{ header: "Cache R", width: 8, align: "right" },
+	{ header: "Cache W", width: 8, align: "right" },
+	{ header: "Batch in", width: 8, align: "right" },
+	{ header: "Batch out", width: 9, align: "right" },
+];
+
 function modelRow(model: {
 	providerId?: string;
 	provider?: string;
@@ -76,6 +89,31 @@ function modelRow(model: {
 		formatPrice(model.outputPrice ?? undefined),
 	];
 }
+
+function pricingRow(model: {
+	provider?: string;
+	id?: string;
+	mode?: string;
+	pricing?: {
+		inputPerMillion: number; outputPerMillion: number;
+		cacheReadPerMillion?: number; cacheWritePerMillion?: number;
+		batchInputPerMillion?: number; batchOutputPerMillion?: number;
+	};
+}): string[] {
+	return [
+		c(CYAN, model.provider ?? ""),
+		model.id ?? "",
+		model.mode ?? "",
+		formatPricingTier(model.pricing),
+		formatPrice(model.pricing?.inputPerMillion),
+		formatPrice(model.pricing?.outputPerMillion),
+		formatPrice(model.pricing?.cacheReadPerMillion),
+		formatPrice(model.pricing?.cacheWritePerMillion),
+		formatPrice(model.pricing?.batchInputPerMillion),
+		formatPrice(model.pricing?.batchOutputPerMillion),
+	];
+}
+
 // ── roles ────────────────────────────────────────────────────────────────
 
 /**
@@ -145,6 +183,7 @@ export async function cmdCheapest(registry: ModelRegistry, flags: Record<string,
 	const mode = typeof flags.mode === "string" ? (flags.mode as ModelMode) : undefined;
 	const capability = typeof flags.capability === "string" ? flags.capability : undefined;
 	const role = typeof flags.role === "string" ? flags.role : undefined;
+	const showPricing = flags.pricing === true;
 
 	await ensureDiscovered(registry);
 
@@ -154,12 +193,12 @@ export async function cmdCheapest(registry: ModelRegistry, flags: Record<string,
 		mode,
 		capability,
 		role,
-		limit: parseNumberFlag(flags.limit),
+		limit: parseNumberFlag(flags, "limit"),
 		priceMetric: typeof flags["price-metric"] === "string"
 			? flags["price-metric"] as "input" | "output" | "blended"
 			: undefined,
-		inputWeight: parseNumberFlag(flags["input-weight"]),
-		outputWeight: parseNumberFlag(flags["output-weight"]),
+		inputWeight: parseNumberFlag(flags, "input-weight"),
+		outputWeight: parseNumberFlag(flags, "output-weight"),
 		includeUnpriced: flags["include-unpriced"] === true,
 	});
 
@@ -179,27 +218,56 @@ export async function cmdCheapest(registry: ModelRegistry, flags: Record<string,
 		return;
 	}
 
-	const columns: Column[] = [
-		{ header: "Provider", width: 12 },
-		{ header: "Model", width: 38 },
-		{ header: "Mode", width: 10 },
-		{ header: "Metric", width: 8 },
-		{ header: "Score", width: 10, align: "right" },
-		{ header: "$/M in", width: 8, align: "right" },
-		{ header: "$/M out", width: 8, align: "right" },
-	];
+	if (showPricing) {
+		const columns: Column[] = [
+			{ header: "Provider", width: 12 },
+			{ header: "Model", width: 30 },
+			{ header: "Metric", width: 8 },
+			{ header: "Tier", width: 6 },
+			{ header: "Score", width: 8, align: "right" },
+			{ header: "$/M in", width: 8, align: "right" },
+			{ header: "$/M out", width: 8, align: "right" },
+			{ header: "Cache R", width: 8, align: "right" },
+			{ header: "Cache W", width: 8, align: "right" },
+			{ header: "Batch in", width: 8, align: "right" },
+			{ header: "Batch out", width: 9, align: "right" },
+		];
+		const rows = result.matches.map((match) => [
+			c(CYAN, match.model.provider),
+			match.model.id,
+			match.priceMetric,
+			formatPricingTier(match.model.pricing),
+			match.score === undefined ? "\u2014" : formatPrice(match.score),
+			formatPrice(match.model.pricing?.inputPerMillion),
+			formatPrice(match.model.pricing?.outputPerMillion),
+			formatPrice(match.model.pricing?.cacheReadPerMillion),
+			formatPrice(match.model.pricing?.cacheWritePerMillion),
+			formatPrice(match.model.pricing?.batchInputPerMillion),
+			formatPrice(match.model.pricing?.batchOutputPerMillion),
+		]);
+		console.log(renderTable(columns, rows));
+	} else {
+		const columns: Column[] = [
+			{ header: "Provider", width: 12 },
+			{ header: "Model", width: 38 },
+			{ header: "Mode", width: 10 },
+			{ header: "Metric", width: 8 },
+			{ header: "Score", width: 10, align: "right" },
+			{ header: "$/M in", width: 8, align: "right" },
+			{ header: "$/M out", width: 8, align: "right" },
+		];
+		const rows = result.matches.map((match) => [
+			c(CYAN, match.model.provider),
+			match.model.id,
+			match.model.mode,
+			match.priceMetric,
+			match.score === undefined ? "\u2014" : formatPrice(match.score),
+			formatPrice(match.model.pricing?.inputPerMillion),
+			formatPrice(match.model.pricing?.outputPerMillion),
+		]);
+		console.log(renderTable(columns, rows));
+	}
 
-	const rows = result.matches.map((match) => [
-		c(CYAN, match.model.provider),
-		match.model.id,
-		match.model.mode,
-		match.priceMetric,
-		match.score === undefined ? "\u2014" : formatPrice(match.score),
-		formatPrice(match.model.pricing?.inputPerMillion),
-		formatPrice(match.model.pricing?.outputPerMillion),
-	]);
-
-	console.log(renderTable(columns, rows));
 	console.log(c(DIM, `\n${result.pricedCandidates}/${result.candidates} candidates had usable pricing.`));
 
 	if (result.missingCredentials.length > 0) {
@@ -256,7 +324,7 @@ export async function cmdCapabilities(registry: ModelRegistry, flags: Record<str
  *
  * @param registry  The model registry to query.
  * @param query     The capability query (e.g. "vision", "embeddings", "tools").
- * @param flags     CLI flags (supports `--provider`, `--origin`, `--json`, `--limit`).
+ * @param flags     CLI flags (supports `--provider`, `--origin`, `--pricing`, `--json`, `--limit`).
  */
 export async function cmdCapable(registry: ModelRegistry, query: string, flags: Record<string, string | boolean>): Promise<void> {
 	if (!query) { console.error(c(RED, "Usage: kosha capable <capability>")); process.exit(1); }
@@ -264,7 +332,8 @@ export async function cmdCapable(registry: ModelRegistry, query: string, flags: 
 	const provider = typeof flags.provider === "string" ? flags.provider : undefined;
 	const originProvider = typeof flags.origin === "string" ? flags.origin : undefined;
 	const mode = typeof flags.mode === "string" ? (flags.mode as ModelMode) : undefined;
-	const limit = parseNumberFlag(flags.limit);
+	const limit = parseNumberFlag(flags, "limit");
+	const showPricing = flags.pricing === true;
 
 	await ensureDiscovered(registry);
 
@@ -288,9 +357,12 @@ export async function cmdCapable(registry: ModelRegistry, query: string, flags: 
 		: `Models with capability ${c(CYAN, normalized)}`;
 
 	console.log(`\n${c(BOLD, header)}\n`);
-	console.log(renderTable(MODEL_TABLE_COLUMNS, models.map(modelRow)));
+
+	const capableColumns = showPricing ? PRICING_TABLE_COLUMNS : MODEL_TABLE_COLUMNS;
+	const capableRowFn = showPricing ? pricingRow : modelRow;
+	console.log(renderTable(capableColumns, models.map(capableRowFn)));
 
 	const providerCount = new Set(models.map((m) => m.provider)).size;
-	console.log(c(DIM, line("\u2500", 90)));
+	console.log(c(DIM, line("\u2500", showPricing ? 110 : 90)));
 	console.log(`${c(BOLD, String(models.length))} models from ${c(BOLD, String(providerCount))} providers`);
 }
