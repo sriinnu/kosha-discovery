@@ -26,7 +26,8 @@ export type TrustedCapability =
 	| "code_generation"
 	| "reasoning"
 	| "low_latency"
-	| "cheap_inference";
+	| "cheap_inference"
+	| "free_tier";
 
 /** Normalized role hints exposed by the v1 schema. */
 export interface DiscoveryRoleDefinition {
@@ -278,6 +279,11 @@ export function trustedCapabilitiesForModel(model: ModelCard, descriptor: Provid
 	if (rawCaps.includes("nlu") || REASONING_PATTERNS.some((pattern) => lowerId.includes(pattern))) caps.add("reasoning");
 	if (LOW_LATENCY_PROVIDER_IDS.has(descriptor.canonicalProviderId) || descriptor.isLocal) caps.add("low_latency");
 	if (descriptor.isLocal || isCheapPricing(model.pricing)) caps.add("cheap_inference");
+	// Free tier is a strict subset of cheap — set both so consumers filtering on
+	// either get a coherent answer. Distinct from "cheap" because $0 is a real
+	// signal (free dev tiers, promo windows) that downstream cost classifiers
+	// should be able to single out.
+	if (rawCaps.includes("free_tier") || isFreeTierPricing(model.pricing)) caps.add("free_tier");
 
 	return [...caps].sort();
 }
@@ -292,4 +298,9 @@ export function discoveryRoles(): DiscoveryRoleDefinition[] {
 function isCheapPricing(pricing: ModelPricing | undefined): boolean {
 	if (!pricing) return false;
 	return pricing.inputPerMillion <= 1 && pricing.outputPerMillion <= 4;
+}
+
+function isFreeTierPricing(pricing: ModelPricing | undefined): boolean {
+	if (!pricing) return false;
+	return pricing.inputPerMillion === 0 && pricing.outputPerMillion === 0;
 }

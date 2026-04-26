@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { MistralDiscoverer } from "../../src/discovery/mistral.js";
 import type { CredentialResult } from "../../src/types.js";
-import { mockFetch, mockFetchTimeout, restoreFetch } from "./mock-server.js";
+import { resetLiteLLMCatalogCache } from "../../src/enrichment/litellm-catalog.js";
+import { mockFetch, mockFetchError, mockFetchTimeout, restoreFetch } from "./mock-server.js";
 
 const discoverer = new MistralDiscoverer();
 
@@ -31,6 +32,7 @@ const mockModelsResponse = {
 
 afterEach(() => {
 	restoreFetch();
+	resetLiteLLMCatalogCache();
 });
 
 describe("MistralDiscoverer", () => {
@@ -40,7 +42,13 @@ describe("MistralDiscoverer", () => {
 		expect(discoverer.baseUrl).toBe("https://api.mistral.ai");
 	});
 
-	it("should return empty array when no API key provided", async () => {
+	it("returns empty array when no API key and the public catalog has no entries for this provider", async () => {
+		mockFetch({
+			"https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json": {
+				status: 200,
+				body: {},
+			},
+		});
 		const result = await discoverer.discover(noCredential);
 		expect(result).toEqual([]);
 	});

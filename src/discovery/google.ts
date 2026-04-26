@@ -11,6 +11,7 @@
 
 import type { CredentialResult, ModelCard, ModelMode } from "../types.js";
 import { BaseDiscoverer, MAX_MODELS_PER_PROVIDER } from "./base.js";
+import { getPublicSeed } from "./public-seed.js";
 import { STATIC_GOOGLE_MODELS } from "./static-direct.js";
 
 /** Shape of a single model from the Google Generative Language API. */
@@ -52,7 +53,7 @@ export class GoogleDiscoverer extends BaseDiscoverer {
 	async discover(credential: CredentialResult, options?: { timeout?: number }): Promise<ModelCard[]> {
 		const apiKey = credential.apiKey ?? credential.accessToken;
 		if (!apiKey) {
-			return this.staticFallbackModels();
+			return this.publicCatalogFallback();
 		}
 
 		const timeoutMs = this.validateTimeout(options?.timeout);
@@ -159,7 +160,22 @@ export class GoogleDiscoverer extends BaseDiscoverer {
 		return capabilities.length > 0 ? capabilities : ["chat"];
 	}
 
-	/** Return curated fallback models when no API key is configured. */
+	/**
+	 * No-key fallback: source the latest catalogue from the public LiteLLM
+	 * catalog. Falls back to the curated static list only if the catalog
+	 * fetch fails (offline emergency).
+	 */
+	private async publicCatalogFallback(): Promise<ModelCard[]> {
+		try {
+			const seeds = await getPublicSeed(this.providerId);
+			if (seeds.length > 0) return seeds;
+		} catch {
+			/* fall through to static fallback */
+		}
+		return this.staticFallbackModels();
+	}
+
+	/** Return curated fallback models when both API and public catalog are unavailable. */
 	private staticFallbackModels(): ModelCard[] {
 		return STATIC_GOOGLE_MODELS.map((model) => this.makeCard({
 			id: model.id,

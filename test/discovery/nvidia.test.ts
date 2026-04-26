@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { NvidiaDiscoverer } from "../../src/discovery/nvidia.js";
 import type { CredentialResult } from "../../src/types.js";
-import { mockFetch, mockFetchTimeout, restoreFetch } from "./mock-server.js";
+import { resetLiteLLMCatalogCache } from "../../src/enrichment/litellm-catalog.js";
+import { resetModelsDevCatalogCache } from "../../src/discovery/modelsdev-catalog.js";
+import { mockFetch, mockFetchError, mockFetchTimeout, restoreFetch } from "./mock-server.js";
 
 const discoverer = new NvidiaDiscoverer();
 
@@ -34,6 +36,8 @@ const mockModelsResponse = {
 
 afterEach(() => {
 	restoreFetch();
+	resetLiteLLMCatalogCache();
+	resetModelsDevCatalogCache();
 });
 
 describe("NvidiaDiscoverer", () => {
@@ -43,7 +47,17 @@ describe("NvidiaDiscoverer", () => {
 		expect(discoverer.baseUrl).toBe("https://integrate.api.nvidia.com");
 	});
 
-	it("should return empty array when no API key provided", async () => {
+	it("returns empty array when no API key and the public catalogs have no entries for this provider", async () => {
+		mockFetch({
+			"https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json": {
+				status: 200,
+				body: {},
+			},
+			"https://models.dev/api.json": {
+				status: 200,
+				body: {},
+			},
+		});
 		const result = await discoverer.discover(noCredential);
 		expect(result).toEqual([]);
 	});

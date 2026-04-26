@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LiteLLMEnricher } from "../../src/enrichment/litellm.js";
+import { resetLiteLLMCatalogCache } from "../../src/enrichment/litellm-catalog.js";
 import type { ModelCard } from "../../src/types.js";
 
 // ---------------------------------------------------------------------------
@@ -82,6 +83,10 @@ describe("LiteLLMEnricher", () => {
 	beforeEach(() => {
 		enricher = new LiteLLMEnricher();
 
+		// Module-level catalog cache must be reset between tests so each one
+		// observes a fresh fetch mock instead of a memoised payload.
+		resetLiteLLMCatalogCache();
+
 		// Mock fetch to return our sample data
 		vi.spyOn(globalThis, "fetch").mockResolvedValue(
 			new Response(JSON.stringify(LITELLM_DATA), {
@@ -93,6 +98,7 @@ describe("LiteLLMEnricher", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks();
+		resetLiteLLMCatalogCache();
 	});
 
 	// -----------------------------------------------------------------------

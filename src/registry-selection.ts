@@ -198,6 +198,8 @@ function normalizeTrustedCapabilityToken(value: string | undefined): TrustedCapa
 		reasoning: "reasoning",
 		low_latency: "low_latency",
 		cheap_inference: "cheap_inference",
+		free_tier: "free_tier",
+		free: "free_tier",
 	};
 	return map[normalized];
 }

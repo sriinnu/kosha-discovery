@@ -8,33 +8,9 @@
  */
 
 import type { Enricher, ModelCard, ModelMode, ModelPricing } from "../types.js";
+import { applyFreeTierFlag } from "../discovery/free-tier.js";
 import { normalizeModelId } from "../normalize.js";
-import { assertCleanPayload } from "../security.js";
-
-/** Shape of a single entry in the litellm pricing JSON. */
-interface LiteLLMModelEntry {
-	max_tokens?: number;
-	max_input_tokens?: number;
-	max_output_tokens?: number;
-	input_cost_per_token?: number;
-	output_cost_per_token?: number;
-	// LiteLLM includes reasoning/tokenized-thinking pricing for some models.
-	// Keep multiple key variants for forward/backward compatibility.
-	input_cost_per_reasoning_token?: number;
-	output_cost_per_reasoning_token?: number;
-	reasoning_input_cost_per_token?: number;
-	reasoning_output_cost_per_token?: number;
-	cache_read_input_token_cost?: number;
-	cache_creation_input_token_cost?: number;
-	input_cost_per_token_batches?: number;
-	output_cost_per_token_batches?: number;
-	litellm_provider?: string;
-	mode?: string;
-	supports_function_calling?: boolean;
-	supports_vision?: boolean;
-	supports_prompt_caching?: boolean;
-	output_vector_size?: number;
-}
+import { type LiteLLMModelEntry, loadLiteLLMCatalog } from "./litellm-catalog.js";
 
 /**
  * Multiplier to convert litellm's per-token costs into our standard
@@ -51,20 +27,11 @@ const PER_MILLION = 1_000_000;
  */
 export class LiteLLMEnricher implements Enricher {
 	private data: Record<string, LiteLLMModelEntry> | null = null;
-	private readonly url =
-		"https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 
-	/** Fetch and cache the litellm pricing JSON. Safe to call multiple times. */
+	/** Fetch and cache the litellm pricing JSON via the shared catalog loader. */
 	async load(): Promise<void> {
 		if (this.data) return;
-
-		const response = await fetch(this.url);
-		if (!response.ok) {
-			throw new Error(`Failed to fetch litellm data: ${response.status} ${response.statusText}`);
-		}
-		const raw = (await response.json()) as Record<string, unknown>;
-		assertCleanPayload(raw, "litellm");
-		this.data = raw as Record<string, LiteLLMModelEntry>;
+		this.data = await loadLiteLLMCatalog();
 	}
 
 	/**
@@ -76,7 +43,7 @@ export class LiteLLMEnricher implements Enricher {
 	 */
 	async enrich(models: ModelCard[]): Promise<ModelCard[]> {
 		await this.load();
-		return models.map((model) => this.enrichOne(model));
+		return models.map((model) => applyFreeTierFlag(this.enrichOne(model)));
 	}
 
 	// ---------------------------------------------------------------------------
