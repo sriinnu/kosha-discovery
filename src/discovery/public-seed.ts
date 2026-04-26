@@ -25,6 +25,7 @@
 import type { ModelCard } from "../types.js";
 import { getLiteLLMSeed } from "./litellm-seed.js";
 import { getModelsDevSeed } from "./modelsdev-seed.js";
+import { applyPromoOverrides } from "./promo-overrides.js";
 
 /**
  * Return a merged, deduplicated array of seed {@link ModelCard}s for the
@@ -46,5 +47,8 @@ export async function getPublicSeed(providerId: string): Promise<ModelCard[]> {
 		seen.add(card.id);
 		merged.push(card);
 	}
-	return merged;
+
+	// Final pass: apply any active promotional overrides for cases where the
+	// public catalogs haven't yet picked up a publicly-announced discount.
+	return applyPromoOverrides(merged);
 }
