@@ -69,7 +69,23 @@ export class GoogleDiscoverer extends BaseDiscoverer {
 			if (allModels.length >= MAX_MODELS_PER_PROVIDER) break;
 		} while (pageToken);
 
-		return allModels.map((model) => this.toModelCard(model));
+		const apiCards = allModels.map((model) => this.toModelCard(model));
+		// Merge public catalog so any Gemini SKU not in v1beta/models keeps its
+		// pricing. API wins on `id` collision.
+		return this.mergeWithPublicSeed(apiCards);
+	}
+
+	/** Union of API discovery results and public catalog. API wins on `id` collision. */
+	private async mergeWithPublicSeed(apiCards: ModelCard[]): Promise<ModelCard[]> {
+		try {
+			const seeds = await getPublicSeed(this.providerId);
+			if (seeds.length === 0) return apiCards;
+			const apiIds = new Set(apiCards.map((c) => c.id));
+			const filler = seeds.filter((s) => !apiIds.has(s.id));
+			return [...apiCards, ...filler];
+		} catch {
+			return apiCards;
+		}
 	}
 
 	/**
