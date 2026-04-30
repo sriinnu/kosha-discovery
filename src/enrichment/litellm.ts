@@ -7,9 +7,11 @@
  * @module
  */
 
-import type { Enricher, ModelCard, ModelMode, ModelPricing } from "../types.js";
+import type { Enricher, ModelCard, ModelMode, ModelPricing, ModelStatus } from "../types.js";
 import { applyFreeTierFlag } from "../discovery/free-tier.js";
 import { normalizeModelId } from "../normalize.js";
+import { inferParallelToolCalls, inferStructuredOutputModes, inferToolDialect } from "../model-features.js";
+import { inferTokenizerFamily } from "../tokenizer-family.js";
 import { type LiteLLMModelEntry, loadLiteLLMCatalog } from "./litellm-catalog.js";
 
 /**
@@ -156,8 +158,80 @@ export class LiteLLMEnricher implements Enricher {
 		if (entry.supports_prompt_caching && !enriched.capabilities.includes("prompt_caching")) {
 			enriched.capabilities.push("prompt_caching");
 		}
+		if (entry.supports_audio_input && !enriched.capabilities.includes("audio_input")) {
+			enriched.capabilities.push("audio_input");
+		}
+		if (entry.supports_audio_output && !enriched.capabilities.includes("audio_output")) {
+			enriched.capabilities.push("audio_output");
+		}
+		if (entry.supports_video_input && !enriched.capabilities.includes("video_input")) {
+			enriched.capabilities.push("video_input");
+		}
+		if (entry.supports_reasoning && !enriched.capabilities.includes("reasoning")) {
+			enriched.capabilities.push("reasoning");
+		}
+		if (entry.supports_response_schema && !enriched.capabilities.includes("structured_output")) {
+			enriched.capabilities.push("structured_output");
+		}
+
+		// Tokenizer family — only fill when missing. Prefer a local-runtime value
+		// when the discoverer already supplied one; fall back to heuristic inference
+		// based on origin provider and model ID.
+		if (!enriched.tokenizerFamily) {
+			const localFamily = enriched.localRuntime?.tokenizerFamily;
+			enriched.tokenizerFamily =
+				localFamily ?? inferTokenizerFamily(enriched.originProvider, enriched.id);
+		}
+
+		// Tool dialect — only fill when missing. The discoverer might know the
+		// canonical dialect for managed proxy endpoints; we only infer when it
+		// didn't come through.
+		if (enriched.toolDialect === undefined) {
+			const dialect = inferToolDialect(enriched.originProvider, enriched.id);
+			if (dialect !== undefined) enriched.toolDialect = dialect;
+		}
+
+		// Structured output modes — only fill when the discoverer hasn't set them.
+		if (enriched.structuredOutputModes === undefined) {
+			const modes = inferStructuredOutputModes(enriched.originProvider, enriched.id);
+			if (modes.length > 0) enriched.structuredOutputModes = modes;
+		}
+
+		// Parallel tool calls — litellm's flag takes precedence when present,
+		// otherwise fall back to the heuristic from the dialect / model ID.
+		if (enriched.supportsParallelToolCalls === undefined) {
+			if (entry.supports_parallel_function_calling !== undefined) {
+				enriched.supportsParallelToolCalls = entry.supports_parallel_function_calling;
+			} else {
+				const parallel = inferParallelToolCalls(enriched.originProvider, enriched.id);
+				if (parallel !== undefined) enriched.supportsParallelToolCalls = parallel;
+			}
+		}
+
+		// Deprecation metadata — only fill when missing; litellm publishes
+		// `deprecation_date` as an ISO string for models with announced sunset.
+		if (!enriched.deprecationDate && entry.deprecation_date) {
+			enriched.deprecationDate = entry.deprecation_date;
+		}
+		if (!enriched.status) {
+			enriched.status = this.inferStatus(enriched.deprecationDate);
+		}
 
 		return enriched;
+	}
+
+	/**
+	 * Best-effort lifecycle status from a deprecation-date string.
+	 *
+	 * Returns `"retired"` when the date has already passed,
+	 * `"deprecated"` when one is set but still in the future,
+	 * and `"active"` when no date is present.
+	 */
+	private inferStatus(deprecationDate?: string): ModelStatus {
+		if (!deprecationDate) return "active";
+		const ts = Date.parse(deprecationDate);
+		if (Number.isNaN(ts)) return "active";
+		return ts <= Date.now() ? "retired" : "deprecated";
 	}
 
 	/**
@@ -239,7 +313,18 @@ export class LiteLLMEnricher implements Enricher {
 			entry.input_cost_per_token_batches !== undefined ||
 			entry.output_cost_per_token_batches !== undefined ||
 			reasoningInputCost !== undefined ||
-			reasoningOutputCost !== undefined;
+			reasoningOutputCost !== undefined ||
+			// Multimodal-only models (image gen, audio TTS) may have zero token pricing.
+			entry.input_cost_per_image !== undefined ||
+			entry.output_cost_per_image !== undefined ||
+			entry.input_cost_per_audio_token !== undefined ||
+			entry.output_cost_per_audio_token !== undefined ||
+			entry.input_cost_per_audio_per_second !== undefined ||
+			entry.output_cost_per_audio_per_second !== undefined ||
+			entry.input_cost_per_video_per_second !== undefined ||
+			entry.input_cost_per_video_token !== undefined ||
+			entry.input_cost_per_character !== undefined ||
+			entry.output_cost_per_character !== undefined;
 
 		if (!hasAnyPriceSignal) {
 			return undefined;
@@ -268,6 +353,61 @@ export class LiteLLMEnricher implements Enricher {
 		}
 		if (entry.output_cost_per_token_batches !== undefined) {
 			pricing.batchOutputPerMillion = entry.output_cost_per_token_batches * PER_MILLION;
+		}
+
+		// Multimodal — images are already per-unit; audio/video tokens go through PER_MILLION.
+		if (entry.input_cost_per_image !== undefined) {
+			pricing.imageInputPerImage = entry.input_cost_per_image;
+		}
+		if (entry.output_cost_per_image !== undefined) {
+			pricing.imageOutputPerImage = entry.output_cost_per_image;
+		}
+		if (entry.input_cost_per_audio_token !== undefined) {
+			pricing.audioInputPerMillion = entry.input_cost_per_audio_token * PER_MILLION;
+		}
+		if (entry.output_cost_per_audio_token !== undefined) {
+			pricing.audioOutputPerMillion = entry.output_cost_per_audio_token * PER_MILLION;
+		}
+		if (entry.input_cost_per_audio_per_second !== undefined) {
+			pricing.audioInputPerSecond = entry.input_cost_per_audio_per_second;
+		}
+		if (entry.output_cost_per_audio_per_second !== undefined) {
+			pricing.audioOutputPerSecond = entry.output_cost_per_audio_per_second;
+		}
+		if (entry.input_cost_per_video_per_second !== undefined) {
+			pricing.videoInputPerSecond = entry.input_cost_per_video_per_second;
+		}
+		if (entry.input_cost_per_video_token !== undefined) {
+			pricing.videoInputPerMillion = entry.input_cost_per_video_token * PER_MILLION;
+		}
+
+		// Character-billed providers (Vertex AI, Azure).
+		if (entry.input_cost_per_character !== undefined) {
+			pricing.inputPerMillionCharacters = entry.input_cost_per_character * PER_MILLION;
+		}
+		if (entry.output_cost_per_character !== undefined) {
+			pricing.outputPerMillionCharacters = entry.output_cost_per_character * PER_MILLION;
+		}
+
+		// Tiered long-context pricing — prefer 128k, fall back to 200k (Claude-style).
+		const tieredIn = this.firstFinite(
+			entry.input_cost_per_token_above_128k_tokens,
+			entry.input_cost_per_token_above_200k_tokens,
+		);
+		const tieredOut = this.firstFinite(
+			entry.output_cost_per_token_above_128k_tokens,
+			entry.output_cost_per_token_above_200k_tokens,
+		);
+		if (tieredIn !== undefined) {
+			pricing.longContextInputPerMillion = tieredIn * PER_MILLION;
+		}
+		if (tieredOut !== undefined) {
+			pricing.longContextOutputPerMillion = tieredOut * PER_MILLION;
+		}
+		if (entry.input_cost_per_token_above_128k_tokens !== undefined || entry.output_cost_per_token_above_128k_tokens !== undefined) {
+			pricing.longContextThresholdTokens = 128_000;
+		} else if (entry.input_cost_per_token_above_200k_tokens !== undefined || entry.output_cost_per_token_above_200k_tokens !== undefined) {
+			pricing.longContextThresholdTokens = 200_000;
 		}
 
 		return pricing;

@@ -6,7 +6,7 @@
  * @module
  */
 
-import type { ModelCard, ModelPricing } from "./types.js";
+import type { ModelCard, ModelPricing, StructuredOutputMode, ToolDialect } from "./types.js";
 import type { ProviderDescriptor } from "./provider-catalog.js";
 
 /** Stable schema version exposed to Chitragupta and other daemon consumers. */
@@ -98,6 +98,18 @@ export interface DiscoveryModelV1 {
 	computeTarget: string | null;
 	supportsStructuredOutput: boolean | null;
 	supportsStreaming: boolean | null;
+	/** Tool-calling dialect family (e.g. `"anthropic-tools"`). */
+	toolDialect: ToolDialect | null;
+	/** Structured-output production modes surfaced for bindings. */
+	structuredOutputModes: StructuredOutputMode[];
+	/** Whether the model supports multiple tool calls per turn. */
+	supportsParallelToolCalls: boolean | null;
+	/** Lifecycle status used by routing and deprecation warnings. */
+	status: "active" | "preview" | "deprecated" | "retired" | null;
+	/** ISO-8601 deprecation/sunset date when announced by the provider. */
+	deprecationDate: string | null;
+	/** Canonical successor model ID when the provider has published one. */
+	replacedBy: string | null;
 }
 
 /** Normalized provider health exposed by the v1 discovery snapshot. */
