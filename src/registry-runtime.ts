@@ -7,22 +7,16 @@
  */
 
 import { randomBytes } from "crypto";
-import { open, mkdir, readdir, rename, stat, unlink, writeFile } from "fs/promises";
+import { mkdir, open, readdir, rename, stat, unlink, writeFile } from "fs/promises";
 import { homedir } from "os";
 import { dirname, join } from "path";
-import { StaleCachePolicy } from "./resilience.js";
-import { getProviderConfig, isLocalProvider, normalizeProviderId } from "./provider-catalog.js";
-import { DISCOVERY_SCHEMA_VERSION } from "./discovery-contract.js";
 import type { DiscoverySnapshotV1 } from "./discovery-contract.js";
+import { DISCOVERY_SCHEMA_VERSION } from "./discovery-contract.js";
+import { getProviderConfig, isLocalProvider, normalizeProviderId } from "./provider-catalog.js";
 import { registryDiscoverySnapshot } from "./registry-discovery.js";
-import type { RegistryState, DiscoveryDependencies } from "./registry-state.js";
-import type {
-	CredentialResult,
-	DiscoveryOptions,
-	Enricher,
-	ProviderDiscoverer,
-	ProviderInfo,
-} from "./types.js";
+import type { DiscoveryDependencies, RegistryState } from "./registry-state.js";
+import { StaleCachePolicy } from "./resilience.js";
+import type { CredentialResult, DiscoveryOptions, Enricher, ProviderDiscoverer, ProviderInfo } from "./types.js";
 
 const DEFAULT_CACHE_TTL_MS = 86_400_000;
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -85,9 +79,9 @@ export async function registryDiscover(
 
 	const discoverers = await dependencies.loadDiscoverers(providers, options?.includeLocal);
 	const timeout = options?.timeout ?? DEFAULT_TIMEOUT_MS;
-	const results = await Promise.allSettled(discoverers.map((discoverer) =>
-		discoverProvider(state, dependencies, discoverer, timeout),
-	));
+	const results = await Promise.allSettled(
+		discoverers.map((discoverer) => discoverProvider(state, dependencies, discoverer, timeout)),
+	);
 
 	state.lastDiscoveryErrors = [];
 	for (let index = 0; index < results.length; index += 1) {
@@ -167,8 +161,8 @@ export async function loadRegistryDiscoverers(
 		}
 
 		if (state.config.providers) {
-			discoverers = discoverers.filter((discoverer) =>
-				getProviderConfig(state.config, discoverer.providerId)?.enabled !== false
+			discoverers = discoverers.filter(
+				(discoverer) => getProviderConfig(state.config, discoverer.providerId)?.enabled !== false,
 			);
 		}
 
@@ -181,8 +175,9 @@ export async function loadRegistryDiscoverers(
 /**
  * Dynamically load the credential resolver when available.
  */
-export async function getRegistryCredentialResolver():
-Promise<{ resolve: (providerId: string, explicitKey?: string) => Promise<CredentialResult> } | null> {
+export async function getRegistryCredentialResolver(): Promise<{
+	resolve: (providerId: string, explicitKey?: string) => Promise<CredentialResult>;
+} | null> {
 	try {
 		const { CredentialResolver } = await import("./credentials/index.js");
 		return new CredentialResolver();
@@ -194,10 +189,7 @@ Promise<{ resolve: (providerId: string, explicitKey?: string) => Promise<Credent
 /**
  * Resolve a credential from config or environment without the credential module.
  */
-export function fallbackRegistryCredential(
-	providerId: string,
-	explicitKey?: string,
-): CredentialResult {
+export function fallbackRegistryCredential(providerId: string, explicitKey?: string): CredentialResult {
 	const normalizedProviderId = normalizeProviderId(providerId) ?? providerId;
 	if (explicitKey) {
 		return { apiKey: explicitKey, source: "config" };
@@ -226,8 +218,8 @@ export async function enrichRegistryModels(state: RegistryState): Promise<void> 
 		}
 	} catch {
 		// I silently skip enrichment when the optional module is not present.
-		}
 	}
+}
 /**
  * Enrichment-only result for the `kosha enrich` CLI command.
  */
@@ -280,8 +272,10 @@ function countPricingFields(state: RegistryState): { cachePricing: number; batch
 	let batchPricing = 0;
 	for (const providerInfo of state.providerMap.values()) {
 		for (const model of providerInfo.models) {
-			if (model.pricing?.cacheReadPerMillion !== undefined || model.pricing?.cacheWritePerMillion !== undefined) cachePricing++;
-			if (model.pricing?.batchInputPerMillion !== undefined || model.pricing?.batchOutputPerMillion !== undefined) batchPricing++;
+			if (model.pricing?.cacheReadPerMillion !== undefined || model.pricing?.cacheWritePerMillion !== undefined)
+				cachePricing++;
+			if (model.pricing?.batchInputPerMillion !== undefined || model.pricing?.batchOutputPerMillion !== undefined)
+				batchPricing++;
 		}
 	}
 	return { cachePricing, batchPricing };
@@ -304,10 +298,7 @@ export function populateRegistryModelAliases(state: RegistryState): void {
 /**
  * Load provider data from disk cache when it is still fresh.
  */
-export async function loadRegistryFromCache(
-	state: RegistryState,
-	providerIds?: string[],
-): Promise<boolean> {
+export async function loadRegistryFromCache(state: RegistryState, providerIds?: string[]): Promise<boolean> {
 	const ttl = state.config.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
 
 	if (!providerIds || providerIds.length === 0) {
@@ -424,9 +415,7 @@ export async function exportRegistryManifest(state: RegistryState): Promise<void
 		// for days. Surface the reason once via stderr; nothing else is
 		// gated on a successful export.
 		const reason = err instanceof Error ? err.message : String(err);
-		console.warn(
-			`[kosha] manifest export failed (${manifestPath ?? "unknown path"}): ${reason}`,
-		);
+		console.warn(`[kosha] manifest export failed (${manifestPath ?? "unknown path"}): ${reason}`);
 	} finally {
 		if (!lockReleased && lockPath) {
 			await unlink(lockPath).catch(() => {});

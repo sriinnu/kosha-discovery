@@ -52,7 +52,9 @@ function makeState(snapshot: DiscoverySnapshotV1) {
 	return state;
 }
 
-function makeModel(overrides: Partial<DiscoveryModelV1> & { key: string; modelId: string; providerId: string }): DiscoveryModelV1 {
+function makeModel(
+	overrides: Partial<DiscoveryModelV1> & { key: string; modelId: string; providerId: string },
+): DiscoveryModelV1 {
 	return {
 		key: overrides.key,
 		modelId: overrides.modelId,
@@ -113,7 +115,8 @@ function makeProvider(providerId: string, overrides: Partial<DiscoveryProviderV1
 }
 
 function makeSnapshot(models: DiscoveryModelV1[], providers: DiscoveryProviderV1[] = []): DiscoverySnapshotV1 {
-	const providerSet = providers.length > 0 ? providers : [...new Set(models.map((m) => m.providerId))].map((p) => makeProvider(p));
+	const providerSet =
+		providers.length > 0 ? providers : [...new Set(models.map((m) => m.providerId))].map((p) => makeProvider(p));
 	return {
 		schemaVersion: DISCOVERY_SCHEMA_VERSION,
 		discoveredAt: Date.now(),
@@ -136,7 +139,11 @@ describe("exportRegistryManifest — central-registry merge guarantees", () => {
 		const sonnet = makeModel({ key: "anthropic:sonnet", modelId: "sonnet", providerId: "anthropic" });
 
 		await exportRegistryManifest(makeState(makeSnapshot([opus, sonnet])));
-		expect(readManifest().models.map((m) => m.key).sort()).toEqual(["anthropic:opus", "anthropic:sonnet"]);
+		expect(
+			readManifest()
+				.models.map((m) => m.key)
+				.sort(),
+		).toEqual(["anthropic:opus", "anthropic:sonnet"]);
 
 		// Second export — sonnet vanishes (provider 503, rate limit, …).
 		// Old manifest's sonnet must survive on disk.
@@ -150,11 +157,19 @@ describe("exportRegistryManifest — central-registry merge guarantees", () => {
 		const gpt = makeModel({ key: "openai:gpt-5", modelId: "gpt-5", providerId: "openai" });
 
 		await exportRegistryManifest(makeState(makeSnapshot([claude, gpt])));
-		expect(readManifest().providers.map((p) => p.providerId).sort()).toEqual(["anthropic", "openai"]);
+		expect(
+			readManifest()
+				.providers.map((p) => p.providerId)
+				.sort(),
+		).toEqual(["anthropic", "openai"]);
 
 		// OpenAI completely missing from fresh — keep the provider entry.
 		await exportRegistryManifest(makeState(makeSnapshot([claude])));
-		expect(readManifest().providers.map((p) => p.providerId).sort()).toEqual(["anthropic", "openai"]);
+		expect(
+			readManifest()
+				.providers.map((p) => p.providerId)
+				.sort(),
+		).toEqual(["anthropic", "openai"]);
 	});
 
 	it("restores old pricing when fresh entry came back pricing-degraded", async () => {

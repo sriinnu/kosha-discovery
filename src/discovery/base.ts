@@ -6,16 +6,15 @@
  * @module
  */
 
-import type { CredentialResult, ModelCard, ProviderDiscoverer } from "../types.js";
 import { assertCleanPayload } from "../security.js";
+import type { CredentialResult, ModelCard, ProviderDiscoverer } from "../types.js";
 import { getPublicSeed } from "./public-seed.js";
 
 /** Safety cap for paginated model listing. */
 export const MAX_MODELS_PER_PROVIDER = 10_000;
 
 /** Common API-key patterns to redact from error messages. */
-const API_KEY_PATTERN =
-	/\b(sk-[A-Za-z0-9_-]{8,}|key-[A-Za-z0-9_-]{8,}|Bearer\s+[A-Za-z0-9._\-]{20,})\b/gi;
+const API_KEY_PATTERN = /\b(sk-[A-Za-z0-9_-]{8,}|key-[A-Za-z0-9_-]{8,}|Bearer\s+[A-Za-z0-9._-]{20,})\b/gi;
 
 /** Sanitize a response body before including it in an error message. */
 function sanitizeErrorBody(raw: string, maxLen = 200): string {
@@ -122,7 +121,7 @@ export abstract class BaseDiscoverer implements ProviderDiscoverer {
 	 */
 	/** Validate and normalise a timeout value. Returns defaultMs when invalid. */
 	protected validateTimeout(timeout: number | undefined, defaultMs = 10_000): number {
-		return (Number.isFinite(timeout) && timeout! > 0) ? timeout! : defaultMs;
+		return Number.isFinite(timeout) && timeout! > 0 ? timeout! : defaultMs;
 	}
 
 	/**
