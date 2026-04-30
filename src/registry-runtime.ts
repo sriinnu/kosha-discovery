@@ -386,8 +386,14 @@ export async function exportRegistryManifest(state: RegistryState): Promise<void
 		// the final path — last write wins, but the loser's distinct merged
 		// additions vanish (lost update).
 		lockPath = `${manifestPath}.lock`;
-		lockReleased = false;
+		// Mark `lockReleased = false` ONLY after acquireExportLock returns
+		// successfully. If acquire throws (contention timeout, EACCES, …),
+		// the finally block must NOT unlink lockPath — that file belongs to
+		// the process that's currently holding the lock. Yanking it would
+		// let a third caller O_EXCL-acquire while the holder is mid-write,
+		// reintroducing the lost-update bug this lock was added to prevent.
 		await acquireExportLock(lockPath);
+		lockReleased = false;
 
 		// VDOM-style merge: if a previous manifest exists, preserve old
 		// providers/models that the fresh fetch dropped. A provider returning
@@ -594,17 +600,24 @@ async function mergeWithExistingManifest(
 	};
 }
 
-/** True if the entry carries non-zero input + output rates on either the
- *  origin (direct provider) or the proxy (`pricing`) side. Anything else
- *  is "pricing-degraded" for our purposes. */
+/** True if the entry carries non-zero input + output rates on EITHER the
+ *  origin (direct provider) side OR the proxy (`pricing`) side. Anything
+ *  else is "pricing-degraded" for our purposes.
+ *
+ *  Both sides are checked independently. The earlier `originPricing ?? pricing`
+ *  short-circuited on `originPricing` being defined, so a row with
+ *  `originPricing = {input:0, output:0}` and `pricing = {input:5, output:15}`
+ *  would falsely report degraded — and the caller would then overwrite the
+ *  fresh proxy rate with old data. */
 function hasUsablePricing(entry: { pricing?: unknown; originPricing?: unknown } | undefined): boolean {
 	if (!entry) return false;
-	const candidate = (entry.originPricing ?? entry.pricing) as
-		| { inputPerMillion?: number; outputPerMillion?: number }
-		| null
-		| undefined;
-	if (!candidate) return false;
-	return (candidate.inputPerMillion ?? 0) > 0 && (candidate.outputPerMillion ?? 0) > 0;
+	type Rates = { inputPerMillion?: number; outputPerMillion?: number };
+	const sideHasPricing = (side: unknown): boolean => {
+		const r = side as Rates | null | undefined;
+		if (!r) return false;
+		return (r.inputPerMillion ?? 0) > 0 && (r.outputPerMillion ?? 0) > 0;
+	};
+	return sideHasPricing(entry.originPricing) || sideHasPricing(entry.pricing);
 }
 
 async function discoverProvider(
