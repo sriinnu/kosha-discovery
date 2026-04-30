@@ -8,9 +8,10 @@
 
 import { mkdir, writeFile } from "fs/promises";
 import { homedir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import { StaleCachePolicy } from "./resilience.js";
 import { getProviderConfig, isLocalProvider, normalizeProviderId } from "./provider-catalog.js";
+import type { DiscoverySnapshotV1 } from "./discovery-contract.js";
 import { registryDiscoverySnapshot } from "./registry-discovery.js";
 import type { RegistryState, DiscoveryDependencies } from "./registry-state.js";
 import type {
@@ -359,13 +360,91 @@ export async function saveRegistryToCache(state: RegistryState): Promise<void> {
  */
 export async function exportRegistryManifest(state: RegistryState): Promise<void> {
 	try {
-		const snapshot = state.lastSnapshotCache ?? registryDiscoverySnapshot(state);
-		state.lastSnapshotCache = snapshot;
-		await mkdir(join(homedir(), ".kosha"), { recursive: true });
-		await writeFile(REGISTRY_MANIFEST_PATH, JSON.stringify(snapshot, null, 2), "utf-8");
+		const fresh = state.lastSnapshotCache ?? registryDiscoverySnapshot(state);
+		state.lastSnapshotCache = fresh;
+		// Honour state.config.cacheDir so isolated tests (and any other caller
+		// that pins a custom cache root) don't clobber the user's real
+		// ~/.kosha/registry.json. Without this, running the kosha test suite
+		// silently overwrote the user's manifest with an empty one because
+		// every test instance triggered an export against the hardcoded path.
+		const manifestPath = resolveManifestPath(state);
+		await mkdir(dirname(manifestPath), { recursive: true });
+
+		// VDOM-style merge: if a previous manifest exists, preserve old
+		// providers/models that the fresh fetch dropped. A provider returning
+		// 0 models (auth error, rate limit, transient outage) must NOT wipe
+		// the user's pricing for those models — they retain their last-known
+		// values until a successful fetch supersedes them.
+		const merged = await mergeWithExistingManifest(manifestPath, fresh);
+		await writeFile(manifestPath, JSON.stringify(merged, null, 2), "utf-8");
 	} catch {
 		// I keep manifest export non-fatal — the cache still works either way.
 	}
+}
+
+/** Resolve the on-disk path for the registry manifest. Tests + custom callers
+ *  pin via `state.config.cacheDir`; production falls back to ~/.kosha. */
+function resolveManifestPath(state: RegistryState): string {
+	const cacheDir = state.config.cacheDir;
+	if (cacheDir) return join(dirname(cacheDir), "registry.json");
+	return REGISTRY_MANIFEST_PATH;
+}
+
+/**
+ * Merge a fresh discovery snapshot with the previous manifest on disk.
+ *
+ * Per-model rule: keep the latest pricing data we've ever seen, keyed by
+ * `key` (e.g. `anthropic:claude-opus-4-7`). Fresh entries win when present,
+ * but old entries survive if the fresh fetch dropped them (provider 503,
+ * no credentials, rate limit, etc.).
+ *
+ * Per-provider rule: a provider that exists in the old manifest but is
+ * absent from the fresh fetch keeps its full entry — same logic, applied
+ * to the provider list.
+ *
+ * If the previous manifest is missing or unreadable we just write the
+ * fresh snapshot as-is (first run / corrupted file).
+ */
+async function mergeWithExistingManifest(
+	manifestPath: string,
+	fresh: DiscoverySnapshotV1,
+): Promise<DiscoverySnapshotV1> {
+	let previous: DiscoverySnapshotV1 | null = null;
+	try {
+		const { readFile } = await import("fs/promises");
+		const raw = await readFile(manifestPath, "utf-8");
+		previous = JSON.parse(raw) as DiscoverySnapshotV1;
+	} catch {
+		return fresh; // no previous manifest, or unreadable — fresh wins
+	}
+	if (!previous?.models) return fresh;
+
+	const freshModelKeys = new Set<string>();
+	for (const m of fresh.models ?? []) {
+		if (m.key) freshModelKeys.add(m.key);
+	}
+	const mergedModels = [...(fresh.models ?? [])];
+	for (const old of previous.models) {
+		if (old.key && !freshModelKeys.has(old.key)) {
+			mergedModels.push(old);
+		}
+	}
+
+	const freshProviderIds = new Set(
+		(fresh.providers ?? []).map((p) => p.providerId),
+	);
+	const mergedProviders = [...(fresh.providers ?? [])];
+	for (const old of previous.providers ?? []) {
+		if (!freshProviderIds.has(old.providerId)) {
+			mergedProviders.push(old);
+		}
+	}
+
+	return {
+		...fresh,
+		models: mergedModels,
+		providers: mergedProviders,
+	};
 }
 
 async function discoverProvider(
