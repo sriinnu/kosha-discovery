@@ -74,7 +74,12 @@ export class AnthropicDiscoverer extends BaseDiscoverer {
 			}
 		}
 
-		return allModels.map((model) => this.toModelCard(model));
+		const apiCards = allModels.map((model) => this.toModelCard(model));
+		// Merge public catalog (models.dev + LiteLLM) so models the user has
+		// access to but Anthropic's /v1/models doesn't currently return (e.g.
+		// preview/region-gated/early-access SKUs) still get pricing. API wins
+		// on identity; seed wins on pricing where the API stub has none.
+		return this.mergeWithPublicSeed(apiCards);
 	}
 
 	/**
@@ -82,7 +87,7 @@ export class AnthropicDiscoverer extends BaseDiscoverer {
 	 */
 	private toModelCard(model: AnthropicModel): ModelCard {
 		const capabilities = this.inferCapabilities(model.id);
-		const mode = model.id.toLowerCase().includes("embed") ? "embedding" as const : "chat" as const;
+		const mode = model.id.toLowerCase().includes("embed") ? ("embedding" as const) : ("chat" as const);
 
 		return this.makeCard({
 			id: model.id,
@@ -150,16 +155,18 @@ export class AnthropicDiscoverer extends BaseDiscoverer {
 
 	/** Return curated fallback models when both API and public catalog are unavailable. */
 	private staticFallbackModels(): ModelCard[] {
-		return STATIC_ANTHROPIC_MODELS.map((model) => this.makeCard({
-			id: model.id,
-			name: model.name,
-			provider: this.providerId,
-			mode: model.mode,
-			capabilities: model.capabilities,
-			contextWindow: model.contextWindow ?? 0,
-			maxOutputTokens: model.maxOutputTokens ?? 0,
-			maxInputTokens: model.maxInputTokens,
-			source: "manual",
-		}));
+		return STATIC_ANTHROPIC_MODELS.map((model) =>
+			this.makeCard({
+				id: model.id,
+				name: model.name,
+				provider: this.providerId,
+				mode: model.mode,
+				capabilities: model.capabilities,
+				contextWindow: model.contextWindow ?? 0,
+				maxOutputTokens: model.maxOutputTokens ?? 0,
+				maxInputTokens: model.maxInputTokens,
+				source: "manual",
+			}),
+		);
 	}
 }

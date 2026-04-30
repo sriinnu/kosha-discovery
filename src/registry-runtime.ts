@@ -6,20 +6,17 @@
  * @module
  */
 
-import { mkdir, writeFile } from "fs/promises";
+import { randomBytes } from "crypto";
+import { mkdir, open, readdir, rename, stat, unlink, writeFile } from "fs/promises";
 import { homedir } from "os";
-import { join } from "path";
-import { StaleCachePolicy } from "./resilience.js";
+import { dirname, join } from "path";
+import type { DiscoverySnapshotV1 } from "./discovery-contract.js";
+import { DISCOVERY_SCHEMA_VERSION } from "./discovery-contract.js";
 import { getProviderConfig, isLocalProvider, normalizeProviderId } from "./provider-catalog.js";
 import { registryDiscoverySnapshot } from "./registry-discovery.js";
-import type { RegistryState, DiscoveryDependencies } from "./registry-state.js";
-import type {
-	CredentialResult,
-	DiscoveryOptions,
-	Enricher,
-	ProviderDiscoverer,
-	ProviderInfo,
-} from "./types.js";
+import type { DiscoveryDependencies, RegistryState } from "./registry-state.js";
+import { StaleCachePolicy } from "./resilience.js";
+import type { CredentialResult, DiscoveryOptions, Enricher, ProviderDiscoverer, ProviderInfo } from "./types.js";
 
 const DEFAULT_CACHE_TTL_MS = 86_400_000;
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -82,9 +79,9 @@ export async function registryDiscover(
 
 	const discoverers = await dependencies.loadDiscoverers(providers, options?.includeLocal);
 	const timeout = options?.timeout ?? DEFAULT_TIMEOUT_MS;
-	const results = await Promise.allSettled(discoverers.map((discoverer) =>
-		discoverProvider(state, dependencies, discoverer, timeout),
-	));
+	const results = await Promise.allSettled(
+		discoverers.map((discoverer) => discoverProvider(state, dependencies, discoverer, timeout)),
+	);
 
 	state.lastDiscoveryErrors = [];
 	for (let index = 0; index < results.length; index += 1) {
@@ -164,8 +161,8 @@ export async function loadRegistryDiscoverers(
 		}
 
 		if (state.config.providers) {
-			discoverers = discoverers.filter((discoverer) =>
-				getProviderConfig(state.config, discoverer.providerId)?.enabled !== false
+			discoverers = discoverers.filter(
+				(discoverer) => getProviderConfig(state.config, discoverer.providerId)?.enabled !== false,
 			);
 		}
 
@@ -178,8 +175,9 @@ export async function loadRegistryDiscoverers(
 /**
  * Dynamically load the credential resolver when available.
  */
-export async function getRegistryCredentialResolver():
-Promise<{ resolve: (providerId: string, explicitKey?: string) => Promise<CredentialResult> } | null> {
+export async function getRegistryCredentialResolver(): Promise<{
+	resolve: (providerId: string, explicitKey?: string) => Promise<CredentialResult>;
+} | null> {
 	try {
 		const { CredentialResolver } = await import("./credentials/index.js");
 		return new CredentialResolver();
@@ -191,10 +189,7 @@ Promise<{ resolve: (providerId: string, explicitKey?: string) => Promise<Credent
 /**
  * Resolve a credential from config or environment without the credential module.
  */
-export function fallbackRegistryCredential(
-	providerId: string,
-	explicitKey?: string,
-): CredentialResult {
+export function fallbackRegistryCredential(providerId: string, explicitKey?: string): CredentialResult {
 	const normalizedProviderId = normalizeProviderId(providerId) ?? providerId;
 	if (explicitKey) {
 		return { apiKey: explicitKey, source: "config" };
@@ -223,8 +218,8 @@ export async function enrichRegistryModels(state: RegistryState): Promise<void> 
 		}
 	} catch {
 		// I silently skip enrichment when the optional module is not present.
-		}
 	}
+}
 /**
  * Enrichment-only result for the `kosha enrich` CLI command.
  */
@@ -277,8 +272,10 @@ function countPricingFields(state: RegistryState): { cachePricing: number; batch
 	let batchPricing = 0;
 	for (const providerInfo of state.providerMap.values()) {
 		for (const model of providerInfo.models) {
-			if (model.pricing?.cacheReadPerMillion !== undefined || model.pricing?.cacheWritePerMillion !== undefined) cachePricing++;
-			if (model.pricing?.batchInputPerMillion !== undefined || model.pricing?.batchOutputPerMillion !== undefined) batchPricing++;
+			if (model.pricing?.cacheReadPerMillion !== undefined || model.pricing?.cacheWritePerMillion !== undefined)
+				cachePricing++;
+			if (model.pricing?.batchInputPerMillion !== undefined || model.pricing?.batchOutputPerMillion !== undefined)
+				batchPricing++;
 		}
 	}
 	return { cachePricing, batchPricing };
@@ -301,10 +298,7 @@ export function populateRegistryModelAliases(state: RegistryState): void {
 /**
  * Load provider data from disk cache when it is still fresh.
  */
-export async function loadRegistryFromCache(
-	state: RegistryState,
-	providerIds?: string[],
-): Promise<boolean> {
+export async function loadRegistryFromCache(state: RegistryState, providerIds?: string[]): Promise<boolean> {
 	const ttl = state.config.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
 
 	if (!providerIds || providerIds.length === 0) {
@@ -358,14 +352,261 @@ export async function saveRegistryToCache(state: RegistryState): Promise<void> {
  * the whole command.
  */
 export async function exportRegistryManifest(state: RegistryState): Promise<void> {
+	let manifestPath: string | null = null;
+	let lockReleased = true;
+	let lockPath: string | null = null;
 	try {
-		const snapshot = state.lastSnapshotCache ?? registryDiscoverySnapshot(state);
-		state.lastSnapshotCache = snapshot;
-		await mkdir(join(homedir(), ".kosha"), { recursive: true });
-		await writeFile(REGISTRY_MANIFEST_PATH, JSON.stringify(snapshot, null, 2), "utf-8");
-	} catch {
-		// I keep manifest export non-fatal — the cache still works either way.
+		const fresh = state.lastSnapshotCache ?? registryDiscoverySnapshot(state);
+		state.lastSnapshotCache = fresh;
+		// Honour state.config.cacheDir so isolated tests (and any other caller
+		// that pins a custom cache root) don't clobber the user's real
+		// ~/.kosha/registry.json. Without this, running the kosha test suite
+		// silently overwrote the user's manifest with an empty one because
+		// every test instance triggered an export against the hardcoded path.
+		manifestPath = resolveManifestPath(state);
+		await mkdir(dirname(manifestPath), { recursive: true });
+
+		// Sweep stale tmp files left over from prior runs that were SIGKILLed
+		// mid-write. Each crashed run leaks a `<manifest>.<rand>.tmp` file;
+		// without this sweep they accumulate forever (~1.6 MB each).
+		await sweepStaleTmpFiles(manifestPath);
+
+		// Cross-process mutex around the read-merge-write critical section.
+		// Without this, two concurrent `kosha update` runs both read the same
+		// previous manifest, both compute their own merge, and both rename to
+		// the final path — last write wins, but the loser's distinct merged
+		// additions vanish (lost update).
+		lockPath = `${manifestPath}.lock`;
+		// Mark `lockReleased = false` ONLY after acquireExportLock returns
+		// successfully. If acquire throws (contention timeout, EACCES, …),
+		// the finally block must NOT unlink lockPath — that file belongs to
+		// the process that's currently holding the lock. Yanking it would
+		// let a third caller O_EXCL-acquire while the holder is mid-write,
+		// reintroducing the lost-update bug this lock was added to prevent.
+		await acquireExportLock(lockPath);
+		lockReleased = false;
+
+		// VDOM-style merge: if a previous manifest exists, preserve old
+		// providers/models that the fresh fetch dropped. A provider returning
+		// 0 models (auth error, rate limit, transient outage) must NOT wipe
+		// the user's pricing for those models — they retain their last-known
+		// values until a successful fetch supersedes them.
+		const merged = await mergeWithExistingManifest(manifestPath, fresh);
+
+		// Atomic write: temp file in the same directory, then rename(2).
+		// `rename` within a single filesystem is atomic on POSIX and
+		// preserves any concurrent reader's existing fd. Without this, a
+		// reader (e.g. tokmeter's pricing manifest fallback) can land mid
+		// `JSON.stringify` write and parse a truncated file. The tmp suffix
+		// uses 8 random hex chars so two concurrent kosha updates don't
+		// collide on the staging name.
+		const tmpPath = `${manifestPath}.${randomBytes(4).toString("hex")}.tmp`;
+		try {
+			await writeFile(tmpPath, JSON.stringify(merged, null, 2), "utf-8");
+			await rename(tmpPath, manifestPath);
+		} catch (err) {
+			// Best-effort cleanup of the temp file if rename failed.
+			await unlink(tmpPath).catch(() => {});
+			throw err;
+		}
+	} catch (err) {
+		// Manifest export is best-effort — the cache still works either way.
+		// But silent failure was making permission/disk-full bugs invisible
+		// for days. Surface the reason once via stderr; nothing else is
+		// gated on a successful export.
+		const reason = err instanceof Error ? err.message : String(err);
+		console.warn(`[kosha] manifest export failed (${manifestPath ?? "unknown path"}): ${reason}`);
+	} finally {
+		if (!lockReleased && lockPath) {
+			await unlink(lockPath).catch(() => {});
+		}
 	}
+}
+
+/**
+ * O_EXCL-based file lock. Tries to create the lock file with `wx` flag —
+ * fails if it already exists. Retries with bounded backoff (max ~3s).
+ * Stale locks (>30s old) are reclaimed: a kosha process that crashed mid-
+ * critical-section won't deadlock future runs.
+ */
+async function acquireExportLock(lockPath: string): Promise<void> {
+	const STALE_AFTER_MS = 30_000;
+	const MAX_WAIT_MS = 3_000;
+	const startedAt = Date.now();
+	for (let attempt = 0; ; attempt++) {
+		try {
+			const fd = await open(lockPath, "wx");
+			await fd.write(`${process.pid}\n`);
+			await fd.close();
+			return;
+		} catch (err) {
+			const code = (err as NodeJS.ErrnoException).code;
+			if (code !== "EEXIST") throw err;
+			// Lock exists — check if it's stale.
+			try {
+				const s = await stat(lockPath);
+				if (Date.now() - s.mtimeMs > STALE_AFTER_MS) {
+					await unlink(lockPath).catch(() => {});
+					continue;
+				}
+			} catch {
+				continue; // raced with the holder unlinking
+			}
+			if (Date.now() - startedAt > MAX_WAIT_MS) {
+				throw new Error(`kosha manifest export: lock contention (${lockPath})`);
+			}
+			// Backoff with jitter: 50, 100, 200, 400, capped at 800ms
+			const delay = Math.min(800, 50 * 2 ** attempt) + Math.floor(Math.random() * 50);
+			await new Promise((r) => setTimeout(r, delay));
+		}
+	}
+}
+
+/** Remove any `<manifest>.<...>.tmp` siblings older than 5 minutes. They are
+ *  orphans from prior runs that crashed between writeFile and rename. */
+async function sweepStaleTmpFiles(manifestPath: string): Promise<void> {
+	try {
+		const dir = dirname(manifestPath);
+		const base = manifestPath.slice(dir.length + 1);
+		const tmpRe = new RegExp(`^${escapeRegExp(base)}\\.[0-9a-f]+\\.tmp$`);
+		const fiveMinAgo = Date.now() - 5 * 60_000;
+		const entries = await readdir(dir);
+		await Promise.all(
+			entries
+				.filter((name) => tmpRe.test(name))
+				.map(async (name) => {
+					const p = join(dir, name);
+					try {
+						const s = await stat(p);
+						if (s.mtimeMs < fiveMinAgo) await unlink(p);
+					} catch {
+						// raced with another sweeper or unlinked already — fine
+					}
+				}),
+		);
+	} catch {
+		// Sweep is best-effort; do not block export on a directory listing failure.
+	}
+}
+
+function escapeRegExp(s: string): string {
+	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Resolve the on-disk path for the registry manifest. Tests + custom callers
+ *  pin via `state.config.cacheDir`; production falls back to ~/.kosha. */
+function resolveManifestPath(state: RegistryState): string {
+	const cacheDir = state.config.cacheDir;
+	if (cacheDir) return join(dirname(cacheDir), "registry.json");
+	return REGISTRY_MANIFEST_PATH;
+}
+
+/**
+ * Merge a fresh discovery snapshot with the previous manifest on disk.
+ *
+ * Per-model rule: keep the latest pricing data we've ever seen, keyed by
+ * `key` (e.g. `anthropic:claude-opus-4-7`). Fresh entries win when present,
+ * but old entries survive if the fresh fetch dropped them (provider 503,
+ * no credentials, rate limit, etc.).
+ *
+ * Per-provider rule: a provider that exists in the old manifest but is
+ * absent from the fresh fetch keeps its full entry — same logic, applied
+ * to the provider list.
+ *
+ * If the previous manifest is missing or unreadable we just write the
+ * fresh snapshot as-is (first run / corrupted file).
+ */
+async function mergeWithExistingManifest(
+	manifestPath: string,
+	fresh: DiscoverySnapshotV1,
+): Promise<DiscoverySnapshotV1> {
+	let previous: DiscoverySnapshotV1 | null = null;
+	try {
+		const { readFile } = await import("fs/promises");
+		const raw = await readFile(manifestPath, "utf-8");
+		previous = JSON.parse(raw) as DiscoverySnapshotV1;
+	} catch {
+		return fresh; // no previous manifest, or unreadable — fresh wins
+	}
+	if (!previous?.models) return fresh;
+
+	// Schema-version guard. If the previous manifest is from a different
+	// schema (kosha downgraded, future format on disk, hand-edited file),
+	// don't try to merge V1 + V?? into a Frankenstein — just rewrite with
+	// the fresh snapshot. The fresh fetch supersedes whatever's there.
+	if (previous.schemaVersion !== DISCOVERY_SCHEMA_VERSION) {
+		return fresh;
+	}
+
+	// Index previous entries by key so we can both detect collisions AND
+	// look back at the old data for pricing-degraded merge below.
+	const previousByKey = new Map<string, (typeof previous.models)[number]>();
+	for (const m of previous.models) {
+		if (m.key) previousByKey.set(m.key, m);
+	}
+
+	// Per-model merge with two rules:
+	//   (1) Old entries fresh dropped entirely → keep them.
+	//   (2) Fresh entries that came back with NO pricing while the old entry
+	//       HAD pricing → keep the old pricing block (degraded-fresh defence).
+	//       This guards against transient enrichment failures (LiteLLM
+	//       offline, models.dev 503, etc.) that would otherwise silently
+	//       zero out previously-known prices on the next refresh.
+	const freshModelKeys = new Set<string>();
+	const mergedModels: (typeof fresh.models)[number][] = [];
+	for (const f of fresh.models ?? []) {
+		if (f.key) freshModelKeys.add(f.key);
+		const old = f.key ? previousByKey.get(f.key) : undefined;
+		if (old && !hasUsablePricing(f) && hasUsablePricing(old)) {
+			// Keep all of fresh's metadata but restore pricing from old.
+			mergedModels.push({
+				...f,
+				pricing: old.pricing,
+				originPricing: old.originPricing,
+			});
+		} else {
+			mergedModels.push(f);
+		}
+	}
+	for (const old of previous.models) {
+		if (old.key && !freshModelKeys.has(old.key)) {
+			mergedModels.push(old);
+		}
+	}
+
+	const freshProviderIds = new Set((fresh.providers ?? []).map((p) => p.providerId));
+	const mergedProviders = [...(fresh.providers ?? [])];
+	for (const old of previous.providers ?? []) {
+		if (!freshProviderIds.has(old.providerId)) {
+			mergedProviders.push(old);
+		}
+	}
+
+	return {
+		...fresh,
+		models: mergedModels,
+		providers: mergedProviders,
+	};
+}
+
+/** True if the entry carries non-zero input + output rates on EITHER the
+ *  origin (direct provider) side OR the proxy (`pricing`) side. Anything
+ *  else is "pricing-degraded" for our purposes.
+ *
+ *  Both sides are checked independently. The earlier `originPricing ?? pricing`
+ *  short-circuited on `originPricing` being defined, so a row with
+ *  `originPricing = {input:0, output:0}` and `pricing = {input:5, output:15}`
+ *  would falsely report degraded — and the caller would then overwrite the
+ *  fresh proxy rate with old data. */
+function hasUsablePricing(entry: { pricing?: unknown; originPricing?: unknown } | undefined): boolean {
+	if (!entry) return false;
+	type Rates = { inputPerMillion?: number; outputPerMillion?: number };
+	const sideHasPricing = (side: unknown): boolean => {
+		const r = side as Rates | null | undefined;
+		if (!r) return false;
+		return (r.inputPerMillion ?? 0) > 0 && (r.outputPerMillion ?? 0) > 0;
+	};
+	return sideHasPricing(entry.originPricing) || sideHasPricing(entry.pricing);
 }
 
 async function discoverProvider(

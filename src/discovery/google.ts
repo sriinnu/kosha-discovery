@@ -69,7 +69,11 @@ export class GoogleDiscoverer extends BaseDiscoverer {
 			if (allModels.length >= MAX_MODELS_PER_PROVIDER) break;
 		} while (pageToken);
 
-		return allModels.map((model) => this.toModelCard(model));
+		const apiCards = allModels.map((model) => this.toModelCard(model));
+		// Merge public catalog so any Gemini SKU not in v1beta/models keeps its
+		// pricing. API wins on identity; seed wins on pricing where the API
+		// stub has none.
+		return this.mergeWithPublicSeed(apiCards);
 	}
 
 	/**
@@ -178,16 +182,18 @@ export class GoogleDiscoverer extends BaseDiscoverer {
 
 	/** Return curated fallback models when both API and public catalog are unavailable. */
 	private staticFallbackModels(): ModelCard[] {
-		return STATIC_GOOGLE_MODELS.map((model) => this.makeCard({
-			id: model.id,
-			name: model.name,
-			provider: this.providerId,
-			mode: model.mode,
-			capabilities: model.capabilities,
-			contextWindow: model.contextWindow ?? 0,
-			maxOutputTokens: model.maxOutputTokens ?? 0,
-			maxInputTokens: model.maxInputTokens,
-			source: "manual",
-		}));
+		return STATIC_GOOGLE_MODELS.map((model) =>
+			this.makeCard({
+				id: model.id,
+				name: model.name,
+				provider: this.providerId,
+				mode: model.mode,
+				capabilities: model.capabilities,
+				contextWindow: model.contextWindow ?? 0,
+				maxOutputTokens: model.maxOutputTokens ?? 0,
+				maxInputTokens: model.maxInputTokens,
+				source: "manual",
+			}),
+		);
 	}
 }

@@ -56,9 +56,13 @@ export class OpenAIDiscoverer extends BaseDiscoverer {
 
 		const response = await this.fetchJSON<OpenAIListResponse>(`${this.baseUrl}/v1/models`, headers, timeoutMs);
 
-		return response.data
+		const apiCards = response.data
 			.filter((model) => this.isRelevantModel(model.id))
 			.map((model) => this.toModelCard(model));
+		// Merge public catalog so models that exist via OpenAI but aren't in
+		// /v1/models (preview tiers, deprecated-but-still-priced SKUs) keep
+		// their pricing in the registry. API wins on `id` collision.
+		return this.mergeWithPublicSeed(apiCards);
 	}
 
 	/**
@@ -78,16 +82,18 @@ export class OpenAIDiscoverer extends BaseDiscoverer {
 		}
 
 		// Skip legacy completions-era models that predate the chat API
-		if (lower.startsWith("babbage") || lower.startsWith("davinci") || lower.startsWith("curie") || lower.startsWith("ada")) {
+		if (
+			lower.startsWith("babbage") ||
+			lower.startsWith("davinci") ||
+			lower.startsWith("curie") ||
+			lower.startsWith("ada")
+		) {
 			return false;
 		}
 
 		// Keep chat, embedding, image, and audio models
 		return (
-			this.isChatModel(lower) ||
-			this.isEmbeddingModel(lower) ||
-			this.isImageModel(lower) ||
-			this.isAudioModel(lower)
+			this.isChatModel(lower) || this.isEmbeddingModel(lower) || this.isImageModel(lower) || this.isAudioModel(lower)
 		);
 	}
 
@@ -215,16 +221,18 @@ export class OpenAIDiscoverer extends BaseDiscoverer {
 
 	/** Return curated fallback models when both API and public catalog are unavailable. */
 	private staticFallbackModels(): ModelCard[] {
-		return STATIC_OPENAI_MODELS.map((model) => this.makeCard({
-			id: model.id,
-			name: model.name,
-			provider: this.providerId,
-			mode: model.mode,
-			capabilities: model.capabilities,
-			contextWindow: model.contextWindow ?? 0,
-			maxOutputTokens: model.maxOutputTokens ?? 0,
-			maxInputTokens: model.maxInputTokens,
-			source: "manual",
-		}));
+		return STATIC_OPENAI_MODELS.map((model) =>
+			this.makeCard({
+				id: model.id,
+				name: model.name,
+				provider: this.providerId,
+				mode: model.mode,
+				capabilities: model.capabilities,
+				contextWindow: model.contextWindow ?? 0,
+				maxOutputTokens: model.maxOutputTokens ?? 0,
+				maxInputTokens: model.maxInputTokens,
+				source: "manual",
+			}),
+		);
 	}
 }

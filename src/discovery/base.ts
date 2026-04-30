@@ -6,15 +6,15 @@
  * @module
  */
 
-import type { CredentialResult, ModelCard, ProviderDiscoverer } from "../types.js";
 import { assertCleanPayload } from "../security.js";
+import type { CredentialResult, ModelCard, ProviderDiscoverer } from "../types.js";
+import { getPublicSeed } from "./public-seed.js";
 
 /** Safety cap for paginated model listing. */
 export const MAX_MODELS_PER_PROVIDER = 10_000;
 
 /** Common API-key patterns to redact from error messages. */
-const API_KEY_PATTERN =
-	/\b(sk-[A-Za-z0-9_-]{8,}|key-[A-Za-z0-9_-]{8,}|Bearer\s+[A-Za-z0-9._\-]{20,})\b/gi;
+const API_KEY_PATTERN = /\b(sk-[A-Za-z0-9_-]{8,}|key-[A-Za-z0-9_-]{8,}|Bearer\s+[A-Za-z0-9._-]{20,})\b/gi;
 
 /** Sanitize a response body before including it in an error message. */
 function sanitizeErrorBody(raw: string, maxLen = 200): string {
@@ -121,7 +121,56 @@ export abstract class BaseDiscoverer implements ProviderDiscoverer {
 	 */
 	/** Validate and normalise a timeout value. Returns defaultMs when invalid. */
 	protected validateTimeout(timeout: number | undefined, defaultMs = 10_000): number {
-		return (Number.isFinite(timeout) && timeout! > 0) ? timeout! : defaultMs;
+		return Number.isFinite(timeout) && timeout! > 0 ? timeout! : defaultMs;
+	}
+
+	/**
+	 * Union API discovery results with the public seed for this provider.
+	 *
+	 * Merge rules per (providerId, modelId):
+	 *  - **Identity wins from API.** If the API returned the model, the API
+	 *    entry's metadata (name, capabilities, mode, context window) is the
+	 *    authoritative description of "what this model is for this account".
+	 *  - **Pricing falls back to the seed.** Native list endpoints
+	 *    (`/v1/models` on Anthropic, OpenAI, Google) return *no pricing*.
+	 *    The seed (models.dev primary, LiteLLM filler) does. So when the
+	 *    API stub has no pricing and the seed entry does, we lift the seed's
+	 *    pricing onto the API entry.
+	 *  - **Seed-only models survive as filler.** Preview tiers, deprecated-
+	 *    but-still-priced SKUs, region-gated entries that the API doesn't
+	 *    list — keep them so consumers can still resolve historical IDs.
+	 *
+	 * Why this matters: without the pricing fallback, the same model can flip
+	 * between two different prices depending on whether `/v1/models` was
+	 * reachable when `kosha update` ran. That's a same-day-instability bug
+	 * for any downstream that locks pricing at midnight (tokmeter et al).
+	 *
+	 * Failures in fetching the seed are swallowed — the API result still
+	 * stands on its own. Pricing-degraded fallback is layered on at the
+	 * registry-runtime merge step.
+	 */
+	protected async mergeWithPublicSeed(apiCards: ModelCard[]): Promise<ModelCard[]> {
+		try {
+			const seeds = await getPublicSeed(this.providerId);
+			if (seeds.length === 0) return apiCards;
+			const seedById = new Map(seeds.map((s) => [s.id, s]));
+			const enriched = apiCards.map((api) => {
+				const seed = seedById.get(api.id);
+				if (!seed) return api;
+				const apiHasPricing = !!api.pricing || !!api.originPricing;
+				if (apiHasPricing) return api;
+				return {
+					...api,
+					pricing: seed.pricing,
+					originPricing: seed.originPricing,
+				};
+			});
+			const apiIds = new Set(apiCards.map((c) => c.id));
+			const filler = seeds.filter((s) => !apiIds.has(s.id));
+			return [...enriched, ...filler];
+		} catch {
+			return apiCards;
+		}
 	}
 
 	protected makeCard(partial: Partial<ModelCard> & { id: string; provider: string }): ModelCard {
