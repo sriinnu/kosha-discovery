@@ -78,21 +78,8 @@ export class AnthropicDiscoverer extends BaseDiscoverer {
 		// Merge public catalog (models.dev + LiteLLM) so models the user has
 		// access to but Anthropic's /v1/models doesn't currently return (e.g.
 		// preview/region-gated/early-access SKUs) still get pricing. API wins
-		// on conflicts; public-seed fills the gaps.
+		// on identity; seed wins on pricing where the API stub has none.
 		return this.mergeWithPublicSeed(apiCards);
-	}
-
-	/** Union of API discovery results and public catalog. API wins on `id` collision. */
-	private async mergeWithPublicSeed(apiCards: ModelCard[]): Promise<ModelCard[]> {
-		try {
-			const seeds = await getPublicSeed(this.providerId);
-			if (seeds.length === 0) return apiCards;
-			const apiIds = new Set(apiCards.map((c) => c.id));
-			const filler = seeds.filter((s) => !apiIds.has(s.id));
-			return [...apiCards, ...filler];
-		} catch {
-			return apiCards;
-		}
 	}
 
 	/**
