@@ -5,6 +5,7 @@ import { MoonshotDiscoverer } from "../../src/discovery/moonshot.js";
 import { GLMDiscoverer } from "../../src/discovery/glm.js";
 import { ZAIDiscoverer } from "../../src/discovery/zai.js";
 import { MiniMaxDiscoverer } from "../../src/discovery/minimax.js";
+import { resetLiteLLMCatalogCache } from "../../src/enrichment/litellm-catalog.js";
 import { mockFetch, restoreFetch } from "./mock-server.js";
 
 const validCredential: CredentialResult = {
@@ -18,6 +19,7 @@ const noCredential: CredentialResult = {
 
 afterEach(() => {
 	restoreFetch();
+	resetLiteLLMCatalogCache();
 });
 
 describe("new first-class providers", () => {
@@ -160,16 +162,38 @@ describe("new first-class providers", () => {
 		expect(cards[0].contextWindow).toBe(1000000);
 	});
 
-	it("returns empty array for no credentials", async () => {
-		const discoverers = [
-			new DeepSeekDiscoverer(),
+	it("falls back to public LiteLLM catalog when no credentials are present", async () => {
+		// Stub the LiteLLM catalog with a tiny synthetic payload so the test is
+		// hermetic. DeepSeek gets one entry, the rest get nothing.
+		mockFetch({
+			"https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json": {
+				status: 200,
+				body: {
+					"deepseek/deepseek-test-model": {
+						litellm_provider: "deepseek",
+						mode: "chat",
+						max_input_tokens: 64000,
+						max_output_tokens: 4096,
+						input_cost_per_token: 0.0000001,
+						output_cost_per_token: 0.0000002,
+					},
+				},
+			},
+		});
+
+		const ds = await new DeepSeekDiscoverer().discover(noCredential);
+		expect(ds).toHaveLength(1);
+		expect(ds[0].id).toBe("deepseek-test-model");
+		expect(ds[0].source).toBe("litellm");
+		expect(ds[0].pricing?.inputPerMillion).toBeCloseTo(0.1);
+
+		// Providers with no entries in the (mocked) catalog still resolve to [].
+		for (const discoverer of [
 			new MoonshotDiscoverer(),
 			new GLMDiscoverer(),
 			new ZAIDiscoverer(),
 			new MiniMaxDiscoverer(),
-		];
-
-		for (const discoverer of discoverers) {
+		]) {
 			const cards = await discoverer.discover(noCredential);
 			expect(cards).toEqual([]);
 		}

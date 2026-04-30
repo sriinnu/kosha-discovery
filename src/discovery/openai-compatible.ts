@@ -15,6 +15,7 @@
 
 import type { CredentialResult, ModelCard, ModelMode } from "../types.js";
 import { BaseDiscoverer } from "./base.js";
+import { getPublicSeed } from "./public-seed.js";
 
 /** Shape of a single model from any OpenAI-compatible `/v1/models` response. */
 export interface OpenAICompatibleModel {
@@ -81,7 +82,16 @@ export abstract class OpenAICompatibleDiscoverer extends BaseDiscoverer {
 	async discover(credential: CredentialResult, options?: { timeout?: number }): Promise<ModelCard[]> {
 		const apiKey = credential.apiKey ?? credential.accessToken;
 		if (!apiKey) {
-			return [];
+			// Discovery is a public-data question — fall back to the public
+			// seed catalogs (models.dev primary, with LiteLLM as filler) so
+			// kosha returns the latest models even without a provider key.
+			// Empty seed simply means the catalogs have no entries for this
+			// provider yet (e.g. nvidia, glm, qwen).
+			try {
+				return await getPublicSeed(this.providerId);
+			} catch {
+				return [];
+			}
 		}
 
 		const timeoutMs = this.validateTimeout(options?.timeout);

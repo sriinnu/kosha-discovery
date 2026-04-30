@@ -8,6 +8,7 @@
 
 import type { CredentialResult, ModelCard, ModelMode } from "../types.js";
 import { BaseDiscoverer } from "./base.js";
+import { getPublicSeed } from "./public-seed.js";
 import { STATIC_OPENAI_MODELS } from "./static-direct.js";
 
 /** Shape of a single model object from the OpenAI list endpoint. */
@@ -45,7 +46,7 @@ export class OpenAIDiscoverer extends BaseDiscoverer {
 	async discover(credential: CredentialResult, options?: { timeout?: number }): Promise<ModelCard[]> {
 		const apiKey = credential.apiKey ?? credential.accessToken;
 		if (!apiKey) {
-			return this.staticFallbackModels();
+			return this.publicCatalogFallback();
 		}
 
 		const timeoutMs = this.validateTimeout(options?.timeout);
@@ -195,7 +196,24 @@ export class OpenAIDiscoverer extends BaseDiscoverer {
 		return ["chat"];
 	}
 
-	/** Return curated fallback models when no API key is configured. */
+	/**
+	 * No-key fallback: source the latest merged public seed for this provider
+	 * via {@link getPublicSeed}. That seed may combine multiple public inputs
+	 * (for example models.dev, LiteLLM, and promo overrides) using the
+	 * priority rules defined in `getPublicSeed()`. Falls back to the curated
+	 * static list if the public seed fetch fails or yields no models.
+	 */
+	private async publicCatalogFallback(): Promise<ModelCard[]> {
+		try {
+			const seeds = await getPublicSeed(this.providerId);
+			if (seeds.length > 0) return seeds;
+		} catch {
+			/* fall through to static fallback */
+		}
+		return this.staticFallbackModels();
+	}
+
+	/** Return curated fallback models when both API and public catalog are unavailable. */
 	private staticFallbackModels(): ModelCard[] {
 		return STATIC_OPENAI_MODELS.map((model) => this.makeCard({
 			id: model.id,

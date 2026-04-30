@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { CerebrasDiscoverer } from "../../src/discovery/cerebras.js";
 import type { CredentialResult } from "../../src/types.js";
-import { mockFetch, mockFetchTimeout, restoreFetch } from "./mock-server.js";
+import { resetLiteLLMCatalogCache } from "../../src/enrichment/litellm-catalog.js";
+import { mockFetch, mockFetchError, mockFetchTimeout, restoreFetch } from "./mock-server.js";
 
 const discoverer = new CerebrasDiscoverer();
 
@@ -25,6 +26,7 @@ const mockModelsResponse = {
 
 afterEach(() => {
 	restoreFetch();
+	resetLiteLLMCatalogCache();
 });
 
 describe("CerebrasDiscoverer", () => {
@@ -34,7 +36,13 @@ describe("CerebrasDiscoverer", () => {
 		expect(discoverer.baseUrl).toBe("https://api.cerebras.ai");
 	});
 
-	it("should return empty array when no API key provided", async () => {
+	it("returns empty array when no API key and the public catalog has no entries for this provider", async () => {
+		mockFetch({
+			"https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json": {
+				status: 200,
+				body: {},
+			},
+		});
 		const result = await discoverer.discover(noCredential);
 		expect(result).toEqual([]);
 	});

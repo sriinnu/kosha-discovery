@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { OpenAIDiscoverer } from "../../src/discovery/openai.js";
 import type { CredentialResult } from "../../src/types.js";
-import { mockFetch, mockFetchTimeout, restoreFetch } from "./mock-server.js";
+import { resetLiteLLMCatalogCache } from "../../src/enrichment/litellm-catalog.js";
+import { mockFetch, mockFetchError, mockFetchTimeout, restoreFetch } from "./mock-server.js";
 
 const discoverer = new OpenAIDiscoverer();
 
@@ -37,6 +38,7 @@ const mockModelsResponse = {
 
 afterEach(() => {
 	restoreFetch();
+	resetLiteLLMCatalogCache();
 });
 
 describe("OpenAIDiscoverer", () => {
@@ -46,7 +48,34 @@ describe("OpenAIDiscoverer", () => {
 		expect(discoverer.baseUrl).toBe("https://api.openai.com");
 	});
 
-	it("should return curated fallback models when no API key provided", async () => {
+	it("returns LiteLLM-seeded models when no API key is provided", async () => {
+		mockFetch({
+			"https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json": {
+				status: 200,
+				body: {
+					"gpt-5.5": {
+						litellm_provider: "openai",
+						mode: "chat",
+						max_input_tokens: 1_100_000,
+						max_output_tokens: 64_000,
+						input_cost_per_token: 0.000005,
+						output_cost_per_token: 0.00003,
+						supports_vision: true,
+						supports_function_calling: true,
+					},
+				},
+			},
+		});
+
+		const result = await discoverer.discover(noCredential);
+		expect(result.length).toBeGreaterThan(0);
+		expect(result.some((m) => m.id === "gpt-5.5")).toBe(true);
+		expect(result.every((m) => m.provider === "openai")).toBe(true);
+		expect(result.every((m) => m.source === "litellm")).toBe(true);
+	});
+
+	it("falls back to curated static list when LiteLLM catalog is unreachable", async () => {
+		mockFetchError(new Error("network unreachable"));
 		const result = await discoverer.discover(noCredential);
 		expect(result.length).toBeGreaterThan(0);
 		expect(result.some((m) => m.id === "gpt-4o")).toBe(true);

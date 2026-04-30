@@ -8,61 +8,11 @@
  */
 
 import type { Enricher, ModelCard, ModelMode, ModelPricing, ModelStatus } from "../types.js";
+import { applyFreeTierFlag } from "../discovery/free-tier.js";
 import { normalizeModelId } from "../normalize.js";
-import { assertCleanPayload } from "../security.js";
-import { inferTokenizerFamily } from "../tokenizer-family.js";
 import { inferParallelToolCalls, inferStructuredOutputModes, inferToolDialect } from "../model-features.js";
-
-/** Shape of a single entry in the litellm pricing JSON. */
-interface LiteLLMModelEntry {
-	max_tokens?: number;
-	max_input_tokens?: number;
-	max_output_tokens?: number;
-	input_cost_per_token?: number;
-	output_cost_per_token?: number;
-	// LiteLLM includes reasoning/tokenized-thinking pricing for some models.
-	// Keep multiple key variants for forward/backward compatibility.
-	input_cost_per_reasoning_token?: number;
-	output_cost_per_reasoning_token?: number;
-	reasoning_input_cost_per_token?: number;
-	reasoning_output_cost_per_token?: number;
-	cache_read_input_token_cost?: number;
-	cache_creation_input_token_cost?: number;
-	input_cost_per_token_batches?: number;
-	output_cost_per_token_batches?: number;
-	// Multimodal pricing — image, audio, video, character.
-	input_cost_per_image?: number;
-	output_cost_per_image?: number;
-	input_cost_per_audio_token?: number;
-	output_cost_per_audio_token?: number;
-	input_cost_per_audio_per_second?: number;
-	output_cost_per_audio_per_second?: number;
-	input_cost_per_video_per_second?: number;
-	input_cost_per_video_token?: number;
-	input_cost_per_character?: number;
-	output_cost_per_character?: number;
-	// Gemini-style tiered long-context pricing.
-	input_cost_per_token_above_128k_tokens?: number;
-	output_cost_per_token_above_128k_tokens?: number;
-	input_cost_per_token_above_200k_tokens?: number;
-	output_cost_per_token_above_200k_tokens?: number;
-	// Deprecation / lifecycle metadata (ISO date string).
-	deprecation_date?: string;
-	litellm_provider?: string;
-	mode?: string;
-	supports_function_calling?: boolean;
-	supports_parallel_function_calling?: boolean;
-	supports_tool_choice?: boolean;
-	supports_response_schema?: boolean;
-	supports_system_messages?: boolean;
-	supports_vision?: boolean;
-	supports_audio_input?: boolean;
-	supports_audio_output?: boolean;
-	supports_video_input?: boolean;
-	supports_prompt_caching?: boolean;
-	supports_reasoning?: boolean;
-	output_vector_size?: number;
-}
+import { inferTokenizerFamily } from "../tokenizer-family.js";
+import { type LiteLLMModelEntry, loadLiteLLMCatalog } from "./litellm-catalog.js";
 
 /**
  * Multiplier to convert litellm's per-token costs into our standard
@@ -79,20 +29,11 @@ const PER_MILLION = 1_000_000;
  */
 export class LiteLLMEnricher implements Enricher {
 	private data: Record<string, LiteLLMModelEntry> | null = null;
-	private readonly url =
-		"https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 
-	/** Fetch and cache the litellm pricing JSON. Safe to call multiple times. */
+	/** Fetch and cache the litellm pricing JSON via the shared catalog loader. */
 	async load(): Promise<void> {
 		if (this.data) return;
-
-		const response = await fetch(this.url);
-		if (!response.ok) {
-			throw new Error(`Failed to fetch litellm data: ${response.status} ${response.statusText}`);
-		}
-		const raw = (await response.json()) as Record<string, unknown>;
-		assertCleanPayload(raw, "litellm");
-		this.data = raw as Record<string, LiteLLMModelEntry>;
+		this.data = await loadLiteLLMCatalog();
 	}
 
 	/**
@@ -104,7 +45,7 @@ export class LiteLLMEnricher implements Enricher {
 	 */
 	async enrich(models: ModelCard[]): Promise<ModelCard[]> {
 		await this.load();
-		return models.map((model) => this.enrichOne(model));
+		return models.map((model) => applyFreeTierFlag(this.enrichOne(model)));
 	}
 
 	// ---------------------------------------------------------------------------
@@ -364,16 +305,18 @@ export class LiteLLMEnricher implements Enricher {
 			entry.output_cost_per_reasoning_token,
 			entry.reasoning_output_cost_per_token,
 		);
-		const hasAnyPriceSignal =
-			entry.input_cost_per_token !== undefined ||
-			entry.output_cost_per_token !== undefined ||
-			entry.cache_read_input_token_cost !== undefined ||
-			entry.cache_creation_input_token_cost !== undefined ||
-			entry.input_cost_per_token_batches !== undefined ||
-			entry.output_cost_per_token_batches !== undefined ||
-			reasoningInputCost !== undefined ||
-			reasoningOutputCost !== undefined ||
-			// Multimodal-only models (image gen, audio TTS) may have zero token pricing.
+
+		const baseInput = this.firstFinite(entry.input_cost_per_token);
+		const baseOutput = this.firstFinite(entry.output_cost_per_token);
+		const hasBaseTokenPricing = baseInput !== undefined && baseOutput !== undefined;
+
+		// Multimodal-only entries (TTS by-the-second, image generation, per-character
+		// Vertex models) legitimately publish no token-billed pricing — synthesizing
+		// 0/0 base on those is honest, and downstream free_tier detection skips
+		// non-chat modes. Cache-only / batch-only / reasoning-only entries, on the
+		// other hand, are incomplete catalog rows: synthesizing 0/0 base from them
+		// would falsely flag the model as free_tier, so we refuse.
+		const hasNonTokenPricing =
 			entry.input_cost_per_image !== undefined ||
 			entry.output_cost_per_image !== undefined ||
 			entry.input_cost_per_audio_token !== undefined ||
@@ -385,13 +328,13 @@ export class LiteLLMEnricher implements Enricher {
 			entry.input_cost_per_character !== undefined ||
 			entry.output_cost_per_character !== undefined;
 
-		if (!hasAnyPriceSignal) {
+		if (!hasBaseTokenPricing && !hasNonTokenPricing) {
 			return undefined;
 		}
 
 		const pricing: ModelPricing = {
-			inputPerMillion: (entry.input_cost_per_token ?? 0) * PER_MILLION,
-			outputPerMillion: (entry.output_cost_per_token ?? 0) * PER_MILLION,
+			inputPerMillion: (baseInput ?? 0) * PER_MILLION,
+			outputPerMillion: (baseOutput ?? 0) * PER_MILLION,
 		};
 		if (reasoningInputCost !== undefined) {
 			pricing.reasoningInputPerMillion = reasoningInputCost * PER_MILLION;

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { GoogleDiscoverer } from "../../src/discovery/google.js";
 import type { CredentialResult } from "../../src/types.js";
-import { mockFetch, mockFetchTimeout, restoreFetch } from "./mock-server.js";
+import { resetLiteLLMCatalogCache } from "../../src/enrichment/litellm-catalog.js";
+import { mockFetch, mockFetchError, mockFetchTimeout, restoreFetch } from "./mock-server.js";
 
 const discoverer = new GoogleDiscoverer();
 
@@ -46,6 +47,7 @@ const mockModelsResponse = {
 
 afterEach(() => {
 	restoreFetch();
+	resetLiteLLMCatalogCache();
 });
 
 /** Tests for the Google / Gemini model discoverer. */
@@ -57,8 +59,35 @@ describe("GoogleDiscoverer", () => {
 		expect(discoverer.baseUrl).toBe("https://generativelanguage.googleapis.com");
 	});
 
-	/** When no API key is present, discover should return curated fallback coverage. */
-	it("should return curated fallback models when no API key provided", async () => {
+	/** When no API key is present, the public LiteLLM catalog seeds the model list. */
+	it("returns LiteLLM-seeded models when no API key is provided", async () => {
+		mockFetch({
+			"https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json": {
+				status: 200,
+				body: {
+					"gemini/gemini-3-pro": {
+						litellm_provider: "gemini",
+						mode: "chat",
+						max_input_tokens: 2_000_000,
+						max_output_tokens: 64_000,
+						input_cost_per_token: 0.0000035,
+						output_cost_per_token: 0.0000105,
+						supports_vision: true,
+					},
+				},
+			},
+		});
+
+		const result = await discoverer.discover(noCredential);
+		expect(result.length).toBeGreaterThan(0);
+		expect(result.some((m) => m.id === "gemini-3-pro")).toBe(true);
+		expect(result.every((m) => m.provider === "google")).toBe(true);
+		expect(result.every((m) => m.source === "litellm")).toBe(true);
+	});
+
+	/** Static fallback kicks in only when the LiteLLM catalog is unreachable. */
+	it("falls back to curated static list when LiteLLM catalog is unreachable", async () => {
+		mockFetchError(new Error("network unreachable"));
 		const result = await discoverer.discover(noCredential);
 		expect(result.length).toBeGreaterThan(0);
 		expect(result.some((m) => m.id === "gemini-2.5-pro-preview-05-06")).toBe(true);

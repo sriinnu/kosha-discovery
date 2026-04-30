@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LiteLLMEnricher } from "../../src/enrichment/litellm.js";
+import { resetLiteLLMCatalogCache } from "../../src/enrichment/litellm-catalog.js";
 import type { ModelCard } from "../../src/types.js";
 
 // ---------------------------------------------------------------------------
@@ -82,6 +83,10 @@ describe("LiteLLMEnricher", () => {
 	beforeEach(() => {
 		enricher = new LiteLLMEnricher();
 
+		// Module-level catalog cache must be reset between tests so each one
+		// observes a fresh fetch mock instead of a memoised payload.
+		resetLiteLLMCatalogCache();
+
 		// Mock fetch to return our sample data
 		vi.spyOn(globalThis, "fetch").mockResolvedValue(
 			new Response(JSON.stringify(LITELLM_DATA), {
@@ -93,6 +98,7 @@ describe("LiteLLMEnricher", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks();
+		resetLiteLLMCatalogCache();
 	});
 
 	// -----------------------------------------------------------------------
@@ -158,6 +164,32 @@ describe("LiteLLMEnricher", () => {
 			// Batch pricing filled in from litellm
 			expect(enriched.pricing!.batchInputPerMillion).toBe(1.5);
 			expect(enriched.pricing!.batchOutputPerMillion).toBe(7.5);
+		});
+
+		it("does not synthesize 0/0 pricing from cache-only entries (free_tier guard)", async () => {
+			const cacheOnlyData: Record<string, unknown> = {
+				"cache-only-model": {
+					litellm_provider: "anthropic",
+					mode: "chat",
+					cache_read_input_token_cost: 0.0000003,
+					cache_creation_input_token_cost: 0.00000375,
+				},
+			};
+			vi.spyOn(globalThis, "fetch").mockResolvedValue(
+				new Response(JSON.stringify(cacheOnlyData), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			);
+			const cacheOnlyEnricher = new LiteLLMEnricher();
+			resetLiteLLMCatalogCache();
+
+			const [enriched] = await cacheOnlyEnricher.enrich([
+				makeModel({ id: "cache-only-model", provider: "anthropic" }),
+			]);
+
+			expect(enriched.pricing).toBeUndefined();
+			expect(enriched.capabilities).not.toContain("free_tier");
 		});
 
 		it("keeps proxy route pricing and adds originPricing for proxied models", async () => {
