@@ -9,255 +9,75 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/@sriinnu/kosha-discovery"><img src="https://img.shields.io/npm/v/%40sriinnu%2Fkosha-discovery?color=7C3AED&label=npm" alt="npm version" /></a>
   <a href="https://www.npmjs.com/package/@sriinnu/kosha-discovery"><img src="https://img.shields.io/npm/dm/%40sriinnu%2Fkosha-discovery?color=0EA5E9&label=downloads" alt="npm downloads" /></a>
-  <a href="https://github.com/sriinnu/kosha-discovery/releases/tag/v0.8.0"><img src="https://img.shields.io/badge/release-v0.8.0-7C3AED?logo=github" alt="release v0.8.0" /></a>
   <a href="https://github.com/sriinnu/kosha-discovery/blob/main/LICENSE"><img src="https://img.shields.io/github/license/sriinnu/kosha-discovery?color=F59E0B" alt="license" /></a>
   <a href="https://www.npmjs.com/package/@sriinnu/kosha-discovery"><img src="https://img.shields.io/node/v/%40sriinnu%2Fkosha-discovery?color=5B21B6" alt="node version" /></a>
-  <a href="https://github.com/sriinnu/kosha-discovery/actions/workflows/release-npm.yml"><img src="https://img.shields.io/github/actions/workflow/status/sriinnu/kosha-discovery/release-npm.yml?label=release%20workflow" alt="release workflow status" /></a>
-  <a href="https://github.com/sriinnu/kosha-discovery/actions/workflows/update-kosha-snapshot.yml"><img src="https://img.shields.io/github/actions/workflow/status/sriinnu/kosha-discovery/update-kosha-snapshot.yml?label=snapshot%20workflow" alt="snapshot workflow status" /></a>
-  <a href="https://github.com/sriinnu/kosha-discovery/actions/workflows/provider-smoke.yml"><img src="https://img.shields.io/github/actions/workflow/status/sriinnu/kosha-discovery/provider-smoke.yml?label=provider%20smoke" alt="provider smoke status" /></a>
-  <a href="https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json"><img src="https://img.shields.io/badge/pricing%20source-LiteLLM-2563EB" alt="LiteLLM pricing source" /></a>
 </p>
 
-> **v0.8.0** — adds tokenizer-family inference, tool-dialect & structured-output mode heuristics, multimodal pricing (image / audio / video / character / long-context tiers), deprecation metadata, and Llama 4 support. `ModelCard` gains `toolDialect`, `structuredOutputModes`, `supportsParallelToolCalls`, `status`, `deprecationDate`, and `replacedBy`. New `ProviderDescriptor.minCachePrefixTokens` exposes the provider's prompt-cache floor. Hono bumped to 4.12.14 (closes 7 security advisories).
-
-Kosha (कोश — treasury/repository) automatically discovers AI models across providers, resolves credentials from CLI tools and environment variables, enriches models with pricing data, and exposes the catalog via library, CLI, and HTTP API.
-
-## Why
-
-AI applications hardcode model IDs, pricing, and provider configs. When providers add models or change pricing, every app breaks. Kosha solves this:
-
-- **Dynamic discovery** — fetches real model lists from provider APIs
-- **Offline direct catalogs** — OpenAI, Anthropic, and Google fallback model coverage even without API keys
-- **Smart credentials** — finds API keys from env vars, CLI tools (Claude, Copilot, Gemini CLI), and config files
-- **Pricing enrichment** — fills in input/output/reasoning/cache/batch costs and context windows from litellm's community-maintained dataset
-- **Proxy vs origin pricing** — preserves route pricing and exposes origin-provider reference pricing for proxy-served models
-- **Persistent cache + portable manifest** — 24h on-disk cache at `~/.kosha/cache`, plus a stable v1 JSON manifest at `~/.kosha/registry.json` that any language or tool can read directly
-- **Model aliases** — `sonnet` → `claude-sonnet-4-20250514`, updated as models evolve
-- **Role matrix** — query provider -> model -> roles (`chat`, `embedding`, `image_generation`, etc.)
-- **Cheapest routing** — rank cheapest eligible models for tasks like embeddings or image generation
-- **Local LLM scanning** — detects Ollama models alongside cloud providers
-- **Three access patterns** — use as a library, CLI tool, or HTTP API
+Kosha (कोश — *treasury*) discovers AI models across providers, resolves credentials, enriches with pricing, and exposes the catalog through a library, CLI, and HTTP API. One source of truth for model identity, pricing, and routing — so your app doesn't break when providers ship new SKUs or change rates.
 
 ## Install
 
 ```bash
-npm install kosha-discovery      # library or HTTP server
-npm install -g kosha-discovery   # global `kosha` CLI
+npm install @sriinnu/kosha-discovery       # library / server
+npm install -g @sriinnu/kosha-discovery    # global `kosha` CLI
 ```
 
-Or with pnpm:
-
-```bash
-pnpm add kosha-discovery
-```
-
-## Getting Started (CLI)
-
-```bash
-# 1. First run — discovers all reachable providers and writes the cache + manifest
-kosha discover
-# → Anthropic: 3 models, OpenAI: 7 models, ...
-# → Cached to ~/.kosha/cache  ·  Manifest: ~/.kosha/registry.json
-
-# 2. Subsequent commands read instantly from the 24h on-disk cache
-kosha list
-# → Loaded 380 models from cache (9h ago). Run "kosha update" to refresh.
-
-# 3. Force a fresh pull from all provider APIs
-kosha update     # alias for `kosha refresh`
-```
-
-After any discovery, a **stable, third-party-readable manifest** is written to
-`~/.kosha/registry.json`. It holds the full v1 snapshot — providers, models,
-pricing, capabilities, and health — in a documented schema. Any tool that can
-read JSON can consume it:
-
-```bash
-jq '.models[] | select(.pricing.inputPerMillion < 0.1) | .modelId' ~/.kosha/registry.json
-```
-
-```python
-import json, pathlib
-data = json.loads(pathlib.Path("~/.kosha/registry.json").expanduser().read_text())
-print(len(data["models"]), "models from", len(data["providers"]), "providers")
-```
-
-## Development (pnpm)
-
-```bash
-pnpm install
-pnpm run build
-pnpm run test
-```
-
-## Quick Start
+## Quick start
 
 ### Library
 
 ```typescript
-import { createKosha } from "kosha-discovery";
+import { createKosha } from "@sriinnu/kosha-discovery";
 
 const kosha = await createKosha();
 
-const models = kosha.models();                           // all models
-const embeddings = kosha.models({ mode: "embedding" });  // filter by mode
-const model = kosha.model("sonnet");                     // resolve alias
-const cheapest = kosha.cheapestModels({ role: "image", limit: 3 });
-
-console.log(model.pricing); // { inputPerMillion: 3, outputPerMillion: 15, ... }
+const models    = kosha.models();                          // all
+const cheapest  = kosha.cheapestModels({ role: "image" }); // ranked
+const sonnet    = kosha.model("sonnet");                   // alias resolves
+console.log(sonnet.pricing); // { inputPerMillion: 3, outputPerMillion: 15, ... }
 ```
 
 ### CLI
 
 ```bash
-kosha discover                          # discover all providers (writes cache + manifest)
-kosha list                              # list models (instant from cache)
-kosha list --provider anthropic         # filter by provider
-kosha search gemini                     # fuzzy search
-kosha model sonnet                      # model details
-kosha cheapest --role embeddings        # cheapest for a task
-kosha routes gpt-4o                     # all provider routes
-kosha providers                         # provider status
-kosha update                            # force re-discover (alias: refresh)
-kosha latest                            # force-fetch latest provider/model details
-kosha latest --provider openai          # latest for one provider
-kosha serve --port 3000                 # start HTTP API
+kosha discover                       # discover all providers (writes cache + manifest)
+kosha list --provider anthropic      # filter from local cache
+kosha model sonnet                   # details for one model (alias-aware)
+kosha cheapest --role embeddings     # rank cheapest for a role
+kosha update                         # force a fresh fetch
+kosha serve --port 3000              # HTTP API
 ```
 
-Results live at `~/.kosha/cache` (24h TTL) and `~/.kosha/registry.json` (stable
-v1 manifest). See [docs/cli.md](docs/cli.md) for the full reference.
-
-### Auto-Fetch JSON Snapshot
+After each discovery, a stable v1 manifest lands at `~/.kosha/registry.json` — any tool that reads JSON can consume it:
 
 ```bash
-# one-shot latest snapshot
-pnpm run autofetch:once
-
-# custom output/provider
-pnpm run autofetch:once -- --provider openai --output ./data/openai-latest.json
-
-# continuous loop (default 3600s)
-pnpm run autofetch -- --interval-seconds 900
+jq '.models[] | select(.pricing.inputPerMillion < 0.1) | .modelId' ~/.kosha/registry.json
 ```
-
-By default this writes JSON to `./data/kosha-latest.json`.
-
-### CI / Smoke Checks
-
-Workflow files:
-
-- `.github/workflows/update-kosha-snapshot.yml`
-- `.github/workflows/provider-smoke.yml`
-
-Snapshot workflow:
-
-- Scheduled: weekly (Monday 06:00 UTC)
-- Manual: GitHub UI -> Actions -> `Update Kosha Snapshot` -> `Run workflow`
-- Optional manual inputs:
-  - `provider` (empty = all providers)
-  - `output` (default `data/kosha-latest.json`)
-- Disable scheduled runs without removing the workflow by setting `KOSHA_SNAPSHOT_SCHEDULE_ENABLED=false`
-- Manual `Run workflow` still works even when schedule is disabled
-
-Provider smoke workflow:
-
-- Scheduled: nightly (03:00 UTC)
-- Manual: GitHub UI -> Actions -> `Provider Smoke Checks` -> `Run workflow`
-- Runs only when repository variable `KOSHA_PROVIDER_SMOKE_ENABLED=true`
-- Manual dispatch can override that gate with `force=true`
-- Installs with pnpm, builds, then runs a node inline smoke script against real provider endpoints
-- Providers without the required secrets are skipped instead of failing the job
-- Always uploads `artifacts/provider-smoke-report.json`
-
-Provider smoke secrets:
-
-- OpenAI: `OPENAI_API_KEY`
-- Google/Gemini: `GOOGLE_API_KEY` or `GEMINI_API_KEY`
-- Mistral: `MISTRAL_API_KEY`
-- DeepSeek: `DEEPSEEK_API_KEY`
-- Moonshot: `MOONSHOT_API_KEY` or `KIMI_API_KEY`
-- GLM: `GLM_API_KEY` or `ZHIPUAI_API_KEY`
-- Z.AI: `ZAI_API_KEY`
-- MiniMax: `MINIMAX_API_KEY`
-- OpenRouter: optional `OPENROUTER_API_KEY`
-- Bedrock: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`
-- Vertex AI: `GOOGLE_APPLICATION_CREDENTIALS_JSON`, `GOOGLE_CLOUD_PROJECT`
-
-Security controls in these workflows:
-
-- Snapshot workflow commits only the configured snapshot file path plus its checksum file, never broad `git add -A`
-- Snapshot workflow validates the generated snapshot against a local JSON schema before commit
-- Snapshot workflow runs a high-signal secret-pattern scan on snapshot output before commit
-- Snapshot workflow writes `data/kosha-latest.sha256` alongside the snapshot
-- Snapshot workflow uploads an always-on artifact with run metadata, provider summaries, and failure details
-- Provider smoke workflow never echoes secret values and records a machine-readable JSON report
-
-### Branch Protection Audit
-
-Workflow file: `.github/workflows/branch-protection-check.yml`
-
-- Runs on `main` and via `workflow_dispatch`
-- Reads the `main` branch protection rule through the GitHub API
-- Expects the required status checks list to include `Branch Protection Check / audit`
-- Uploads a warning artifact instead of failing when the token cannot read branch protection settings
-
-Keep that check name stable when you rename the workflow or job, and update the protection rule whenever you add more required checks.
-
-### Where Data Is Stored
-
-- Git repo: model/provider discovery data is **not** committed by default.
-- Runtime cache: `~/.kosha/cache/*.json` (machine-local, TTL-based).
-- Exported snapshot: only if you run `autofetch`/`autofetch:once` with an output file and commit it yourself.
-- Stable manifest: `~/.kosha/registry.json` is rewritten after every discovery and holds the full v1 snapshot for third-party consumers.
 
 ### HTTP API
 
-```bash
-kosha serve --port 3000
+```
+GET  /api/models[?provider=…&role=…]    GET  /api/models/:idOrAlias
+GET  /api/models/:idOrAlias/routes      GET  /api/models/cheapest?role=…
+GET  /api/providers                     GET  /api/roles
+POST /api/refresh                       GET  /health
 ```
 
-```
-GET /api/models                    — All models (filterable)
-GET /api/models/cheapest           — Cheapest ranked models
-GET /api/models/:idOrAlias         — Single model
-GET /api/models/:idOrAlias/routes  — All provider routes
-GET /api/roles                     — Provider → model → roles matrix
-GET /api/providers                 — All providers
-POST /api/refresh                  — Re-discover
-GET /health                        — Health check
-```
+## Supported providers
 
-## Supported Providers
-
-| Provider | Discovery | Credential Sources |
-|----------|-----------|-------------------|
-| Anthropic | API (`/v1/models`) | `ANTHROPIC_API_KEY`, Claude CLI, Codex CLI |
-| OpenAI | API (`/v1/models`) | `OPENAI_API_KEY`, GitHub Copilot tokens |
-| Google | API (`/v1beta/models`) | `GOOGLE_API_KEY`, `GEMINI_API_KEY`, Gemini CLI, gcloud |
+| Provider | Discovery | Credential sources |
+|----------|-----------|--------------------|
+| Anthropic | `/v1/models` | `ANTHROPIC_API_KEY`, Claude CLI, Codex CLI |
+| OpenAI | `/v1/models` | `OPENAI_API_KEY`, GitHub Copilot tokens |
+| Google | `/v1beta/models` | `GOOGLE_API_KEY`, `GEMINI_API_KEY`, Gemini CLI, gcloud |
 | AWS Bedrock | SDK → CLI → static | `AWS_ACCESS_KEY_ID`, `~/.aws/credentials`, SSO, IAM |
-| Vertex AI | API + gcloud | `GOOGLE_APPLICATION_CREDENTIALS`, gcloud ADC |
-| Ollama | Local API | None needed (local) |
-| OpenRouter | API | `OPENROUTER_API_KEY` (optional) |
-| NVIDIA | API | `NVIDIA_API_KEY` |
-| Together AI | API | `TOGETHER_API_KEY` |
-| Fireworks AI | API | `FIREWORKS_API_KEY` |
-| Groq | API | `GROQ_API_KEY` |
-| Mistral AI | API | `MISTRAL_API_KEY` |
-| DeepInfra | API | `DEEPINFRA_API_KEY` |
-| Cohere | API | `CO_API_KEY` |
-| Cerebras | API | `CEREBRAS_API_KEY` |
-| Perplexity | API | `PERPLEXITY_API_KEY` |
-| DeepSeek | API | `DEEPSEEK_API_KEY` |
-| Moonshot (Kimi) | API | `MOONSHOT_API_KEY` / `KIMI_API_KEY` |
-| GLM (Zhipu) | API | `GLM_API_KEY` / `ZHIPUAI_API_KEY` |
-| Z.AI | API | `ZAI_API_KEY` |
-| MiniMax | API | `MINIMAX_API_KEY` |
+| Vertex AI | API + gcloud | `GOOGLE_APPLICATION_CREDENTIALS`, ADC |
+| Ollama | local API | — (local) |
+| OpenRouter | API | `OPENROUTER_API_KEY` *(optional)* |
+| NVIDIA / Together / Fireworks / Groq / Cerebras / Cohere / DeepInfra / Perplexity | API | provider key env var |
+| DeepSeek / Mistral / Moonshot (Kimi) / GLM (Zhipu) / Z.AI / MiniMax | API | provider key env var |
 
-## Security
-
-All external data (API responses, CLI output, cache reads) is scanned for 9 threat types before use: credential leaks, base64 payloads, script/shell injection, data URIs, null bytes, prototype pollution, hex blobs, and oversized strings. A pre-commit hook blocks secrets at commit time.
-
-See [docs/security.md](docs/security.md) for the full threat catalogue and architecture.
+Full credential setup: [docs/credentials.md](docs/credentials.md).
 
 ## Architecture
 
@@ -265,70 +85,35 @@ See [docs/security.md](docs/security.md) for the full threat catalogue and archi
   <img src="architecture.svg" alt="Kosha Architecture" width="720" />
 </p>
 
-```
-┌─────────────────────────────────────────────────────┐
-│                  Your Application                    │
-│        import { createKosha } from "kosha"          │
-└───────────────────────┬─────────────────────────────┘
-                        │
-┌───────────────────────▼─────────────────────────────┐
-│                  ModelRegistry                        │
-│  models() · providerRoles() · cheapestModels()       │
-└──┬──────────┬──────────────┬───────────────┬────────┘
-   │          │              │               │
-┌──▼───┐ ┌───▼────────┐ ┌───▼──────────┐ ┌──▼─────────┐
-│Alias │ │ Discovery   │ │ Enrichment   │ │ Resilience  │
-│System│ │ Layer       │ │ Layer        │ │ Layer       │
-└──────┘ └───┬────────┘ └──────┬───────┘ └────────────┘
-             │                 │          CircuitBreaker
-    ┌────────┼────────┐        │          HealthTracker
-    ▼        ▼        ▼        ▼          StaleCachePolicy
- Direct   OpenAI-   Cloud      litellm
-  API    Compatible  Proxies    JSON
-```
+Discovery layer talks to provider APIs and local catalogs. Enrichment layer fills pricing and context windows from the LiteLLM catalog and models.dev. Resilience layer (circuit breaker + stale-cache fallback + health tracker) keeps a flaky provider a degraded read, never a crash. Manifest layer writes a v1-stable JSON snapshot so downstream consumers — `tokmeter`, `chitragupta`, `ayuh` — read prices from one source instead of inventing their own.
 
-## Documentation
+## Docs
 
-| Doc | What's in it |
-|-----|-------------|
-| [Credentials](docs/credentials.md) | Setup for all 21 providers (env vars, CLI tools, config files) |
-| [CLI Reference](docs/cli.md) | All commands, flags, and example output |
-| [HTTP API](docs/api.md) | All endpoints, parameters, and response schemas |
-| [Configuration](docs/configuration.md) | Aliases, routing, pricing enrichment, programmatic config |
-| [Architecture](docs/architecture.md) | Discovery flow, module map, data pipeline, adding providers |
-| [Resilience](docs/resilience.md) | Circuit breakers, stale cache fallback, health monitoring |
+| | |
+|---|---|
+| [Credentials](docs/credentials.md) | Env vars, CLI tools, and config files for every provider |
+| [CLI](docs/cli.md) | Commands, flags, examples |
+| [HTTP API](docs/api.md) | Endpoints, parameters, response schemas |
+| [Configuration](docs/configuration.md) | Aliases, routing, enrichment, programmatic config |
+| [Architecture](docs/architecture.md) | Discovery flow, module map, adding providers |
+| [Resilience](docs/resilience.md) | Circuit breakers, stale cache, health |
 | [Security](docs/security.md) | Threat catalogue, runtime scanning, pre-commit hook |
 | [Discovery Plane v1](docs/discovery-plane-v1.md) | Stable daemon contract (deltas, SSE watch, binding hints) |
 
-## Release & Tagging
+## Release
 
-Package: `@sriinnu/kosha-discovery`
+Tag-driven via GitHub Actions:
 
-This repo uses a human-in-the-loop release flow:
+```bash
+git tag -s vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
+# → Actions → "Manual Release (Tag + npm)" → run with tag=vX.Y.Z
+```
 
-1. Update version in `package.json` and lockfiles locally.
-2. Create a signed tag and push it:
-   ```bash
-   git tag -s v0.6.0 -m "v0.6.0"
-   git push origin v0.6.0
-   ```
-3. In GitHub Actions, run `Manual Release (Tag + npm)` and provide `tag=v0.6.0`.
-4. Workflow verifies tag/version match, builds/tests, then publishes to npm (if enabled) and creates a GitHub Release.
-
-Required secret for publish:
-- `NPM_TOKEN` (publish rights for `@sriinnu` scope)
+The workflow checks tag ↔ package.json match, builds, tests, publishes to npm, and creates the GitHub Release. Requires the `NPM_TOKEN` secret.
 
 ## Credits
 
-- **[litellm](https://github.com/BerriAI/litellm)** -- Community-maintained model pricing database
-- **[openrouter](https://openrouter.ai)** -- Model aggregation API
-- **[ollama](https://ollama.ai)** -- Local LLM runtime
-- **[chitragupta](https://github.com/sriinnu/chitragupta)** -- Autonomous AI Agent Platform whose registry patterns inspired kosha
-- **[takumi](https://github.com/sriinnu/takumi)** -- AI coding agent TUI whose routing needs drove kosha's creation
-
-## What "Kosha" Means
-
-`Kosha` comes from Sanskrit -- a container, treasury, or layered sheath of knowledge. A standalone model-discovery utility for any AI system.
+[litellm](https://github.com/BerriAI/litellm) (pricing data) · [openrouter](https://openrouter.ai) · [ollama](https://ollama.ai) · [chitragupta](https://github.com/sriinnu/chitragupta) (registry patterns) · [takumi](https://github.com/sriinnu/takumi) (routing needs that drove kosha's creation).
 
 ## License
 
