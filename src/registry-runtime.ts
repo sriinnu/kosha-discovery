@@ -6,7 +6,8 @@
  * @module
  */
 
-import { mkdir, writeFile } from "fs/promises";
+import { randomBytes } from "crypto";
+import { mkdir, rename, unlink, writeFile } from "fs/promises";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { StaleCachePolicy } from "./resilience.js";
@@ -376,7 +377,23 @@ export async function exportRegistryManifest(state: RegistryState): Promise<void
 		// the user's pricing for those models — they retain their last-known
 		// values until a successful fetch supersedes them.
 		const merged = await mergeWithExistingManifest(manifestPath, fresh);
-		await writeFile(manifestPath, JSON.stringify(merged, null, 2), "utf-8");
+
+		// Atomic write: temp file in the same directory, then rename(2).
+		// `rename` within a single filesystem is atomic on POSIX and
+		// preserves any concurrent reader's existing fd. Without this, a
+		// reader (e.g. tokmeter's pricing manifest fallback) can land mid
+		// `JSON.stringify` write and parse a truncated file. The tmp suffix
+		// uses 8 random hex chars so two concurrent kosha updates don't
+		// collide on the staging name.
+		const tmpPath = `${manifestPath}.${randomBytes(4).toString("hex")}.tmp`;
+		try {
+			await writeFile(tmpPath, JSON.stringify(merged, null, 2), "utf-8");
+			await rename(tmpPath, manifestPath);
+		} catch (err) {
+			// Best-effort cleanup of the temp file if rename failed.
+			await unlink(tmpPath).catch(() => {});
+			throw err;
+		}
 	} catch {
 		// I keep manifest export non-fatal — the cache still works either way.
 	}
@@ -419,20 +436,43 @@ async function mergeWithExistingManifest(
 	}
 	if (!previous?.models) return fresh;
 
-	const freshModelKeys = new Set<string>();
-	for (const m of fresh.models ?? []) {
-		if (m.key) freshModelKeys.add(m.key);
+	// Index previous entries by key so we can both detect collisions AND
+	// look back at the old data for pricing-degraded merge below.
+	const previousByKey = new Map<string, (typeof previous.models)[number]>();
+	for (const m of previous.models) {
+		if (m.key) previousByKey.set(m.key, m);
 	}
-	const mergedModels = [...(fresh.models ?? [])];
+
+	// Per-model merge with two rules:
+	//   (1) Old entries fresh dropped entirely → keep them.
+	//   (2) Fresh entries that came back with NO pricing while the old entry
+	//       HAD pricing → keep the old pricing block (degraded-fresh defence).
+	//       This guards against transient enrichment failures (LiteLLM
+	//       offline, models.dev 503, etc.) that would otherwise silently
+	//       zero out previously-known prices on the next refresh.
+	const freshModelKeys = new Set<string>();
+	const mergedModels: (typeof fresh.models)[number][] = [];
+	for (const f of fresh.models ?? []) {
+		if (f.key) freshModelKeys.add(f.key);
+		const old = f.key ? previousByKey.get(f.key) : undefined;
+		if (old && !hasUsablePricing(f) && hasUsablePricing(old)) {
+			// Keep all of fresh's metadata but restore pricing from old.
+			mergedModels.push({
+				...f,
+				pricing: old.pricing,
+				originPricing: old.originPricing,
+			});
+		} else {
+			mergedModels.push(f);
+		}
+	}
 	for (const old of previous.models) {
 		if (old.key && !freshModelKeys.has(old.key)) {
 			mergedModels.push(old);
 		}
 	}
 
-	const freshProviderIds = new Set(
-		(fresh.providers ?? []).map((p) => p.providerId),
-	);
+	const freshProviderIds = new Set((fresh.providers ?? []).map((p) => p.providerId));
 	const mergedProviders = [...(fresh.providers ?? [])];
 	for (const old of previous.providers ?? []) {
 		if (!freshProviderIds.has(old.providerId)) {
@@ -445,6 +485,19 @@ async function mergeWithExistingManifest(
 		models: mergedModels,
 		providers: mergedProviders,
 	};
+}
+
+/** True if the entry carries non-zero input + output rates on either the
+ *  origin (direct provider) or the proxy (`pricing`) side. Anything else
+ *  is "pricing-degraded" for our purposes. */
+function hasUsablePricing(entry: { pricing?: unknown; originPricing?: unknown } | undefined): boolean {
+	if (!entry) return false;
+	const candidate = (entry.originPricing ?? entry.pricing) as
+		| { inputPerMillion?: number; outputPerMillion?: number }
+		| null
+		| undefined;
+	if (!candidate) return false;
+	return (candidate.inputPerMillion ?? 0) > 0 && (candidate.outputPerMillion ?? 0) > 0;
 }
 
 async function discoverProvider(
