@@ -391,7 +391,28 @@ export async function exportRegistryManifest(state: RegistryState): Promise<void
 		// 0 models (auth error, rate limit, transient outage) must NOT wipe
 		// the user's pricing for those models — they retain their last-known
 		// values until a successful fetch supersedes them.
-		const merged = await mergeWithExistingManifest(manifestPath, fresh);
+		const previousManifest = await readPreviousManifest(manifestPath);
+		const merged = mergeManifests(previousManifest, fresh);
+
+		// Pricing-diff alerts. The most dangerous failure mode isn't "kosha
+		// returned null" (we already detect that). It's "kosha returned a
+		// wrong number" — silent over- or undercharging. We compare prev vs
+		// fresh rates per model and append anomalies (>25% delta) to a
+		// rolling 30-day log. Best-effort — never fails the export.
+		try {
+			const anomalies = detectPricingAnomalies(previousManifest, fresh);
+			if (anomalies.length > 0) {
+				await appendAnomalies(dirname(manifestPath), anomalies);
+				for (const a of anomalies) {
+					console.warn(
+						`[kosha] pricing anomaly: ${a.key} ${a.field} ` +
+							`${a.previous} → ${a.current} (${(a.deltaPct * 100).toFixed(0)}%)`,
+					);
+				}
+			}
+		} catch {
+			// Anomaly logging is observability only; never block manifest export.
+		}
 
 		// Atomic write: temp file in the same directory, then rename(2).
 		// `rename` within a single filesystem is atomic on POSIX and
@@ -403,6 +424,12 @@ export async function exportRegistryManifest(state: RegistryState): Promise<void
 		const tmpPath = `${manifestPath}.${randomBytes(4).toString("hex")}.tmp`;
 		try {
 			await writeFile(tmpPath, JSON.stringify(merged, null, 2), "utf-8");
+			// Snapshot rollback ring: rotate the existing manifest into a
+			// dated `.bak` slot before the rename overwrites it. Keeps the
+			// last 7 snapshots so a bad publish (provider returns garbage,
+			// kosha's own bug, hand-edit) has an undo path. Sweeping
+			// happens after rename so we never lose the manifest mid-rotate.
+			await rotateBackup(manifestPath);
 			await rename(tmpPath, manifestPath);
 		} catch (err) {
 			// Best-effort cleanup of the temp file if rename failed.
@@ -462,6 +489,69 @@ async function acquireExportLock(lockPath: string): Promise<void> {
 	}
 }
 
+const MAX_BACKUPS = 7;
+
+/**
+ * Rotate the current manifest into a `.bak.<YYYY-MM-DD>` slot before it
+ * gets overwritten. Keeps the last MAX_BACKUPS snapshots; older ones get
+ * unlinked. If today's slot already exists (multiple updates same day),
+ * it's preserved — first write of the day wins, since the goal is "what
+ * did the manifest look like at the start of each day?"
+ *
+ * Best-effort: rotation failures don't abort the export. The current
+ * manifest is intact regardless.
+ */
+async function rotateBackup(manifestPath: string): Promise<void> {
+	try {
+		const dir = dirname(manifestPath);
+		const base = manifestPath.slice(dir.length + 1);
+		const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+		const todayBak = join(dir, `${base}.bak.${today}`);
+
+		// Only rotate if the manifest exists and today's bak slot is empty.
+		try {
+			await stat(manifestPath);
+		} catch {
+			return; // no current manifest, nothing to back up
+		}
+		try {
+			await stat(todayBak);
+			return; // today's slot already taken — first writer of the day wins
+		} catch {
+			// fall through — slot is free
+		}
+
+		// Copy the current manifest to today's bak slot. We copy rather than
+		// rename so the live manifest stays in place during the gap between
+		// rotation and the new rename(2) below.
+		const { readFile } = await import("fs/promises");
+		const data = await readFile(manifestPath);
+		const tmp = `${todayBak}.${randomBytes(4).toString("hex")}.tmp`;
+		try {
+			await writeFile(tmp, data);
+			await rename(tmp, todayBak);
+		} catch (err) {
+			await unlink(tmp).catch(() => {});
+			throw err;
+		}
+
+		// Sweep older backups down to MAX_BACKUPS.
+		const bakRe = new RegExp(`^${escapeRegExp(base)}\\.bak\\.(\\d{4}-\\d{2}-\\d{2})$`);
+		const entries = await readdir(dir);
+		const bakDates = entries
+			.map((name) => {
+				const m = bakRe.exec(name);
+				return m ? { name, date: m[1] } : null;
+			})
+			.filter((x): x is { name: string; date: string } => x !== null)
+			.sort((a, b) => a.date.localeCompare(b.date));
+		const expired = bakDates.slice(0, Math.max(0, bakDates.length - MAX_BACKUPS));
+		await Promise.all(expired.map((b) => unlink(join(dir, b.name)).catch(() => {})));
+	} catch {
+		// Rotation is observability/recovery only — don't gate the export.
+	}
+}
+
 /** Remove any `<manifest>.<...>.tmp` siblings older than 5 minutes. They are
  *  orphans from prior runs that crashed between writeFile and rename. */
 async function sweepStaleTmpFiles(manifestPath: string): Promise<void> {
@@ -516,27 +606,26 @@ function resolveManifestPath(state: RegistryState): string {
  * If the previous manifest is missing or unreadable we just write the
  * fresh snapshot as-is (first run / corrupted file).
  */
-async function mergeWithExistingManifest(
-	manifestPath: string,
-	fresh: DiscoverySnapshotV1,
-): Promise<DiscoverySnapshotV1> {
-	let previous: DiscoverySnapshotV1 | null = null;
+async function readPreviousManifest(manifestPath: string): Promise<DiscoverySnapshotV1 | null> {
 	try {
 		const { readFile } = await import("fs/promises");
 		const raw = await readFile(manifestPath, "utf-8");
-		previous = JSON.parse(raw) as DiscoverySnapshotV1;
+		const parsed = JSON.parse(raw) as DiscoverySnapshotV1;
+		if (!parsed?.models) return null;
+		// Schema-version guard. A different version on disk means we can't
+		// trust the field shapes — caller falls through to fresh-only.
+		if (parsed.schemaVersion !== DISCOVERY_SCHEMA_VERSION) return null;
+		return parsed;
 	} catch {
-		return fresh; // no previous manifest, or unreadable — fresh wins
+		return null; // missing or unreadable
 	}
-	if (!previous?.models) return fresh;
+}
 
-	// Schema-version guard. If the previous manifest is from a different
-	// schema (kosha downgraded, future format on disk, hand-edited file),
-	// don't try to merge V1 + V?? into a Frankenstein — just rewrite with
-	// the fresh snapshot. The fresh fetch supersedes whatever's there.
-	if (previous.schemaVersion !== DISCOVERY_SCHEMA_VERSION) {
-		return fresh;
-	}
+function mergeManifests(
+	previous: DiscoverySnapshotV1 | null,
+	fresh: DiscoverySnapshotV1,
+): DiscoverySnapshotV1 {
+	if (!previous) return fresh;
 
 	// Index previous entries by key so we can both detect collisions AND
 	// look back at the old data for pricing-degraded merge below.
@@ -607,6 +696,119 @@ function hasUsablePricing(entry: { pricing?: unknown; originPricing?: unknown } 
 		return (r.inputPerMillion ?? 0) > 0 && (r.outputPerMillion ?? 0) > 0;
 	};
 	return sideHasPricing(entry.originPricing) || sideHasPricing(entry.pricing);
+}
+
+/**
+ * A single pricing-diff event captured at merge time. Persisted to
+ * `<manifest-dir>/anomalies.json` so consumers can surface "rate moved
+ * unexpectedly" as a UI signal without polling for every merge.
+ */
+export interface PricingAnomaly {
+	ts: number;
+	/** Stable model key, e.g. `anthropic:claude-opus-4-7`. */
+	key: string;
+	/** Which rate moved: `input`, `output`, `cacheRead`, `cacheWrite`. */
+	field: "input" | "output" | "cacheRead" | "cacheWrite";
+	/** Whether the change was on `originPricing` (direct) or `pricing` (proxy). */
+	side: "origin" | "proxy";
+	previous: number;
+	current: number;
+	/** Signed fractional delta, e.g. -0.5 = 50% drop, +1.0 = doubled. */
+	deltaPct: number;
+}
+
+const ANOMALY_DELTA_THRESHOLD = 0.25; // 25% in either direction
+const ANOMALY_RETENTION_MS = 30 * 86_400_000; // 30 days
+const ANOMALY_MAX_ENTRIES = 5_000; // cap so the file can't grow unbounded
+const ANOMALY_FILE = "anomalies.json";
+
+/** Compare prev vs fresh manifests and emit one anomaly per rate-field
+ *  that moved more than ANOMALY_DELTA_THRESHOLD. Both directions count
+ *  (a 90% rate drop is just as suspicious as a 90% jump). */
+function detectPricingAnomalies(
+	previous: DiscoverySnapshotV1 | null,
+	fresh: DiscoverySnapshotV1,
+): PricingAnomaly[] {
+	if (!previous?.models) return [];
+	const prevByKey = new Map<string, (typeof previous.models)[number]>();
+	for (const m of previous.models) {
+		if (m.key) prevByKey.set(m.key, m);
+	}
+	const ts = Date.now();
+	const anomalies: PricingAnomaly[] = [];
+
+	type RateBlock = {
+		inputPerMillion?: number;
+		outputPerMillion?: number;
+		cacheReadPerMillion?: number;
+		cacheWritePerMillion?: number;
+	} | null
+		| undefined;
+	const fields: { name: PricingAnomaly["field"]; key: keyof NonNullable<RateBlock> }[] = [
+		{ name: "input", key: "inputPerMillion" },
+		{ name: "output", key: "outputPerMillion" },
+		{ name: "cacheRead", key: "cacheReadPerMillion" },
+		{ name: "cacheWrite", key: "cacheWritePerMillion" },
+	];
+	const sides: { name: PricingAnomaly["side"]; pick: (m: { pricing?: RateBlock; originPricing?: RateBlock }) => RateBlock }[] = [
+		{ name: "origin", pick: (m) => m.originPricing },
+		{ name: "proxy", pick: (m) => m.pricing },
+	];
+
+	for (const f of fresh.models ?? []) {
+		if (!f.key) continue;
+		const prev = prevByKey.get(f.key);
+		if (!prev) continue;
+		for (const side of sides) {
+			const a = side.pick(prev as { pricing?: RateBlock; originPricing?: RateBlock });
+			const b = side.pick(f as { pricing?: RateBlock; originPricing?: RateBlock });
+			if (!a || !b) continue;
+			for (const field of fields) {
+				const prevRate = a[field.key];
+				const newRate = b[field.key];
+				if (typeof prevRate !== "number" || typeof newRate !== "number") continue;
+				if (prevRate === 0) continue; // can't compute delta from zero baseline; skip
+				if (prevRate === newRate) continue;
+				const delta = (newRate - prevRate) / prevRate;
+				if (Math.abs(delta) < ANOMALY_DELTA_THRESHOLD) continue;
+				anomalies.push({
+					ts,
+					key: f.key,
+					field: field.name,
+					side: side.name,
+					previous: prevRate,
+					current: newRate,
+					deltaPct: delta,
+				});
+			}
+		}
+	}
+	return anomalies;
+}
+
+/** Append fresh anomalies to <manifestDir>/anomalies.json. Atomic write,
+ *  rolling retention (30 days OR last 5000 entries, whichever is tighter). */
+async function appendAnomalies(manifestDir: string, fresh: PricingAnomaly[]): Promise<void> {
+	const path = join(manifestDir, ANOMALY_FILE);
+	const cutoff = Date.now() - ANOMALY_RETENTION_MS;
+	let existing: PricingAnomaly[] = [];
+	try {
+		const { readFile } = await import("fs/promises");
+		const raw = await readFile(path, "utf-8");
+		const parsed = JSON.parse(raw) as { anomalies?: PricingAnomaly[] };
+		if (Array.isArray(parsed.anomalies)) existing = parsed.anomalies;
+	} catch {
+		// missing or unreadable — start fresh
+	}
+	const all = [...existing, ...fresh].filter((a) => a.ts >= cutoff).slice(-ANOMALY_MAX_ENTRIES);
+	const tmp = `${path}.${randomBytes(4).toString("hex")}.tmp`;
+	try {
+		await writeFile(tmp, JSON.stringify({ schemaVersion: 1, anomalies: all }, null, 2), "utf-8");
+		await rename(tmp, path);
+	} catch (err) {
+		await unlink(tmp).catch(() => {});
+		throw err;
+	}
 }
 
 async function discoverProvider(
