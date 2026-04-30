@@ -161,9 +161,10 @@ export class GoogleDiscoverer extends BaseDiscoverer {
 	}
 
 	/**
-	 * No-key fallback: source the latest catalogue from the public LiteLLM
-	 * catalog. Falls back to the curated static list only if the catalog
-	 * fetch fails (offline emergency).
+	 * No-key fallback: source the latest public seed via {@link getPublicSeed},
+	 * which uses models.dev as the primary source, fills gaps from the public
+	 * LiteLLM catalog, and applies promo overrides. Falls back to the curated
+	 * static list only if the public-seed fetch fails or returns no models.
 	 */
 	private async publicCatalogFallback(): Promise<ModelCard[]> {
 		try {

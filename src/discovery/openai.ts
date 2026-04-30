@@ -197,9 +197,11 @@ export class OpenAIDiscoverer extends BaseDiscoverer {
 	}
 
 	/**
-	 * No-key fallback: source the latest catalogue from the public LiteLLM
-	 * catalog. Falls back to the curated static list only if the catalog
-	 * fetch fails (offline emergency).
+	 * No-key fallback: source the latest merged public seed for this provider
+	 * via {@link getPublicSeed}. That seed may combine multiple public inputs
+	 * (for example models.dev, LiteLLM, and promo overrides) using the
+	 * priority rules defined in `getPublicSeed()`. Falls back to the curated
+	 * static list if the public seed fetch fails or yields no models.
 	 */
 	private async publicCatalogFallback(): Promise<ModelCard[]> {
 		try {

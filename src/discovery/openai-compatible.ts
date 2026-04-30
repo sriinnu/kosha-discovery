@@ -82,10 +82,11 @@ export abstract class OpenAICompatibleDiscoverer extends BaseDiscoverer {
 	async discover(credential: CredentialResult, options?: { timeout?: number }): Promise<ModelCard[]> {
 		const apiKey = credential.apiKey ?? credential.accessToken;
 		if (!apiKey) {
-			// Discovery is a public-data question — fall back to the community
-			// LiteLLM catalog so kosha returns the latest models even without a
-			// provider key. Empty seed simply means the catalog has no entries
-			// for this provider yet (e.g. nvidia, glm, qwen).
+			// Discovery is a public-data question — fall back to the public
+			// seed catalogs (models.dev primary, with LiteLLM as filler) so
+			// kosha returns the latest models even without a provider key.
+			// Empty seed simply means the catalogs have no entries for this
+			// provider yet (e.g. nvidia, glm, qwen).
 			try {
 				return await getPublicSeed(this.providerId);
 			} catch {
