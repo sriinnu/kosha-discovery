@@ -295,7 +295,7 @@ export function trustedCapabilitiesForModel(model: ModelCard, descriptor: Provid
 	// either get a coherent answer. Distinct from "cheap" because $0 is a real
 	// signal (free dev tiers, promo windows) that downstream cost classifiers
 	// should be able to single out.
-	if (rawCaps.includes("free_tier") || isFreeTierPricing(model.pricing)) caps.add("free_tier");
+	if (rawCaps.includes("free_tier") || isFreeTierPricing(model)) caps.add("free_tier");
 
 	return [...caps].sort();
 }
@@ -312,7 +312,25 @@ function isCheapPricing(pricing: ModelPricing | undefined): boolean {
 	return pricing.inputPerMillion <= 1 && pricing.outputPerMillion <= 4;
 }
 
-function isFreeTierPricing(pricing: ModelPricing | undefined): boolean {
+function isFreeTierPricing(model: ModelCard): boolean {
+	const pricing = model.pricing;
 	if (!pricing) return false;
+	// `free_tier` is a token-billed concept (NVIDIA dev tier, Gemma/open-weight free,
+	// OpenAI moderation). Multimodal-only models — TTS billed per second, image gen
+	// billed per image, character-billed Vertex models — legitimately publish 0/0
+	// base token pricing because they are not token-billed; flagging them as
+	// free_tier would be misleading.
+	if (model.mode !== "chat" && model.mode !== "embedding") return false;
+	if (
+		pricing.imageOutputPerImage !== undefined ||
+		pricing.imageInputPerImage !== undefined ||
+		pricing.audioInputPerSecond !== undefined ||
+		pricing.audioOutputPerSecond !== undefined ||
+		pricing.videoInputPerSecond !== undefined ||
+		pricing.inputPerMillionCharacters !== undefined ||
+		pricing.outputPerMillionCharacters !== undefined
+	) {
+		return false;
+	}
 	return pricing.inputPerMillion === 0 && pricing.outputPerMillion === 0;
 }

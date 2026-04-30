@@ -305,16 +305,18 @@ export class LiteLLMEnricher implements Enricher {
 			entry.output_cost_per_reasoning_token,
 			entry.reasoning_output_cost_per_token,
 		);
-		const hasAnyPriceSignal =
-			entry.input_cost_per_token !== undefined ||
-			entry.output_cost_per_token !== undefined ||
-			entry.cache_read_input_token_cost !== undefined ||
-			entry.cache_creation_input_token_cost !== undefined ||
-			entry.input_cost_per_token_batches !== undefined ||
-			entry.output_cost_per_token_batches !== undefined ||
-			reasoningInputCost !== undefined ||
-			reasoningOutputCost !== undefined ||
-			// Multimodal-only models (image gen, audio TTS) may have zero token pricing.
+
+		const baseInput = this.firstFinite(entry.input_cost_per_token);
+		const baseOutput = this.firstFinite(entry.output_cost_per_token);
+		const hasBaseTokenPricing = baseInput !== undefined && baseOutput !== undefined;
+
+		// Multimodal-only entries (TTS by-the-second, image generation, per-character
+		// Vertex models) legitimately publish no token-billed pricing — synthesizing
+		// 0/0 base on those is honest, and downstream free_tier detection skips
+		// non-chat modes. Cache-only / batch-only / reasoning-only entries, on the
+		// other hand, are incomplete catalog rows: synthesizing 0/0 base from them
+		// would falsely flag the model as free_tier, so we refuse.
+		const hasNonTokenPricing =
 			entry.input_cost_per_image !== undefined ||
 			entry.output_cost_per_image !== undefined ||
 			entry.input_cost_per_audio_token !== undefined ||
@@ -326,13 +328,13 @@ export class LiteLLMEnricher implements Enricher {
 			entry.input_cost_per_character !== undefined ||
 			entry.output_cost_per_character !== undefined;
 
-		if (!hasAnyPriceSignal) {
+		if (!hasBaseTokenPricing && !hasNonTokenPricing) {
 			return undefined;
 		}
 
 		const pricing: ModelPricing = {
-			inputPerMillion: (entry.input_cost_per_token ?? 0) * PER_MILLION,
-			outputPerMillion: (entry.output_cost_per_token ?? 0) * PER_MILLION,
+			inputPerMillion: (baseInput ?? 0) * PER_MILLION,
+			outputPerMillion: (baseOutput ?? 0) * PER_MILLION,
 		};
 		if (reasoningInputCost !== undefined) {
 			pricing.reasoningInputPerMillion = reasoningInputCost * PER_MILLION;
