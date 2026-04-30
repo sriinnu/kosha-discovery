@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { GoogleDiscoverer } from "../../src/discovery/google.js";
-import type { CredentialResult } from "../../src/types.js";
 import { resetLiteLLMCatalogCache } from "../../src/enrichment/litellm-catalog.js";
+import type { CredentialResult } from "../../src/types.js";
 import { mockFetch, mockFetchError, mockFetchTimeout, restoreFetch } from "./mock-server.js";
 
 const discoverer = new GoogleDiscoverer();
@@ -155,11 +155,7 @@ describe("GoogleDiscoverer", () => {
 			expect(card.id).not.toMatch(/^models\//);
 		}
 
-		expect(cards.map((c) => c.id)).toEqual([
-			"gemini-2.5-pro",
-			"gemini-2.0-flash",
-			"gemini-embedding-001",
-		]);
+		expect(cards.map((c) => c.id)).toEqual(["gemini-2.5-pro", "gemini-2.0-flash", "gemini-embedding-001"]);
 	});
 
 	/** Verify displayName is used for the card name field. */
@@ -293,12 +289,25 @@ describe("GoogleDiscoverer", () => {
 			],
 		};
 
-		// Manual mock to distinguish page 1 vs page 2 by pageToken query param
-		let callCount = 0;
+		// Manual mock to distinguish page 1 vs page 2 by pageToken query param.
+		// Only count fetches against generativelanguage.googleapis.com so the
+		// public-seed merge (models.dev + LiteLLM) doesn't inflate the count.
+		let apiCallCount = 0;
 		const originalFetch = globalThis.fetch;
-		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+		globalThis.fetch = (async (input: string | URL | Request, _init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-			callCount++;
+			const isApi = url.startsWith("https://generativelanguage.googleapis.com/");
+			if (isApi) apiCallCount++;
+			if (!isApi) {
+				return {
+					ok: true,
+					status: 200,
+					statusText: "OK",
+					headers: new Headers({ "content-type": "application/json" }),
+					json: async () => ({}),
+					text: async () => "{}",
+				} as Response;
+			}
 			const body = url.includes("pageToken") ? page2 : page1;
 			return {
 				ok: true,
@@ -313,8 +322,9 @@ describe("GoogleDiscoverer", () => {
 		const cards = await discoverer.discover(validCredential);
 		globalThis.fetch = originalFetch;
 
+		// Public-seed mock returned {} → getPublicSeed yields [] → no filler.
 		expect(cards).toHaveLength(2);
-		expect(callCount).toBe(2);
+		expect(apiCallCount).toBe(2);
 		expect(cards[0].id).toBe("gemini-2.5-pro");
 		expect(cards[1].id).toBe("gemini-2.0-flash");
 	});

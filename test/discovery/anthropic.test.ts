@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { AnthropicDiscoverer } from "../../src/discovery/anthropic.js";
-import type { CredentialResult } from "../../src/types.js";
 import { resetLiteLLMCatalogCache } from "../../src/enrichment/litellm-catalog.js";
+import type { CredentialResult } from "../../src/types.js";
 import { mockFetch, mockFetchError, mockFetchTimeout, restoreFetch } from "./mock-server.js";
 
 const discoverer = new AnthropicDiscoverer();
@@ -154,12 +154,27 @@ describe("AnthropicDiscoverer", () => {
 			last_id: "claude-3-5-haiku-20241022",
 		};
 
-		// Mock both pages — the mock matches by URL prefix
-		let callCount = 0;
+		// Mock both pages — the mock matches by URL prefix.
+		// Only count fetches against api.anthropic.com so the public-seed
+		// merge (which fetches models.dev + LiteLLM and is unrelated to
+		// pagination) doesn't inflate the count.
+		let apiCallCount = 0;
 		const originalFetch = globalThis.fetch;
-		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+		globalThis.fetch = (async (input: string | URL | Request, _init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-			callCount++;
+			const isApi = url.startsWith("https://api.anthropic.com/");
+			if (isApi) apiCallCount++;
+			// Public-seed URLs get an empty 200 — keeps the merge a no-op.
+			if (!isApi) {
+				return {
+					ok: true,
+					status: 200,
+					statusText: "OK",
+					headers: new Headers({ "content-type": "application/json" }),
+					json: async () => ({}),
+					text: async () => "{}",
+				} as Response;
+			}
 			const body = url.includes("after_id") ? page2 : page1;
 			return {
 				ok: true,
@@ -175,7 +190,7 @@ describe("AnthropicDiscoverer", () => {
 		globalThis.fetch = originalFetch;
 
 		expect(cards).toHaveLength(2);
-		expect(callCount).toBe(2);
+		expect(apiCallCount).toBe(2);
 	});
 
 	it("should throw on API error", async () => {
