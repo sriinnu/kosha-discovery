@@ -7,11 +7,12 @@
  */
 
 import { randomBytes } from "crypto";
-import { mkdir, rename, unlink, writeFile } from "fs/promises";
+import { open, mkdir, readdir, rename, stat, unlink, writeFile } from "fs/promises";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { StaleCachePolicy } from "./resilience.js";
 import { getProviderConfig, isLocalProvider, normalizeProviderId } from "./provider-catalog.js";
+import { DISCOVERY_SCHEMA_VERSION } from "./discovery-contract.js";
 import type { DiscoverySnapshotV1 } from "./discovery-contract.js";
 import { registryDiscoverySnapshot } from "./registry-discovery.js";
 import type { RegistryState, DiscoveryDependencies } from "./registry-state.js";
@@ -360,6 +361,9 @@ export async function saveRegistryToCache(state: RegistryState): Promise<void> {
  * the whole command.
  */
 export async function exportRegistryManifest(state: RegistryState): Promise<void> {
+	let manifestPath: string | null = null;
+	let lockReleased = true;
+	let lockPath: string | null = null;
 	try {
 		const fresh = state.lastSnapshotCache ?? registryDiscoverySnapshot(state);
 		state.lastSnapshotCache = fresh;
@@ -368,8 +372,22 @@ export async function exportRegistryManifest(state: RegistryState): Promise<void
 		// ~/.kosha/registry.json. Without this, running the kosha test suite
 		// silently overwrote the user's manifest with an empty one because
 		// every test instance triggered an export against the hardcoded path.
-		const manifestPath = resolveManifestPath(state);
+		manifestPath = resolveManifestPath(state);
 		await mkdir(dirname(manifestPath), { recursive: true });
+
+		// Sweep stale tmp files left over from prior runs that were SIGKILLed
+		// mid-write. Each crashed run leaks a `<manifest>.<rand>.tmp` file;
+		// without this sweep they accumulate forever (~1.6 MB each).
+		await sweepStaleTmpFiles(manifestPath);
+
+		// Cross-process mutex around the read-merge-write critical section.
+		// Without this, two concurrent `kosha update` runs both read the same
+		// previous manifest, both compute their own merge, and both rename to
+		// the final path — last write wins, but the loser's distinct merged
+		// additions vanish (lost update).
+		lockPath = `${manifestPath}.lock`;
+		lockReleased = false;
+		await acquireExportLock(lockPath);
 
 		// VDOM-style merge: if a previous manifest exists, preserve old
 		// providers/models that the fresh fetch dropped. A provider returning
@@ -394,9 +412,90 @@ export async function exportRegistryManifest(state: RegistryState): Promise<void
 			await unlink(tmpPath).catch(() => {});
 			throw err;
 		}
-	} catch {
-		// I keep manifest export non-fatal — the cache still works either way.
+	} catch (err) {
+		// Manifest export is best-effort — the cache still works either way.
+		// But silent failure was making permission/disk-full bugs invisible
+		// for days. Surface the reason once via stderr; nothing else is
+		// gated on a successful export.
+		const reason = err instanceof Error ? err.message : String(err);
+		console.warn(
+			`[kosha] manifest export failed (${manifestPath ?? "unknown path"}): ${reason}`,
+		);
+	} finally {
+		if (!lockReleased && lockPath) {
+			await unlink(lockPath).catch(() => {});
+		}
 	}
+}
+
+/**
+ * O_EXCL-based file lock. Tries to create the lock file with `wx` flag —
+ * fails if it already exists. Retries with bounded backoff (max ~3s).
+ * Stale locks (>30s old) are reclaimed: a kosha process that crashed mid-
+ * critical-section won't deadlock future runs.
+ */
+async function acquireExportLock(lockPath: string): Promise<void> {
+	const STALE_AFTER_MS = 30_000;
+	const MAX_WAIT_MS = 3_000;
+	const startedAt = Date.now();
+	for (let attempt = 0; ; attempt++) {
+		try {
+			const fd = await open(lockPath, "wx");
+			await fd.write(`${process.pid}\n`);
+			await fd.close();
+			return;
+		} catch (err) {
+			const code = (err as NodeJS.ErrnoException).code;
+			if (code !== "EEXIST") throw err;
+			// Lock exists — check if it's stale.
+			try {
+				const s = await stat(lockPath);
+				if (Date.now() - s.mtimeMs > STALE_AFTER_MS) {
+					await unlink(lockPath).catch(() => {});
+					continue;
+				}
+			} catch {
+				continue; // raced with the holder unlinking
+			}
+			if (Date.now() - startedAt > MAX_WAIT_MS) {
+				throw new Error(`kosha manifest export: lock contention (${lockPath})`);
+			}
+			// Backoff with jitter: 50, 100, 200, 400, capped at 800ms
+			const delay = Math.min(800, 50 * 2 ** attempt) + Math.floor(Math.random() * 50);
+			await new Promise((r) => setTimeout(r, delay));
+		}
+	}
+}
+
+/** Remove any `<manifest>.<...>.tmp` siblings older than 5 minutes. They are
+ *  orphans from prior runs that crashed between writeFile and rename. */
+async function sweepStaleTmpFiles(manifestPath: string): Promise<void> {
+	try {
+		const dir = dirname(manifestPath);
+		const base = manifestPath.slice(dir.length + 1);
+		const tmpRe = new RegExp(`^${escapeRegExp(base)}\\.[0-9a-f]+\\.tmp$`);
+		const fiveMinAgo = Date.now() - 5 * 60_000;
+		const entries = await readdir(dir);
+		await Promise.all(
+			entries
+				.filter((name) => tmpRe.test(name))
+				.map(async (name) => {
+					const p = join(dir, name);
+					try {
+						const s = await stat(p);
+						if (s.mtimeMs < fiveMinAgo) await unlink(p);
+					} catch {
+						// raced with another sweeper or unlinked already — fine
+					}
+				}),
+		);
+	} catch {
+		// Sweep is best-effort; do not block export on a directory listing failure.
+	}
+}
+
+function escapeRegExp(s: string): string {
+	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /** Resolve the on-disk path for the registry manifest. Tests + custom callers
@@ -435,6 +534,14 @@ async function mergeWithExistingManifest(
 		return fresh; // no previous manifest, or unreadable — fresh wins
 	}
 	if (!previous?.models) return fresh;
+
+	// Schema-version guard. If the previous manifest is from a different
+	// schema (kosha downgraded, future format on disk, hand-edited file),
+	// don't try to merge V1 + V?? into a Frankenstein — just rewrite with
+	// the fresh snapshot. The fresh fetch supersedes whatever's there.
+	if (previous.schemaVersion !== DISCOVERY_SCHEMA_VERSION) {
+		return fresh;
+	}
 
 	// Index previous entries by key so we can both detect collisions AND
 	// look back at the old data for pricing-degraded merge below.
