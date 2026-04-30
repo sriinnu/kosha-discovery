@@ -239,4 +239,102 @@ describe("AnthropicDiscoverer", () => {
 		expect(card.discoveredAt).toBeGreaterThan(0);
 		expect(card.source).toBe("api");
 	});
+
+	// ── Smart-merge with public seed ─────────────────────────────────────
+	// These tests cover the BaseDiscoverer.mergeWithPublicSeed helper, which
+	// guards the same-day-stability invariant: kosha must return the same
+	// pricing for the same SKU regardless of whether `/v1/models` was
+	// reachable that minute. The native API endpoint returns no pricing,
+	// so we lift it from the seed when the API stub has none.
+
+	it("smart-merge: lifts seed pricing onto API stub when API has no pricing", async () => {
+		// API returns claude-opus-4-7 with no pricing. Seed (LiteLLM) has $5/$25.
+		// Smart-merge: API entry inherits seed pricing.
+		mockFetch({
+			"https://api.anthropic.com/v1/models": {
+				status: 200,
+				body: {
+					data: [
+						{
+							id: "claude-opus-4-7",
+							display_name: "Claude Opus 4.7",
+							created_at: "2026-04-01T00:00:00Z",
+							type: "model",
+						},
+					],
+					has_more: false,
+					first_id: "claude-opus-4-7",
+					last_id: "claude-opus-4-7",
+				},
+			},
+			"https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json": {
+				status: 200,
+				body: {
+					"claude-opus-4-7": {
+						litellm_provider: "anthropic",
+						mode: "chat",
+						max_input_tokens: 200_000,
+						max_output_tokens: 64_000,
+						input_cost_per_token: 0.000005,
+						output_cost_per_token: 0.000025,
+					},
+				},
+			},
+		});
+
+		const cards = await discoverer.discover(validCredential);
+		const opus = cards.find((c) => c.id === "claude-opus-4-7");
+		expect(opus).toBeDefined();
+		expect(opus!.source).toBe("api"); // identity still from API
+		expect(opus!.pricing?.inputPerMillion).toBeCloseTo(5, 5);
+		expect(opus!.pricing?.outputPerMillion).toBeCloseTo(25, 5);
+	});
+
+	it("smart-merge: keeps seed-only models as filler", async () => {
+		// API only returns sonnet. Seed has both sonnet and a preview tier.
+		// Preview tier survives as filler so consumers can still resolve it.
+		mockFetch({
+			"https://api.anthropic.com/v1/models": {
+				status: 200,
+				body: {
+					data: [
+						{
+							id: "claude-sonnet-4-6",
+							display_name: "Claude Sonnet 4.6",
+							created_at: "2026-01-01T00:00:00Z",
+							type: "model",
+						},
+					],
+					has_more: false,
+					first_id: "claude-sonnet-4-6",
+					last_id: "claude-sonnet-4-6",
+				},
+			},
+			"https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json": {
+				status: 200,
+				body: {
+					"claude-sonnet-4-6": {
+						litellm_provider: "anthropic",
+						mode: "chat",
+						max_input_tokens: 200_000,
+						max_output_tokens: 64_000,
+						input_cost_per_token: 0.000003,
+						output_cost_per_token: 0.000015,
+					},
+					"claude-opus-4-7-preview": {
+						litellm_provider: "anthropic",
+						mode: "chat",
+						max_input_tokens: 200_000,
+						max_output_tokens: 64_000,
+						input_cost_per_token: 0.000005,
+						output_cost_per_token: 0.000025,
+					},
+				},
+			},
+		});
+
+		const cards = await discoverer.discover(validCredential);
+		expect(cards.some((c) => c.id === "claude-sonnet-4-6")).toBe(true);
+		expect(cards.some((c) => c.id === "claude-opus-4-7-preview")).toBe(true);
+	});
 });
