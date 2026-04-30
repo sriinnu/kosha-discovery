@@ -219,27 +219,19 @@ function inferCapabilities(entry: LiteLLMModelEntry, mode: ModelMode): string[] 
 
 /**
  * Convert LiteLLM per-token costs to per-million pricing.
- * Returns undefined when the entry has no pricing signal at all.
+ * Returns undefined unless both base input and output pricing are present.
  */
 function extractPricing(entry: LiteLLMModelEntry): ModelPricing | undefined {
+	const baseInput = isFinite(entry.input_cost_per_token) ? entry.input_cost_per_token : undefined;
+	const baseOutput = isFinite(entry.output_cost_per_token) ? entry.output_cost_per_token : undefined;
 	const reasoningInput = firstFinite(entry.input_cost_per_reasoning_token, entry.reasoning_input_cost_per_token);
 	const reasoningOutput = firstFinite(entry.output_cost_per_reasoning_token, entry.reasoning_output_cost_per_token);
 
-	const hasSignal =
-		isFinite(entry.input_cost_per_token) ||
-		isFinite(entry.output_cost_per_token) ||
-		isFinite(entry.cache_read_input_token_cost) ||
-		isFinite(entry.cache_creation_input_token_cost) ||
-		isFinite(entry.input_cost_per_token_batches) ||
-		isFinite(entry.output_cost_per_token_batches) ||
-		reasoningInput !== undefined ||
-		reasoningOutput !== undefined;
-
-	if (!hasSignal) return undefined;
+	if (baseInput === undefined || baseOutput === undefined) return undefined;
 
 	const pricing: ModelPricing = {
-		inputPerMillion: (entry.input_cost_per_token ?? 0) * PER_MILLION,
-		outputPerMillion: (entry.output_cost_per_token ?? 0) * PER_MILLION,
+		inputPerMillion: baseInput * PER_MILLION,
+		outputPerMillion: baseOutput * PER_MILLION,
 	};
 	if (reasoningInput !== undefined) pricing.reasoningInputPerMillion = reasoningInput * PER_MILLION;
 	if (reasoningOutput !== undefined) pricing.reasoningOutputPerMillion = reasoningOutput * PER_MILLION;

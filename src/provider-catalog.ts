@@ -33,6 +33,13 @@ export interface ProviderDescriptor {
 	credentialRequired: boolean;
 	/** Environment variables that satisfy the provider credential requirement. */
 	credentialEnvVars: string[];
+	/**
+	 * Minimum prompt-prefix size (in tokens) required for the provider's prompt
+	 * cache to engage. Only set when the provider publishes a documented floor.
+	 * Undefined means either "no cache support" or "no documented floor"; the
+	 * consumer should fall back to its own conservative default in that case.
+	 */
+	minCachePrefixTokens?: number;
 }
 
 /**
@@ -53,6 +60,8 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "https://api.anthropic.com",
 		credentialRequired: true,
 		credentialEnvVars: ["ANTHROPIC_API_KEY"],
+		// Anthropic prompt cache requires ≥1024 tokens for most Claude models.
+		minCachePrefixTokens: 1024,
 	},
 	{
 		providerId: "openai",
@@ -65,6 +74,8 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "https://api.openai.com",
 		credentialRequired: true,
 		credentialEnvVars: ["OPENAI_API_KEY"],
+		// OpenAI prompt cache engages for prefixes ≥1024 tokens.
+		minCachePrefixTokens: 1024,
 	},
 	{
 		providerId: "google",

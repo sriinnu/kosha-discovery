@@ -153,6 +153,7 @@ function inferMode(entry: ModelsDevModel): ModelMode {
 	if (outputs.includes("embedding") || (Array.isArray(outputs) && outputs.length === 0 && inputs.includes("text"))) {
 		// Heuristic: if there is no text *output* declared but text input,
 		// treat as embedding (rare in models.dev). Default below covers chat.
+		return "embedding";
 	}
 	if (entry.id.toLowerCase().includes("embed")) return "embedding";
 	return "chat";

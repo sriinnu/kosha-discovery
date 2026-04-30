@@ -44,6 +44,8 @@ export interface LiteLLMModelEntry {
 	max_output_tokens?: number;
 	input_cost_per_token?: number;
 	output_cost_per_token?: number;
+	// LiteLLM includes reasoning/tokenized-thinking pricing for some models.
+	// Keep multiple key variants for forward/backward compatibility.
 	input_cost_per_reasoning_token?: number;
 	output_cost_per_reasoning_token?: number;
 	reasoning_input_cost_per_token?: number;
@@ -52,13 +54,37 @@ export interface LiteLLMModelEntry {
 	cache_creation_input_token_cost?: number;
 	input_cost_per_token_batches?: number;
 	output_cost_per_token_batches?: number;
+	// Multimodal pricing — image, audio, video, character.
+	input_cost_per_image?: number;
+	output_cost_per_image?: number;
+	input_cost_per_audio_token?: number;
+	output_cost_per_audio_token?: number;
+	input_cost_per_audio_per_second?: number;
+	output_cost_per_audio_per_second?: number;
+	input_cost_per_video_per_second?: number;
+	input_cost_per_video_token?: number;
+	input_cost_per_character?: number;
+	output_cost_per_character?: number;
+	// Gemini-style tiered long-context pricing.
+	input_cost_per_token_above_128k_tokens?: number;
+	output_cost_per_token_above_128k_tokens?: number;
+	input_cost_per_token_above_200k_tokens?: number;
+	output_cost_per_token_above_200k_tokens?: number;
+	// Deprecation / lifecycle metadata (ISO date string).
+	deprecation_date?: string;
 	litellm_provider?: string;
 	mode?: string;
 	supports_function_calling?: boolean;
-	supports_vision?: boolean;
-	supports_prompt_caching?: boolean;
-	supports_response_schema?: boolean;
+	supports_parallel_function_calling?: boolean;
 	supports_tool_choice?: boolean;
+	supports_response_schema?: boolean;
+	supports_system_messages?: boolean;
+	supports_vision?: boolean;
+	supports_audio_input?: boolean;
+	supports_audio_output?: boolean;
+	supports_video_input?: boolean;
+	supports_prompt_caching?: boolean;
+	supports_reasoning?: boolean;
 	output_vector_size?: number;
 }
 

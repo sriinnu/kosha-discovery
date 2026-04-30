@@ -151,9 +151,10 @@ export class AnthropicDiscoverer extends BaseDiscoverer {
 	}
 
 	/**
-	 * No-key fallback: source the latest catalogue from the public LiteLLM
-	 * catalog. Falls back to the curated static list only if the catalog
-	 * fetch fails (offline emergency).
+	 * No-key fallback: source the latest provider catalogue from the public
+	 * seed pipeline (`getPublicSeed()`), which can merge models.dev,
+	 * LiteLLM, and promotional overrides. Falls back to the curated static
+	 * list only if public seed retrieval fails or returns no models.
 	 */
 	private async publicCatalogFallback(): Promise<ModelCard[]> {
 		try {
