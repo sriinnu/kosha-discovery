@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo-icon.svg" alt="Kosha — AI Model Discovery" width="120" />
+  <img src="logo.png" alt="Kosha — AI Model Discovery" width="140" />
 </p>
 
 <h1 align="center">kosha-discovery — कोश</h1>
@@ -13,7 +13,7 @@
   <a href="https://www.npmjs.com/package/@sriinnu/kosha-discovery"><img src="https://img.shields.io/node/v/%40sriinnu%2Fkosha-discovery?color=5B21B6" alt="node version" /></a>
 </p>
 
-Kosha (कोश — *treasury*) discovers AI models across providers, resolves credentials, enriches with pricing, and exposes the catalog through a library, CLI, and HTTP API. One source of truth for model identity, pricing, and routing — so your app doesn't break when providers ship new SKUs or change rates.
+Kosha (कोश — *treasury*) discovers AI models across providers, resolves credentials, enriches with pricing, and exposes the catalog through a library, CLI, HTTP API, and a built-in OpenAI-compatible proxy. One source of truth for model identity, pricing, and routing — so your app doesn't break when providers ship new SKUs or change rates.
 
 ## Install
 
@@ -63,6 +63,53 @@ GET  /api/providers                     GET  /api/roles
 POST /api/refresh                       GET  /health
 ```
 
+### Proxy
+
+Kosha runs as an OpenAI-compatible proxy. Point your SDK at `http://localhost:3000/proxy/v1` and it resolves the model, picks the right provider, injects credentials, and forwards — streaming included.
+
+```bash
+kosha serve   # start on :3000
+```
+
+```typescript
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "http://localhost:3000/proxy/v1",
+  apiKey:  "not-used",   // kosha resolves credentials from env
+});
+
+// Use any canonical model ID or alias
+const res = await client.chat.completions.create({
+  model: "sonnet",
+  messages: [{ role: "user", content: "hello" }],
+});
+
+// Let kosha pick the cheapest model you have a key for
+const cheap = await client.chat.completions.create({
+  model: "kosha:cheapest",
+  messages: [{ role: "user", content: "hello" }],
+});
+
+// Cheapest model with tool_use and at least 128k context
+const routed = await client.chat.completions.create({
+  model: "kosha:cheapest[tool_use,128k]",
+  messages: [{ role: "user", content: "hello" }],
+});
+```
+
+**`kosha:cheapest` filter syntax** (comma-separated, combinable):
+
+| Filter | Example | Meaning |
+|--------|---------|---------|
+| capability | `tool_use`, `vision` | model must have this tag |
+| `<N>k` | `128k`, `200k` | minimum context window |
+| `provider:<id>` | `provider:groq` | pin to a specific provider |
+
+The response always includes `x-kosha-model`, `x-kosha-provider`, and `x-kosha-requested` headers so the caller knows exactly what ran.
+
+Supported transports: `openai`, `openai-compatible-http`, `ollama`. Anthropic, Google, Bedrock, and Vertex require wire-format translation — not yet proxied.
+
 ## Supported providers
 
 | Provider | Discovery | Credential sources |
@@ -85,7 +132,7 @@ Full credential setup: [docs/credentials.md](docs/credentials.md).
   <img src="architecture.svg" alt="Kosha Architecture" width="720" />
 </p>
 
-Discovery layer talks to provider APIs and local catalogs. Enrichment layer fills pricing and context windows from the LiteLLM catalog and models.dev. Resilience layer (circuit breaker + stale-cache fallback + health tracker) keeps a flaky provider a degraded read, never a crash. Manifest layer writes a v1-stable JSON snapshot so downstream consumers — `tokmeter`, `chitragupta`, `ayuh` — read prices from one source instead of inventing their own.
+Discovery layer talks to provider APIs and local catalogs. Enrichment layer fills pricing and context windows from the LiteLLM catalog and models.dev. Resilience layer (circuit breaker + stale-cache fallback + health tracker) keeps a flaky provider a degraded read, never a crash. Manifest layer writes a v1-stable JSON snapshot so downstream consumers — `tokmeter`, `chitragupta`, `ayuh` — read prices from one source instead of inventing their own. Proxy layer exposes an OpenAI-compatible endpoint that resolves `kosha:cheapest[…]` hints at request time, injects credentials, and forwards to the winning provider.
 
 ## Docs
 

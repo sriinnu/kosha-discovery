@@ -357,7 +357,7 @@ export function registryClassifyError(errorMessage: string): ProviderObservation
 	if (lower.includes("timed out") || lower.includes("timeout") || lower.includes("abort")) {
 		return "timeout";
 	}
-	if (lower.includes("network") || lower.includes("econn") || lower.includes("fetch failed") || lower.includes("5")) {
+	if (lower.includes("network") || lower.includes("econn") || lower.includes("fetch failed") || /\b5\d{2}\b/.test(lower)) {
 		return "transport";
 	}
 	return "unknown";

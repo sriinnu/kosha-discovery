@@ -1,6 +1,6 @@
 {
 	"name": "@sriinnu/kosha-discovery",
-	"version": "1.0.0",
+	"version": "1.1.0",
 	"description": "AI Model & Provider Discovery Registry -- kosha (कोश) treasury of models",
 	"type": "module",
 	"packageManager": "pnpm@10.33.0",
@@ -37,7 +37,8 @@
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
 	"bin": {
-		"kosha": "dist/cli.js"
+		"kosha": "dist/cli.js",
+		"kosha-mcp": "dist/mcp-server.js"
 	},
 	"exports": {
 		".": {
@@ -51,6 +52,10 @@
 		"./cli": {
 			"types": "./dist/cli.d.ts",
 			"import": "./dist/cli.js"
+		},
+		"./mcp-server": {
+			"types": "./dist/mcp-server.d.ts",
+			"import": "./dist/mcp-server.js"
 		}
 	},
 	"scripts": {
@@ -68,6 +73,7 @@
 	},
 	"files": [
 		"dist",
+		"logo.png",
 		"logo.svg",
 		"README.md",
 		"LICENSE"

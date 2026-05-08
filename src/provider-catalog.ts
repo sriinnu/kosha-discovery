@@ -33,6 +33,8 @@ export interface ProviderDescriptor {
 	credentialRequired: boolean;
 	/** Environment variables that satisfy the provider credential requirement. */
 	credentialEnvVars: string[];
+	/** The single env var that `fallbackRegistryCredential` reads for this provider. */
+	primaryCredentialEnvVar?: string;
 	/**
 	 * Minimum prompt-prefix size (in tokens) required for the provider's prompt
 	 * cache to engage. Only set when the provider publishes a documented floor.
@@ -60,6 +62,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "https://api.anthropic.com",
 		credentialRequired: true,
 		credentialEnvVars: ["ANTHROPIC_API_KEY"],
+		primaryCredentialEnvVar: "ANTHROPIC_API_KEY",
 		// Anthropic prompt cache requires ≥1024 tokens for most Claude models.
 		minCachePrefixTokens: 1024,
 	},
@@ -74,6 +77,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "https://api.openai.com",
 		credentialRequired: true,
 		credentialEnvVars: ["OPENAI_API_KEY"],
+		primaryCredentialEnvVar: "OPENAI_API_KEY",
 		// OpenAI prompt cache engages for prefixes ≥1024 tokens.
 		minCachePrefixTokens: 1024,
 	},
@@ -88,6 +92,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "https://generativelanguage.googleapis.com",
 		credentialRequired: true,
 		credentialEnvVars: ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+		primaryCredentialEnvVar: "GOOGLE_API_KEY",
 	},
 	{
 		providerId: "openrouter",
@@ -100,6 +105,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "https://openrouter.ai/api/v1",
 		credentialRequired: false,
 		credentialEnvVars: ["OPENROUTER_API_KEY"],
+		primaryCredentialEnvVar: "OPENROUTER_API_KEY",
 	},
 	{
 		providerId: "ollama",
@@ -160,6 +166,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "https://integrate.api.nvidia.com/v1",
 		credentialRequired: true,
 		credentialEnvVars: ["NVIDIA_API_KEY"],
+		primaryCredentialEnvVar: "NVIDIA_API_KEY",
 	},
 	{
 		providerId: "together",
@@ -172,6 +179,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "https://api.together.xyz/v1",
 		credentialRequired: true,
 		credentialEnvVars: ["TOGETHER_API_KEY"],
+		primaryCredentialEnvVar: "TOGETHER_API_KEY",
 	},
 	{
 		providerId: "fireworks",
@@ -184,6 +192,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "https://api.fireworks.ai/inference/v1",
 		credentialRequired: true,
 		credentialEnvVars: ["FIREWORKS_API_KEY"],
+		primaryCredentialEnvVar: "FIREWORKS_API_KEY",
 	},
 	{
 		providerId: "groq",
@@ -196,6 +205,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "https://api.groq.com/openai/v1",
 		credentialRequired: true,
 		credentialEnvVars: ["GROQ_API_KEY"],
+		primaryCredentialEnvVar: "GROQ_API_KEY",
 	},
 	{
 		providerId: "mistral",
@@ -208,6 +218,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "https://api.mistral.ai/v1",
 		credentialRequired: true,
 		credentialEnvVars: ["MISTRAL_API_KEY"],
+		primaryCredentialEnvVar: "MISTRAL_API_KEY",
 	},
 	{
 		providerId: "deepinfra",
@@ -220,6 +231,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "https://api.deepinfra.com/v1/openai",
 		credentialRequired: true,
 		credentialEnvVars: ["DEEPINFRA_API_KEY"],
+		primaryCredentialEnvVar: "DEEPINFRA_API_KEY",
 	},
 	{
 		providerId: "cohere",
@@ -232,6 +244,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "https://api.cohere.com",
 		credentialRequired: true,
 		credentialEnvVars: ["CO_API_KEY"],
+		primaryCredentialEnvVar: "CO_API_KEY",
 	},
 	{
 		providerId: "cerebras",
@@ -244,6 +257,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "https://api.cerebras.ai/v1",
 		credentialRequired: true,
 		credentialEnvVars: ["CEREBRAS_API_KEY"],
+		primaryCredentialEnvVar: "CEREBRAS_API_KEY",
 	},
 	{
 		providerId: "perplexity",
@@ -256,6 +270,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "https://api.perplexity.ai",
 		credentialRequired: true,
 		credentialEnvVars: ["PERPLEXITY_API_KEY"],
+		primaryCredentialEnvVar: "PERPLEXITY_API_KEY",
 	},
 	{
 		providerId: "deepseek",
@@ -268,6 +283,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "https://api.deepseek.com",
 		credentialRequired: true,
 		credentialEnvVars: ["DEEPSEEK_API_KEY"],
+		primaryCredentialEnvVar: "DEEPSEEK_API_KEY",
 	},
 	{
 		providerId: "moonshot",
@@ -280,6 +296,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "https://api.moonshot.cn",
 		credentialRequired: true,
 		credentialEnvVars: ["MOONSHOT_API_KEY", "KIMI_API_KEY"],
+		primaryCredentialEnvVar: "MOONSHOT_API_KEY",
 	},
 	{
 		providerId: "glm",
@@ -292,6 +309,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "https://open.bigmodel.cn/api/paas/v4",
 		credentialRequired: true,
 		credentialEnvVars: ["GLM_API_KEY", "ZHIPUAI_API_KEY"],
+		primaryCredentialEnvVar: "GLM_API_KEY",
 	},
 	{
 		providerId: "zai",
@@ -304,6 +322,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "https://api.z.ai/api/paas/v4",
 		credentialRequired: true,
 		credentialEnvVars: ["ZAI_API_KEY"],
+		primaryCredentialEnvVar: "ZAI_API_KEY",
 	},
 	{
 		providerId: "minimax",
@@ -316,6 +335,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "https://api.minimax.io",
 		credentialRequired: true,
 		credentialEnvVars: ["MINIMAX_API_KEY"],
+		primaryCredentialEnvVar: "MINIMAX_API_KEY",
 	},
 ] as const;
 

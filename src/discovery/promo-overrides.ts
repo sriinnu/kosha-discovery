@@ -56,9 +56,9 @@ export const PROMO_OVERRIDES: readonly PromoOverride[] = [
 			outputPerMillion: 0.87,
 			cacheReadPerMillion: 0.003625,
 		},
-		endsAt: new Date("2026-05-05T15:59:00Z"),
+		endsAt: new Date("2026-05-31T15:59:00Z"),
 		reason:
-			"DeepSeek limited-time 75% off promo on deepseek-v4-pro — https://api-docs.deepseek.com/quick_start/pricing/",
+			"DeepSeek 75% off promo on deepseek-v4-pro, extended to 2026-05-31 — https://api-docs.deepseek.com/quick_start/pricing/",
 	},
 ];
 
@@ -82,7 +82,7 @@ export function applyPromoOverrides(cards: ModelCard[], now: Date = new Date()):
 		if (!match) continue;
 		cards[i] = {
 			...card,
-			pricing: { ...match.pricing },
+			pricing: { ...card.pricing, ...match.pricing },
 			// Preserve a record of why this row diverges from the public catalog
 			// rate so consumers can trace the override.
 			rawCapabilities: dedupe([...(card.rawCapabilities ?? card.capabilities), "promo_override"]),
