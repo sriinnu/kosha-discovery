@@ -37,7 +37,8 @@
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
 	"bin": {
-		"kosha": "dist/cli.js"
+		"kosha": "dist/cli.js",
+		"kosha-mcp": "dist/mcp-server.js"
 	},
 	"exports": {
 		".": {
@@ -51,6 +52,10 @@
 		"./cli": {
 			"types": "./dist/cli.d.ts",
 			"import": "./dist/cli.js"
+		},
+		"./mcp-server": {
+			"types": "./dist/mcp-server.d.ts",
+			"import": "./dist/mcp-server.js"
 		}
 	},
 	"scripts": {

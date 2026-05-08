@@ -17,6 +17,8 @@
  *   GET  /api/resolve/:alias             — Resolve an alias to its canonical model ID
  *   GET  /api/discovery-errors            — Errors from last discovery pass
  *   GET  /health                         — Health check
+ *   GET  /proxy/v1/models                — OpenAI-compatible model list (forwardable models)
+ *   POST /proxy/v1/chat/completions      — OpenAI-compatible proxy with model routing
  * @module
  */
 
@@ -24,6 +26,7 @@ import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import type { CheapestModelOptions, ModelMode, RoleQueryOptions } from "./types.js";
 import { registerDiscoveryRoutes } from "./discovery-routes.js";
+import { registerProxyRoutes } from "./proxy.js";
 import { ModelRegistry } from "./registry.js";
 import { extractModelVersion, normalizeModelId } from "./normalize.js";
 
@@ -69,6 +72,7 @@ function parsePriceMetric(value: string | undefined): CheapestModelOptions["pric
 export function createServer(registry: ModelRegistry): Hono {
 	const app = new Hono();
 	registerDiscoveryRoutes(app, registry);
+	registerProxyRoutes(app, registry);
 
 	// ── Model listing & lookup routes ────────────────────────────────
 	//
@@ -349,6 +353,8 @@ export async function startServer(port = 3000): Promise<void> {
 	console.log(`  GET  http://localhost:${port}/api/discovery/delta`);
 	console.log(`  GET  http://localhost:${port}/api/discovery/watch`);
 	console.log(`  GET  http://localhost:${port}/health`);
+	console.log(`  GET  http://localhost:${port}/proxy/v1/models`);
+	console.log(`  POST http://localhost:${port}/proxy/v1/chat/completions`);
 
 	serve({ fetch: app.fetch, port });
 }
