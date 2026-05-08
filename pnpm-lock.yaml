@@ -14,10 +14,10 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: ^1.19.10
-        version: 1.19.13(hono@4.12.14)
+        version: 1.19.13(hono@4.12.16)
       hono:
         specifier: ^4.12.14
-        version: 4.12.14
+        version: 4.12.16
     devDependencies:
       '@biomejs/biome':
         specifier: ^2.3.14
@@ -479,8 +479,8 @@ packages:
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
 
-  hono@4.12.14:
-    resolution: {integrity: sha512-am5zfg3yu6sqn5yjKBNqhnTX7Cv+m00ox+7jbaKkrLMRJ4rAdldd1xPd/JzbBWspqaQv6RSTrgFN95EsfhC+7w==}
+  hono@4.12.16:
+    resolution: {integrity: sha512-jN0ZewiNAWSe5khM3EyCmBb250+b40wWbwNILNfEvq84VREWwOIkuUsFONk/3i3nqkz7Oe1PcpM2mwQEK2L9Kg==}
     engines: {node: '>=16.9.0'}
 
   lightningcss-android-arm64@1.32.0:
@@ -821,9 +821,9 @@ snapshots:
   '@esbuild/win32-x64@0.27.3':
     optional: true
 
-  '@hono/node-server@1.19.13(hono@4.12.14)':
+  '@hono/node-server@1.19.13(hono@4.12.16)':
     dependencies:
-      hono: 4.12.14
+      hono: 4.12.16
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
 
@@ -1007,7 +1007,7 @@ snapshots:
   fsevents@2.3.3:
     optional: true
 
-  hono@4.12.14: {}
+  hono@4.12.16: {}
 
   lightningcss-android-arm64@1.32.0:
     optional: true
