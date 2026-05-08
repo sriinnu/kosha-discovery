@@ -11,6 +11,61 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ---
 
+## [1.1.0] — 2026-05-08
+
+### Added
+
+- **OpenAI-compatible proxy** (`POST /proxy/v1/chat/completions`, `GET /proxy/v1/models`).
+  Supports direct model IDs, aliases, and the `kosha:cheapest[capability,Nk,provider:X]`
+  hint syntax. Uses the full 5-tier `CredentialResolver` (same sources as discovery) and
+  streams responses back verbatim. Adds `x-kosha-model`, `x-kosha-provider`, and
+  `x-kosha-requested` response headers.
+- **MCP stdio server** (`kosha-mcp` bin). Implements the MCP 2024-11-05 protocol over
+  stdin/stdout with no SDK dependency. Exposes 6 tools: `kosha_query_models`,
+  `kosha_cheapest_model`, `kosha_model_detail`, `kosha_model_routes`,
+  `kosha_resolve_alias`, `kosha_provider_health`. Registry loads in the background on
+  startup so the first tool call is fast.
+- **Pricing-diff anomaly log** — mismatches between the live API price and the local
+  7-day snapshot ring now emit a `[kosha] pricing anomaly` warning (tagged `[promo]`
+  for known promotional windows so operators can distinguish noise from real drift).
+- **7-day snapshot ring** — the local registry manifest now keeps a rolling 7-entry
+  history of pricing snapshots, enabling rollback to any of the last 7 states.
+- **`DISCOVERER_REGISTRY`** — single source of truth for all 22 provider discoverers,
+  replacing the previous duplicated lists. New `getDiscoverer(providerId)` export for
+  targeted single-provider discovery.
+
+### Fixed
+
+- `primaryCredentialEnvVar` added to the `ProviderDescriptor` interface — it was used
+  in catalog objects and `registry-runtime.ts` but missing from the type, breaking the
+  TypeScript build.
+- Proxy now falls back to `registry.modelRoutes()` when the primary provider card is
+  not forwardable (e.g. requesting `claude-sonnet-4-6` with only an OpenRouter key now
+  routes through OpenRouter instead of returning 422).
+- `registryClassifyError`: `lower.includes("5")` replaced with `/\b5\d{2}\b/.test()`
+  — the old check false-positived on model IDs and strings containing the digit 5.
+- `applyPromoOverrides` pricing spread fixed: `{ ...match.pricing }` →
+  `{ ...card.pricing, ...match.pricing }` so base fields are not silently dropped.
+- `hasUsablePricing`: `> 0` → `!== undefined` — free-tier models (price = 0) were
+  incorrectly excluded from cheapest-model results.
+
+### Changed
+
+- New K-lettermark logo (circuit-board K + keyhole, purple/gold).
+- DeepSeek promo window extended to 2026-05-31.
+- `fallbackRegistryCredential` now reads `primaryCredentialEnvVar` from the provider
+  catalog instead of a hardcoded duplicate `FALLBACK_ENV_MAP`.
+
+---
+
+## [1.0.0] — 2026-04-28
+
+### Changed
+
+- Pricing-stability hardening promoted to stable. No API surface changes from 0.8.0.
+
+---
+
 ## [0.8.0] — 2026-04-21
 
 ### Added
