@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo-icon.svg" alt="Kosha — AI Model Discovery" width="120" />
+  <img src="logo.png" alt="Kosha — AI Model Discovery" width="140" />
 </p>
 
 <h1 align="center">kosha-discovery — कोश</h1>
