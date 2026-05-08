@@ -12,11 +12,13 @@ import { homedir } from "os";
 import { dirname, join } from "path";
 import type { DiscoverySnapshotV1 } from "./discovery-contract.js";
 import { DISCOVERY_SCHEMA_VERSION } from "./discovery-contract.js";
-import { getProviderConfig, isLocalProvider, normalizeProviderId } from "./provider-catalog.js";
+import { getProviderConfig, getProviderDescriptor, isLocalProvider, normalizeProviderId } from "./provider-catalog.js";
 import { registryDiscoverySnapshot } from "./registry-discovery.js";
 import type { DiscoveryDependencies, RegistryState } from "./registry-state.js";
 import { StaleCachePolicy } from "./resilience.js";
 import type { CredentialResult, DiscoveryOptions, Enricher, ProviderDiscoverer, ProviderInfo } from "./types.js";
+import { applyPromoOverrides } from "./discovery/promo-overrides.js";
+import { assertCleanPayload } from "./security.js";
 
 const DEFAULT_CACHE_TTL_MS = 86_400_000;
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -29,27 +31,6 @@ const CACHE_KEY_PREFIX = "provider_";
  * cache envelopes or internal layout changes.
  */
 export const REGISTRY_MANIFEST_PATH = join(homedir(), ".kosha", "registry.json");
-
-const FALLBACK_ENV_MAP: Record<string, string> = {
-	anthropic: "ANTHROPIC_API_KEY",
-	openai: "OPENAI_API_KEY",
-	google: "GOOGLE_API_KEY",
-	openrouter: "OPENROUTER_API_KEY",
-	nvidia: "NVIDIA_API_KEY",
-	together: "TOGETHER_API_KEY",
-	fireworks: "FIREWORKS_API_KEY",
-	groq: "GROQ_API_KEY",
-	mistral: "MISTRAL_API_KEY",
-	deepinfra: "DEEPINFRA_API_KEY",
-	cohere: "CO_API_KEY",
-	cerebras: "CEREBRAS_API_KEY",
-	perplexity: "PERPLEXITY_API_KEY",
-	deepseek: "DEEPSEEK_API_KEY",
-	moonshot: "MOONSHOT_API_KEY",
-	glm: "GLM_API_KEY",
-	zai: "ZAI_API_KEY",
-	minimax: "MINIMAX_API_KEY",
-};
 
 /**
  * Run provider discovery, enrichment, caching, and delta emission.
@@ -104,6 +85,15 @@ export async function registryDiscover(
 
 	if (options?.enrichWithPricing ?? true) {
 		await dependencies.enrichModels();
+	}
+
+	// Apply promo overrides as a final pricing pass so deals always win
+	// regardless of discovery path (API, seed, or enrichment).
+	for (const [providerId, providerInfo] of state.providerMap) {
+		state.providerMap.set(providerId, {
+			...providerInfo,
+			models: applyPromoOverrides(providerInfo.models),
+		});
 	}
 
 	dependencies.populateModelAliases();
@@ -195,7 +185,7 @@ export function fallbackRegistryCredential(providerId: string, explicitKey?: str
 		return { apiKey: explicitKey, source: "config" };
 	}
 
-	const envVar = FALLBACK_ENV_MAP[normalizedProviderId];
+	const envVar = getProviderDescriptor(normalizedProviderId)?.primaryCredentialEnvVar;
 	const value = envVar ? process.env[envVar] : undefined;
 	return value ? { apiKey: value, source: "env" } : { source: "none" };
 }
@@ -255,6 +245,12 @@ export async function registryEnrichOnly(state: RegistryState): Promise<EnrichOn
 	const before = countPricingFields(state);
 
 	await enrichRegistryModels(state);
+	for (const [providerId, providerInfo] of state.providerMap) {
+		state.providerMap.set(providerId, {
+			...providerInfo,
+			models: applyPromoOverrides(providerInfo.models),
+		});
+	}
 	populateRegistryModelAliases(state);
 	await saveRegistryToCache(state);
 	await exportRegistryManifest(state);
@@ -404,8 +400,9 @@ export async function exportRegistryManifest(state: RegistryState): Promise<void
 			if (anomalies.length > 0) {
 				await appendAnomalies(dirname(manifestPath), anomalies);
 				for (const a of anomalies) {
+					const tag = a.promo ? " [promo]" : "";
 					console.warn(
-						`[kosha] pricing anomaly: ${a.key} ${a.field} ` +
+						`[kosha] pricing anomaly${tag}: ${a.key} ${a.field} ` +
 							`${a.previous} → ${a.current} (${(a.deltaPct * 100).toFixed(0)}%)`,
 					);
 				}
@@ -615,6 +612,7 @@ async function readPreviousManifest(manifestPath: string): Promise<DiscoverySnap
 		// Schema-version guard. A different version on disk means we can't
 		// trust the field shapes — caller falls through to fresh-only.
 		if (parsed.schemaVersion !== DISCOVERY_SCHEMA_VERSION) return null;
+		assertCleanPayload(parsed, "registry manifest");
 		return parsed;
 	} catch {
 		return null; // missing or unreadable
@@ -678,9 +676,9 @@ function mergeManifests(
 	};
 }
 
-/** True if the entry carries non-zero input + output rates on EITHER the
- *  origin (direct provider) side OR the proxy (`pricing`) side. Anything
- *  else is "pricing-degraded" for our purposes.
+/** True if the entry carries defined input + output rates on EITHER the
+ *  origin (direct provider) side OR the proxy (`pricing`) side — even zero
+ *  (free-tier). Anything else is "pricing-degraded" for our purposes.
  *
  *  Both sides are checked independently. The earlier `originPricing ?? pricing`
  *  short-circuited on `originPricing` being defined, so a row with
@@ -693,7 +691,7 @@ function hasUsablePricing(entry: { pricing?: unknown; originPricing?: unknown } 
 	const sideHasPricing = (side: unknown): boolean => {
 		const r = side as Rates | null | undefined;
 		if (!r) return false;
-		return (r.inputPerMillion ?? 0) > 0 && (r.outputPerMillion ?? 0) > 0;
+		return r.inputPerMillion !== undefined && r.outputPerMillion !== undefined;
 	};
 	return sideHasPricing(entry.originPricing) || sideHasPricing(entry.pricing);
 }
@@ -715,6 +713,8 @@ export interface PricingAnomaly {
 	current: number;
 	/** Signed fractional delta, e.g. -0.5 = 50% drop, +1.0 = doubled. */
 	deltaPct: number;
+	/** True when either snapshot carried a promo_override tag for this model. */
+	promo: boolean;
 }
 
 const ANOMALY_DELTA_THRESHOLD = 0.25; // 25% in either direction
@@ -725,6 +725,12 @@ const ANOMALY_FILE = "anomalies.json";
 /** Compare prev vs fresh manifests and emit one anomaly per rate-field
  *  that moved more than ANOMALY_DELTA_THRESHOLD. Both directions count
  *  (a 90% rate drop is just as suspicious as a 90% jump). */
+function hasPromoFlag(entry: { capabilities?: string[]; rawCapabilities?: string[] } | undefined): boolean {
+	if (!entry) return false;
+	const caps = entry.rawCapabilities ?? entry.capabilities ?? [];
+	return caps.includes("promo_override");
+}
+
 function detectPricingAnomalies(
 	previous: DiscoverySnapshotV1 | null,
 	fresh: DiscoverySnapshotV1,
@@ -779,6 +785,7 @@ function detectPricingAnomalies(
 					previous: prevRate,
 					current: newRate,
 					deltaPct: delta,
+					promo: hasPromoFlag(prev) || hasPromoFlag(f),
 				});
 			}
 		}

@@ -49,71 +49,60 @@ import { MiniMaxDiscoverer } from "./minimax.js";
 import { normalizeProviderId } from "../provider-catalog.js";
 
 /**
+ * Single registry of all known provider discoverers.
+ *
+ * Adding a new provider only touches this map (plus the import + re-export
+ * at the top of the file). Both {@link getAllDiscoverers} and
+ * {@link getDiscoverer} derive from this single source of truth.
+ */
+type DiscovererFactory = (baseUrl?: string) => ProviderDiscoverer;
+
+const DISCOVERER_REGISTRY: Record<string, DiscovererFactory> = {
+	anthropic: () => new AnthropicDiscoverer(),
+	openai: () => new OpenAIDiscoverer(),
+	google: () => new GoogleDiscoverer(),
+	ollama: (baseUrl) => new OllamaDiscoverer(baseUrl),
+	"llama.cpp": (baseUrl) => new LlamaCppDiscoverer(baseUrl),
+	openrouter: () => new OpenRouterDiscoverer(),
+	bedrock: () => new BedrockDiscoverer(),
+	vertex: () => new VertexDiscoverer(),
+	nvidia: () => new NvidiaDiscoverer(),
+	together: () => new TogetherDiscoverer(),
+	fireworks: () => new FireworksDiscoverer(),
+	groq: () => new GroqDiscoverer(),
+	mistral: () => new MistralDiscoverer(),
+	deepinfra: () => new DeepInfraDiscoverer(),
+	cohere: () => new CohereDiscoverer(),
+	cerebras: () => new CerebrasDiscoverer(),
+	perplexity: () => new PerplexityDiscoverer(),
+	deepseek: () => new DeepSeekDiscoverer(),
+	moonshot: () => new MoonshotDiscoverer(),
+	glm: () => new GLMDiscoverer(),
+	zai: () => new ZAIDiscoverer(),
+	minimax: () => new MiniMaxDiscoverer(),
+};
+
+/**
  * Returns all built-in provider discoverers.
  *
  * Includes direct-API providers (Anthropic, OpenAI, Google, Ollama, OpenRouter)
  * as well as managed-service proxies (AWS Bedrock, Google Vertex AI).
  */
 export function getAllDiscoverers(options?: { ollamaBaseUrl?: string; llamaCppBaseUrl?: string }): ProviderDiscoverer[] {
-	return [
-		new AnthropicDiscoverer(),
-		new OpenAIDiscoverer(),
-		new GoogleDiscoverer(),
-		new OllamaDiscoverer(options?.ollamaBaseUrl),
-		new LlamaCppDiscoverer(options?.llamaCppBaseUrl),
-		new OpenRouterDiscoverer(),
-		new BedrockDiscoverer(),
-		new VertexDiscoverer(),
-		new NvidiaDiscoverer(),
-		new TogetherDiscoverer(),
-		new FireworksDiscoverer(),
-		new GroqDiscoverer(),
-		new MistralDiscoverer(),
-		new DeepInfraDiscoverer(),
-		new CohereDiscoverer(),
-		new CerebrasDiscoverer(),
-		new PerplexityDiscoverer(),
-		new DeepSeekDiscoverer(),
-		new MoonshotDiscoverer(),
-		new GLMDiscoverer(),
-		new ZAIDiscoverer(),
-		new MiniMaxDiscoverer(),
-	];
+	return Object.entries(DISCOVERER_REGISTRY).map(([id, factory]) => {
+		if (id === "ollama") return factory(options?.ollamaBaseUrl);
+		if (id === "llama.cpp") return factory(options?.llamaCppBaseUrl);
+		return factory();
+	});
 }
 
 /**
- * Returns a single discoverer by provider ID, or undefined if not found.
+ * Returns a single discoverer by canonical provider ID, or undefined if not found.
  *
- * Supported IDs: `"anthropic"`, `"openai"`, `"google"`, `"ollama"`,
- * `"openrouter"`, `"bedrock"`, `"vertex"`, `"nvidia"`, `"together"`,
- * `"fireworks"`, `"groq"`, `"mistral"`, `"deepinfra"`, `"cohere"`,
- * `"cerebras"`, `"perplexity"`, `"deepseek"`, `"moonshot"`,
- * `"glm"`, `"zai"`, `"minimax"`.
+ * Supported IDs are the keys of {@link DISCOVERER_REGISTRY} — every provider
+ * in the canonical catalog.
  */
 export function getDiscoverer(providerId: string, options?: { baseUrl?: string }): ProviderDiscoverer | undefined {
-	const map: Record<string, () => ProviderDiscoverer> = {
-		anthropic: () => new AnthropicDiscoverer(),
-		openai: () => new OpenAIDiscoverer(),
-		google: () => new GoogleDiscoverer(),
-		ollama: () => new OllamaDiscoverer(options?.baseUrl),
-		"llama.cpp": () => new LlamaCppDiscoverer(options?.baseUrl),
-		openrouter: () => new OpenRouterDiscoverer(),
-		bedrock: () => new BedrockDiscoverer(),
-		vertex: () => new VertexDiscoverer(),
-		nvidia: () => new NvidiaDiscoverer(),
-		together: () => new TogetherDiscoverer(),
-		fireworks: () => new FireworksDiscoverer(),
-		groq: () => new GroqDiscoverer(),
-		mistral: () => new MistralDiscoverer(),
-		deepinfra: () => new DeepInfraDiscoverer(),
-		cohere: () => new CohereDiscoverer(),
-		cerebras: () => new CerebrasDiscoverer(),
-		perplexity: () => new PerplexityDiscoverer(),
-		deepseek: () => new DeepSeekDiscoverer(),
-		moonshot: () => new MoonshotDiscoverer(),
-		glm: () => new GLMDiscoverer(),
-		zai: () => new ZAIDiscoverer(),
-		minimax: () => new MiniMaxDiscoverer(),
-	};
-	return map[normalizeProviderId(providerId) ?? providerId]?.();
+	const id = normalizeProviderId(providerId) ?? providerId;
+	return DISCOVERER_REGISTRY[id]?.(options?.baseUrl);
 }
