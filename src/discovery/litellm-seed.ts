@@ -33,7 +33,7 @@ const PER_MILLION = 1_000_000;
 const MAX_MODELS_PER_SEED = 1_000;
 
 /** Strict charset for model IDs; everything else gets stripped or rejected. */
-const SAFE_ID_PATTERN = /^[A-Za-z0-9._:/\-]+$/;
+const SAFE_ID_PATTERN = /^[A-Za-z0-9._:/-]+$/;
 
 /** Maximum length we accept for a model ID. */
 const MAX_ID_LENGTH = 256;
@@ -185,6 +185,8 @@ function inferMode(entry: LiteLLMModelEntry): ModelMode {
 			return "embedding";
 		case "image_generation":
 			return "image";
+		case "video_generation":
+			return "video";
 		case "audio_transcription":
 		case "audio_speech":
 			return "audio";
@@ -201,6 +203,7 @@ function inferMode(entry: LiteLLMModelEntry): ModelMode {
 function inferCapabilities(entry: LiteLLMModelEntry, mode: ModelMode): string[] {
 	if (mode === "embedding") return ["embedding"];
 	if (mode === "image") return ["image_generation"];
+	if (mode === "video") return ["video_generation"];
 	if (mode === "audio") return ["audio"];
 	if (mode === "moderation") return ["moderation"];
 	if (mode === "rerank") return ["rerank"];
@@ -222,8 +225,8 @@ function inferCapabilities(entry: LiteLLMModelEntry, mode: ModelMode): string[] 
  * Returns undefined unless both base input and output pricing are present.
  */
 function extractPricing(entry: LiteLLMModelEntry): ModelPricing | undefined {
-	const baseInput = isFinite(entry.input_cost_per_token) ? entry.input_cost_per_token : undefined;
-	const baseOutput = isFinite(entry.output_cost_per_token) ? entry.output_cost_per_token : undefined;
+	const baseInput = isFiniteNumber(entry.input_cost_per_token) ? entry.input_cost_per_token : undefined;
+	const baseOutput = isFiniteNumber(entry.output_cost_per_token) ? entry.output_cost_per_token : undefined;
 	const reasoningInput = firstFinite(entry.input_cost_per_reasoning_token, entry.reasoning_input_cost_per_token);
 	const reasoningOutput = firstFinite(entry.output_cost_per_reasoning_token, entry.reasoning_output_cost_per_token);
 
@@ -235,17 +238,17 @@ function extractPricing(entry: LiteLLMModelEntry): ModelPricing | undefined {
 	};
 	if (reasoningInput !== undefined) pricing.reasoningInputPerMillion = reasoningInput * PER_MILLION;
 	if (reasoningOutput !== undefined) pricing.reasoningOutputPerMillion = reasoningOutput * PER_MILLION;
-	if (isFinite(entry.cache_read_input_token_cost)) {
-		pricing.cacheReadPerMillion = entry.cache_read_input_token_cost! * PER_MILLION;
+	if (isFiniteNumber(entry.cache_read_input_token_cost)) {
+		pricing.cacheReadPerMillion = entry.cache_read_input_token_cost * PER_MILLION;
 	}
-	if (isFinite(entry.cache_creation_input_token_cost)) {
-		pricing.cacheWritePerMillion = entry.cache_creation_input_token_cost! * PER_MILLION;
+	if (isFiniteNumber(entry.cache_creation_input_token_cost)) {
+		pricing.cacheWritePerMillion = entry.cache_creation_input_token_cost * PER_MILLION;
 	}
-	if (isFinite(entry.input_cost_per_token_batches)) {
-		pricing.batchInputPerMillion = entry.input_cost_per_token_batches! * PER_MILLION;
+	if (isFiniteNumber(entry.input_cost_per_token_batches)) {
+		pricing.batchInputPerMillion = entry.input_cost_per_token_batches * PER_MILLION;
 	}
-	if (isFinite(entry.output_cost_per_token_batches)) {
-		pricing.batchOutputPerMillion = entry.output_cost_per_token_batches! * PER_MILLION;
+	if (isFiniteNumber(entry.output_cost_per_token_batches)) {
+		pricing.batchOutputPerMillion = entry.output_cost_per_token_batches * PER_MILLION;
 	}
 	return pricing;
 }
@@ -257,6 +260,6 @@ function firstFinite(...values: Array<number | undefined>): number | undefined {
 	return undefined;
 }
 
-function isFinite(value: number | undefined): value is number {
+function isFiniteNumber(value: number | undefined): value is number {
 	return typeof value === "number" && Number.isFinite(value);
 }

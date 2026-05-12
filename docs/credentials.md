@@ -90,6 +90,16 @@ gcloud auth print-access-token
 export OPENROUTER_API_KEY=sk-or-...
 ```
 
+## Vercel AI Gateway
+
+```bash
+# Optional for model discovery; required when invoking models through the gateway
+export AI_GATEWAY_API_KEY=...
+
+# Also accepted on Vercel deployments
+export VERCEL_OIDC_TOKEN=...
+```
+
 ## NVIDIA (build.nvidia.com)
 
 ```bash

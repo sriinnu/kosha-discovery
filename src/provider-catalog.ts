@@ -7,7 +7,7 @@
  * @module
  */
 
-import type { KoshaConfig, ProviderOrigin, ProviderTransport } from "./types.js";
+import type { KoshaConfig, ProviderCacheBehavior, ProviderOrigin, ProviderTransport } from "./types.js";
 
 /**
  * Stable provider descriptor used by normalization and v1 schema emission.
@@ -29,8 +29,10 @@ export interface ProviderDescriptor {
 	transport: ProviderTransport;
 	/** Default base URL used by the built-in discoverer. */
 	defaultBaseUrl: string;
-	/** Whether the provider normally requires credentials. */
+	/** Whether model discovery normally requires credentials. */
 	credentialRequired: boolean;
+	/** Whether execution/model requests require credentials; defaults to `credentialRequired`. */
+	executionCredentialRequired?: boolean;
 	/** Environment variables that satisfy the provider credential requirement. */
 	credentialEnvVars: string[];
 	/** The single env var that `fallbackRegistryCredential` reads for this provider. */
@@ -42,6 +44,12 @@ export interface ProviderDescriptor {
 	 * consumer should fall back to its own conservative default in that case.
 	 */
 	minCachePrefixTokens?: number;
+	/**
+	 * Prompt-cache TTL semantics for the provider. Undefined means the policy
+	 * has not been curated yet — distinct from `{ mode: "none" }` which asserts
+	 * the provider documents no prompt cache.
+	 */
+	cacheBehavior?: ProviderCacheBehavior;
 }
 
 /**
@@ -65,6 +73,14 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		primaryCredentialEnvVar: "ANTHROPIC_API_KEY",
 		// Anthropic prompt cache requires ≥1024 tokens for most Claude models.
 		minCachePrefixTokens: 1024,
+		cacheBehavior: {
+			mode: "explicit",
+			ttlTiers: ["5m", "1h"],
+			defaultTtlSeconds: 300,
+			maxTtlSeconds: 3600,
+			documented: true,
+			notes: "Set per cache_control block; 1h tier requires extended-cache beta header.",
+		},
 	},
 	{
 		providerId: "openai",
@@ -80,6 +96,12 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		primaryCredentialEnvVar: "OPENAI_API_KEY",
 		// OpenAI prompt cache engages for prefixes ≥1024 tokens.
 		minCachePrefixTokens: 1024,
+		cacheBehavior: {
+			mode: "automatic",
+			approximateTtlSeconds: 600,
+			documented: true,
+			notes: "Provider-managed; typically 5–10 minutes, may extend up to an hour under load.",
+		},
 	},
 	{
 		providerId: "google",
@@ -93,6 +115,13 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		credentialRequired: true,
 		credentialEnvVars: ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
 		primaryCredentialEnvVar: "GOOGLE_API_KEY",
+		cacheBehavior: {
+			mode: "explicit",
+			defaultTtlSeconds: 3600,
+			maxTtlSeconds: 604_800,
+			documented: true,
+			notes: "Gemini Context Caching: create a CachedContent with TTL up to 7 days; billed for storage + reads.",
+		},
 	},
 	{
 		providerId: "openrouter",
@@ -104,8 +133,33 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		transport: "openai-compatible-http",
 		defaultBaseUrl: "https://openrouter.ai/api/v1",
 		credentialRequired: false,
+		executionCredentialRequired: true,
 		credentialEnvVars: ["OPENROUTER_API_KEY"],
 		primaryCredentialEnvVar: "OPENROUTER_API_KEY",
+		cacheBehavior: {
+			mode: "passthrough",
+			documented: true,
+			notes: "Forwards cache_control to the underlying provider; TTL inherits from the routed model.",
+		},
+	},
+	{
+		providerId: "vercel",
+		canonicalProviderId: "vercel",
+		aliases: ["ai-gateway", "ai_gateway", "vercel-ai", "vercel-ai-gateway"],
+		name: "Vercel AI Gateway",
+		origin: "proxy",
+		isLocal: false,
+		transport: "openai-compatible-http",
+		defaultBaseUrl: "https://ai-gateway.vercel.sh/v1",
+		credentialRequired: false,
+		executionCredentialRequired: true,
+		credentialEnvVars: ["AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"],
+		primaryCredentialEnvVar: "AI_GATEWAY_API_KEY",
+		cacheBehavior: {
+			mode: "passthrough",
+			documented: true,
+			notes: "Gateway forwards cache_control to the underlying provider; TTL inherits from the routed model.",
+		},
 	},
 	{
 		providerId: "ollama",
@@ -118,6 +172,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "http://localhost:11434",
 		credentialRequired: false,
 		credentialEnvVars: [],
+		cacheBehavior: { mode: "none", documented: true, notes: "Local runtime — KV-cache is in-process, not a billable prompt cache." },
 	},
 	{
 		providerId: "llama.cpp",
@@ -130,6 +185,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "http://127.0.0.1:8080",
 		credentialRequired: false,
 		credentialEnvVars: [],
+		cacheBehavior: { mode: "none", documented: true, notes: "Local runtime — KV-cache is in-process, not a billable prompt cache." },
 	},
 	{
 		providerId: "bedrock",
@@ -142,6 +198,11 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "https://bedrock-runtime.amazonaws.com",
 		credentialRequired: true,
 		credentialEnvVars: ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
+		cacheBehavior: {
+			mode: "passthrough",
+			documented: true,
+			notes: "Inherits underlying model: Anthropic-on-Bedrock supports cache_control with the same 5m/1h tiers.",
+		},
 	},
 	{
 		providerId: "vertex",
@@ -154,6 +215,11 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "https://aiplatform.googleapis.com",
 		credentialRequired: true,
 		credentialEnvVars: ["GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT"],
+		cacheBehavior: {
+			mode: "passthrough",
+			documented: true,
+			notes: "Inherits Gemini Context Caching when routing to Gemini models.",
+		},
 	},
 	{
 		providerId: "nvidia",
@@ -206,6 +272,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		credentialRequired: true,
 		credentialEnvVars: ["GROQ_API_KEY"],
 		primaryCredentialEnvVar: "GROQ_API_KEY",
+		cacheBehavior: { mode: "none", documented: true },
 	},
 	{
 		providerId: "mistral",
@@ -219,6 +286,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		credentialRequired: true,
 		credentialEnvVars: ["MISTRAL_API_KEY"],
 		primaryCredentialEnvVar: "MISTRAL_API_KEY",
+		cacheBehavior: { mode: "none", documented: true },
 	},
 	{
 		providerId: "deepinfra",
@@ -245,6 +313,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		credentialRequired: true,
 		credentialEnvVars: ["CO_API_KEY"],
 		primaryCredentialEnvVar: "CO_API_KEY",
+		cacheBehavior: { mode: "none", documented: true },
 	},
 	{
 		providerId: "cerebras",
@@ -258,6 +327,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		credentialRequired: true,
 		credentialEnvVars: ["CEREBRAS_API_KEY"],
 		primaryCredentialEnvVar: "CEREBRAS_API_KEY",
+		cacheBehavior: { mode: "none", documented: true },
 	},
 	{
 		providerId: "perplexity",
@@ -271,6 +341,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		credentialRequired: true,
 		credentialEnvVars: ["PERPLEXITY_API_KEY"],
 		primaryCredentialEnvVar: "PERPLEXITY_API_KEY",
+		cacheBehavior: { mode: "none", documented: true },
 	},
 	{
 		providerId: "deepseek",
@@ -284,6 +355,12 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		credentialRequired: true,
 		credentialEnvVars: ["DEEPSEEK_API_KEY"],
 		primaryCredentialEnvVar: "DEEPSEEK_API_KEY",
+		cacheBehavior: {
+			mode: "automatic",
+			approximateTtlSeconds: 3600,
+			documented: true,
+			notes: "Automatic context caching; provider reports ~hours of retention but no strict guarantee.",
+		},
 	},
 	{
 		providerId: "moonshot",
@@ -297,6 +374,12 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		credentialRequired: true,
 		credentialEnvVars: ["MOONSHOT_API_KEY", "KIMI_API_KEY"],
 		primaryCredentialEnvVar: "MOONSHOT_API_KEY",
+		cacheBehavior: {
+			mode: "automatic",
+			approximateTtlSeconds: 3600,
+			documented: true,
+			notes: "Kimi prompt cache is automatic on repeat prefixes; documented as long-lived but TTL not formally specified.",
+		},
 	},
 	{
 		providerId: "glm",
@@ -388,6 +471,21 @@ export function getProviderConfig(
 	return config.providers[descriptor.providerId] ??
 		config.providers[descriptor.canonicalProviderId] ??
 		descriptor.aliases.map((alias) => config.providers?.[alias]).find(Boolean);
+}
+
+/** Return true when model execution through this provider needs auth. */
+export function providerExecutionCredentialRequired(
+	descriptor: Pick<ProviderDescriptor, "credentialRequired" | "executionCredentialRequired">,
+): boolean {
+	return descriptor.executionCredentialRequired ?? descriptor.credentialRequired;
+}
+
+/**
+ * Return the curated prompt-cache behavior for a provider, or `undefined`
+ * if the policy has not been curated yet.
+ */
+export function getProviderCacheBehavior(providerId: string | undefined): ProviderCacheBehavior | undefined {
+	return getProviderDescriptor(providerId)?.cacheBehavior;
 }
 
 /**

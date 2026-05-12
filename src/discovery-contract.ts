@@ -18,6 +18,7 @@ export type TrustedCapability =
 	| "function_calling"
 	| "embeddings"
 	| "vision"
+	| "video_generation"
 	| "rerank"
 	| "structured_output"
 	| "streaming"
@@ -233,6 +234,12 @@ export const DISCOVERY_ROLE_DEFINITIONS: readonly DiscoveryRoleDefinition[] = [
 		suitabilityHint: "Multimodal prompts with image understanding.",
 	},
 	{
+		roleId: "video_generation",
+		requiredCapabilities: ["video_generation"],
+		preferredCapabilities: ["cheap_inference"],
+		suitabilityHint: "Text or image prompts that render video output.",
+	},
+	{
 		roleId: "rerank",
 		requiredCapabilities: ["rerank"],
 		preferredCapabilities: ["low_latency"],
@@ -279,6 +286,7 @@ export function trustedCapabilitiesForModel(model: ModelCard, descriptor: Provid
 	if (model.mode === "embedding" || rawCaps.includes("embedding") || rawCaps.includes("embeddings")) caps.add("embeddings");
 	if (rawCaps.includes("function_calling")) caps.add("function_calling");
 	if (rawCaps.includes("vision")) caps.add("vision");
+	if (model.mode === "video" || rawCaps.includes("video_generation")) caps.add("video_generation");
 	if (rawCaps.includes("rerank") || lowerId.includes("rerank")) caps.add("rerank");
 	if (descriptor.isLocal) caps.add("local_exec");
 
@@ -309,6 +317,7 @@ export function discoveryRoles(): DiscoveryRoleDefinition[] {
 
 function isCheapPricing(pricing: ModelPricing | undefined): boolean {
 	if (!pricing) return false;
+	if (hasUnitPricing(pricing)) return false;
 	return pricing.inputPerMillion <= 1 && pricing.outputPerMillion <= 4;
 }
 
@@ -327,10 +336,28 @@ function isFreeTierPricing(model: ModelCard): boolean {
 		pricing.audioInputPerSecond !== undefined ||
 		pricing.audioOutputPerSecond !== undefined ||
 		pricing.videoInputPerSecond !== undefined ||
+		pricing.videoOutputPerSecond !== undefined ||
 		pricing.inputPerMillionCharacters !== undefined ||
-		pricing.outputPerMillionCharacters !== undefined
+		pricing.outputPerMillionCharacters !== undefined ||
+		pricing.webSearchPerThousandRequests !== undefined ||
+		pricing.mapsSearchPerThousandRequests !== undefined ||
+		pricing.requestPerThousand !== undefined
 	) {
 		return false;
 	}
 	return pricing.inputPerMillion === 0 && pricing.outputPerMillion === 0;
+}
+
+function hasUnitPricing(pricing: ModelPricing): boolean {
+	return pricing.imageOutputPerImage !== undefined ||
+		pricing.imageInputPerImage !== undefined ||
+		pricing.audioInputPerSecond !== undefined ||
+		pricing.audioOutputPerSecond !== undefined ||
+		pricing.videoInputPerSecond !== undefined ||
+		pricing.videoOutputPerSecond !== undefined ||
+		pricing.inputPerMillionCharacters !== undefined ||
+		pricing.outputPerMillionCharacters !== undefined ||
+		pricing.webSearchPerThousandRequests !== undefined ||
+		pricing.mapsSearchPerThousandRequests !== undefined ||
+		pricing.requestPerThousand !== undefined;
 }

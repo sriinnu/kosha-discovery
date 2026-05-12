@@ -15,6 +15,7 @@
  * @module
  */
 
+import { computeContextStrategy } from "./context-strategy.js";
 import { ModelRegistry } from "./registry.js";
 import type { ModelMode } from "./types.js";
 
@@ -46,7 +47,7 @@ const TOOLS = [
 				provider: { type: "string", description: "Provider ID (e.g. anthropic, openai, groq, openrouter)" },
 				mode: {
 					type: "string",
-					enum: ["chat", "embedding", "image", "audio"],
+					enum: ["chat", "embedding", "image", "video", "audio", "moderation", "rerank"],
 					description: "Primary model mode",
 				},
 				capability: {
@@ -129,22 +130,48 @@ const TOOLS = [
 			},
 		},
 	},
+	{
+		name: "kosha_context_strategy",
+		description:
+			"Advise on context management for a long-running conversation. Given a model and current token usage, returns ranked options (continue, enable prompt cache, compact + continue, switch to long-context tier, switch model, batch offload) with rough cost-per-turn math. Useful before deciding whether to summarize, swap models, or just keep going.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				model: { type: "string", description: "Model ID or alias the caller is currently using" },
+				current_tokens: { type: "number", description: "Approximate token count of the conversation so far" },
+				expected_output_tokens: {
+					type: "number",
+					description: "Tokens the next reply is expected to produce (default 1024)",
+				},
+				expected_remaining_turns: {
+					type: "number",
+					description: "How many more turns the caller plans (default 5)",
+				},
+			},
+			required: ["model", "current_tokens"],
+		},
+	},
 ] as const;
 
 // ---------------------------------------------------------------------------
-// Registry — load in background on startup so first tool call is fast
+// Registry — lazy-load on first tool call so starting the MCP server has no
+// filesystem/network side effects until a client actually asks for data.
 // ---------------------------------------------------------------------------
 
 let registryInstance: ModelRegistry | null = null;
-const registryReady: Promise<ModelRegistry> = (async () => {
+let registryReady: Promise<ModelRegistry> | null = null;
+
+async function loadRegistry(): Promise<ModelRegistry> {
 	const reg = new ModelRegistry();
 	await reg.discover();
 	registryInstance = reg;
 	return reg;
-})();
+}
 
 async function getRegistry(): Promise<ModelRegistry> {
-	return registryInstance ?? registryReady;
+	if (registryInstance) return registryInstance;
+	registryReady ??= loadRegistry();
+	return registryReady;
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +281,31 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
 			}));
 		}
 
+		case "kosha_context_strategy": {
+			const modelId = args.model as string | undefined;
+			if (!modelId) return { error: "model is required" };
+			const currentTokens = typeof args.current_tokens === "number" ? args.current_tokens : undefined;
+			if (currentTokens === undefined || currentTokens < 0) {
+				return { error: "current_tokens must be a non-negative number" };
+			}
+			const model = reg.model(modelId);
+			if (!model) return { error: `model '${modelId}' not found` };
+
+			const candidates = reg
+				.cheapestModels({ mode: "chat", limit: 20 })
+				.matches.map((m) => m.model);
+
+			return computeContextStrategy({
+				model,
+				currentTokens,
+				expectedRemainingTurns:
+					typeof args.expected_remaining_turns === "number" ? args.expected_remaining_turns : undefined,
+				expectedOutputTokens:
+					typeof args.expected_output_tokens === "number" ? args.expected_output_tokens : undefined,
+				candidateAlternatives: candidates,
+			});
+		}
+
 		default:
 			throw new Error(`unknown tool: ${name}`);
 	}
@@ -264,7 +316,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
 // ---------------------------------------------------------------------------
 
 function send(msg: JsonRpcMessage): void {
-	process.stdout.write(JSON.stringify(msg) + "\n");
+	process.stdout.write(`${JSON.stringify(msg)}\n`);
 }
 
 function respond(id: string | number | null | undefined, result: unknown): void {

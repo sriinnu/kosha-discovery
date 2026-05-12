@@ -108,6 +108,33 @@ describe("ModelRegistry v1 discovery surfaces", () => {
 		expect(result.matches[0].score).toBe(0.02);
 	});
 
+	it("routes role=video_generation to video-capable models on the discovery plane (bug_006)", () => {
+		const video = makeModel({
+			id: "alibaba/wan-v2.5-t2v-preview",
+			provider: "vercel",
+			mode: "video",
+			capabilities: ["video_generation"],
+			rawCapabilities: ["video_generation"],
+			pricing: { inputPerMillion: 0, outputPerMillion: 0, videoOutputPerSecond: 0.05 },
+		});
+		const chat = makeModel({
+			id: "gpt-4o",
+			provider: "openai",
+			pricing: { inputPerMillion: 5, outputPerMillion: 15 },
+		});
+
+		const registry = ModelRegistry.fromJSON({
+			providers: [makeProvider("vercel", "Vercel AI Gateway", [video]), makeProvider("openai", "OpenAI", [chat])],
+			aliases: {},
+			discoveredAt: 1_710_000_002_000,
+		});
+
+		const result = registry.cheapestCandidates({ role: "video_generation" });
+		expect(result.matches.length).toBeGreaterThan(0);
+		expect(result.matches[0].modelId).toBe("alibaba/wan-v2.5-t2v-preview");
+		expect(result.matches.find((m) => m.modelId === "gpt-4o")).toBeUndefined();
+	});
+
 	it("returns binding hints and can prefer local providers", () => {
 		const registry = makeRegistry();
 		const binding = registry.executionBindingHints({

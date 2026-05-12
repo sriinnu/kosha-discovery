@@ -1,6 +1,6 @@
 {
 	"name": "@sriinnu/kosha-discovery",
-	"version": "1.1.0",
+	"version": "1.2.0",
 	"description": "AI Model & Provider Discovery Registry -- kosha (कोश) treasury of models",
 	"type": "module",
 	"packageManager": "pnpm@10.33.0",
@@ -23,6 +23,7 @@
 		"gemini",
 		"ollama",
 		"openrouter",
+		"vercel-ai-gateway",
 		"bedrock",
 		"vertex-ai",
 		"ai-models",
@@ -60,6 +61,10 @@
 	},
 	"scripts": {
 		"build": "tsc -p tsconfig.json",
+		"typecheck": "tsc --noEmit",
+		"lint": "biome lint --diagnostic-level=error src test vitest.config.ts",
+		"lint:all": "biome lint src test vitest.config.ts",
+		"check": "pnpm run lint && pnpm run build && pnpm test",
 		"dev": "tsc -p tsconfig.json --watch",
 		"test": "vitest run",
 		"test:watch": "vitest",

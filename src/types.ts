@@ -8,7 +8,7 @@
  */
 
 /** Supported model operational modes. */
-export type ModelMode = "chat" | "embedding" | "image" | "audio" | "moderation" | "rerank";
+export type ModelMode = "chat" | "embedding" | "image" | "video" | "audio" | "moderation" | "rerank";
 
 /** Normalized transport families used by discovery consumers. */
 export type ProviderTransport = "native-http" | "openai-compatible-http" | "cloud-sdk";
@@ -21,6 +21,37 @@ export type ComputeTarget = "cpu" | "gpu" | "hybrid" | "unknown";
 
 /** Price scoring metric for cheapest-model selection. */
 export type PricingMetric = "input" | "output" | "blended";
+
+/**
+ * How a provider handles prompt-cache TTL.
+ *
+ * - `explicit`: the caller chooses TTL per request (Anthropic cache_control,
+ *   Gemini cachedContent). `ttlTiers` lists discrete options when they exist;
+ *   `defaultTtlSeconds` / `maxTtlSeconds` describe continuous configuration.
+ * - `automatic`: provider manages cache lifetime; `approximateTtlSeconds`
+ *   captures the observed/published rough TTL.
+ * - `passthrough`: a gateway/aggregator that forwards `cache_control` to the
+ *   underlying provider — actual TTL inherits from the routed model.
+ * - `none`: no documented prompt cache.
+ */
+export type ProviderCacheMode = "explicit" | "automatic" | "passthrough" | "none";
+
+/** Provider-level prompt-cache behavior. */
+export interface ProviderCacheBehavior {
+	mode: ProviderCacheMode;
+	/** Discrete TTL options the caller can pick (e.g. ["5m", "1h"] on Anthropic). */
+	ttlTiers?: readonly string[];
+	/** Default TTL applied when the caller does not specify one. */
+	defaultTtlSeconds?: number;
+	/** Maximum TTL allowed by the provider (explicit-mode only). */
+	maxTtlSeconds?: number;
+	/** Approximate eviction window when `mode === "automatic"`. */
+	approximateTtlSeconds?: number;
+	/** True when TTL is provider-documented; false when only empirically observed. */
+	documented: boolean;
+	/** Short prose for nuances that don't fit the structured fields. */
+	notes?: string;
+}
 
 /** Token pricing in USD per million tokens. */
 export interface ModelPricing {
@@ -76,10 +107,21 @@ export interface ModelPricing {
 	 */
 	videoInputPerSecond?: number;
 	/**
+	 * USD cost per second of generated video output for text/image-to-video
+	 * providers that bill by rendered duration.
+	 */
+	videoOutputPerSecond?: number;
+	/**
 	 * USD cost per 1 million video-input tokens for models that tokenize
 	 * video frames (newer Gemini long-video variants).
 	 */
 	videoInputPerMillion?: number;
+	/** USD cost per 1,000 web-search/tool-grounding requests. */
+	webSearchPerThousandRequests?: number;
+	/** USD cost per 1,000 maps/search-grounding requests. */
+	mapsSearchPerThousandRequests?: number;
+	/** USD cost per 1,000 generic requests when a provider bills per query. */
+	requestPerThousand?: number;
 	/**
 	 * USD cost per 1 million characters for providers that bill by character
 	 * rather than token (Vertex AI text models, some Azure endpoints).
@@ -367,7 +409,7 @@ export interface ProviderCredentialPrompt {
 	providerId: string;
 	/** Provider display name. */
 	providerName: string;
-	/** Whether this provider requires credentials to discover/use models. */
+	/** Whether this provider requires credentials to discover or execute models. */
 	required: boolean;
 	/** Environment variable names that satisfy the credential requirement. */
 	envVars: string[];

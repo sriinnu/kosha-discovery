@@ -185,6 +185,13 @@ export function fallbackRegistryCredential(providerId: string, explicitKey?: str
 		return { apiKey: explicitKey, source: "config" };
 	}
 
+	if (normalizedProviderId === "vercel") {
+		const apiKey = process.env.AI_GATEWAY_API_KEY;
+		if (apiKey) return { apiKey, source: "env" };
+		const oidcToken = process.env.VERCEL_OIDC_TOKEN;
+		if (oidcToken) return { accessToken: oidcToken, source: "env" };
+	}
+
 	const envVar = getProviderDescriptor(normalizedProviderId)?.primaryCredentialEnvVar;
 	const value = envVar ? process.env[envVar] : undefined;
 	return value ? { apiKey: value, source: "env" } : { source: "none" };

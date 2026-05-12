@@ -22,6 +22,7 @@ import {
 	computeModelScore,
 	defaultPricingMetric,
 	normalizeLimit,
+	normalizeRoleToken,
 	registryModels,
 	registryProviderDescriptor,
 } from "./registry-query.js";
@@ -35,6 +36,11 @@ export function registryCheapestCandidates(
 	state: RegistryState,
 	query: DiscoveryBindingQuery = {},
 ): DiscoveryCheapestResultV1 {
+	const effectiveRole = query.role
+		? normalizeRoleToken(query.role)
+		: query.capability
+			? normalizeRoleToken(query.capability)
+			: undefined;
 	const priceMetric = query.priceMetric ?? defaultPricingMetric({
 		mode: query.mode as ModelMode | undefined,
 		role: query.role,
@@ -43,7 +49,7 @@ export function registryCheapestCandidates(
 	const candidates = discoveryCandidateModels(state, query).map(({ model, descriptor }) => ({
 		model,
 		descriptor,
-		score: computeModelScore(model, priceMetric as PricingMetric, 1, 1),
+		score: computeModelScore(model, priceMetric as PricingMetric, 1, 1, effectiveRole),
 	}));
 	const priced = candidates.filter((entry) => entry.score !== undefined).sort((a, b) => (a.score ?? Number.POSITIVE_INFINITY) - (b.score ?? Number.POSITIVE_INFINITY));
 	const unpriced = candidates.filter((entry) => entry.score === undefined);
@@ -75,6 +81,11 @@ export function registryExecutionBindingHints(
 ): DiscoveryBindingHintsV1 {
 	const preferLocalProviders = query.preferLocalProviders ?? false;
 	const allowCrossProvider = query.allowCrossProvider ?? true;
+	const effectiveRole = query.role
+		? normalizeRoleToken(query.role)
+		: query.capability
+			? normalizeRoleToken(query.capability)
+			: undefined;
 	const priceMetric = (query.priceMetric ?? defaultPricingMetric({
 		mode: query.mode as ModelMode | undefined,
 		role: query.role,
@@ -85,7 +96,7 @@ export function registryExecutionBindingHints(
 		descriptor,
 		isLocal: descriptor.isLocal,
 		isDirect: normalizeProviderId(model.originProvider) === descriptor.canonicalProviderId,
-		price: computeModelScore(model, priceMetric, 1, 1),
+		price: computeModelScore(model, priceMetric, 1, 1, effectiveRole),
 	})).sort((a, b) =>
 		// I keep the sort deterministic so consumers get stable binding hints across identical snapshots.
 		(preferLocalProviders ? Number(b.isLocal) - Number(a.isLocal) : 0) ||
@@ -168,6 +179,11 @@ function roleRequirements(role: string): TrustedCapability[] {
 			return ["chat", "vision"];
 		case "rerank":
 			return ["rerank"];
+		case "video_generation":
+		case "video":
+		case "videos":
+		case "videogen":
+			return ["video_generation"];
 		case "local":
 		case "local_exec":
 			return ["local_exec"];
@@ -200,6 +216,9 @@ function normalizeTrustedCapabilityToken(value: string | undefined): TrustedCapa
 		cheap_inference: "cheap_inference",
 		free_tier: "free_tier",
 		free: "free_tier",
+		video_generation: "video_generation",
+		videos: "video_generation",
+		videogen: "video_generation",
 	};
 	return map[normalized];
 }

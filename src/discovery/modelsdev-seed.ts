@@ -23,7 +23,7 @@ import {
 const MAX_MODELS_PER_SEED = 1_000;
 
 /** Strict charset for model IDs. */
-const SAFE_ID_PATTERN = /^[A-Za-z0-9._:/\-]+$/;
+const SAFE_ID_PATTERN = /^[A-Za-z0-9._:/-]+$/;
 
 /** Maximum length we accept for a model ID. */
 const MAX_ID_LENGTH = 256;
@@ -149,6 +149,7 @@ function inferMode(entry: ModelsDevModel): ModelMode {
 	const outputs = entry.modalities?.output ?? [];
 
 	if (outputs.includes("audio") && !outputs.includes("text")) return "audio";
+	if (outputs.includes("video") && !outputs.includes("text")) return "video";
 	if (outputs.includes("image") && !outputs.includes("text")) return "image";
 	if (outputs.includes("embedding") || (Array.isArray(outputs) && outputs.length === 0 && inputs.includes("text"))) {
 		// Heuristic: if there is no text *output* declared but text input,
@@ -163,6 +164,7 @@ function inferMode(entry: ModelsDevModel): ModelMode {
 function inferCapabilities(entry: ModelsDevModel, mode: ModelMode): string[] {
 	if (mode === "embedding") return ["embedding"];
 	if (mode === "image") return ["image_generation"];
+	if (mode === "video") return ["video_generation"];
 	if (mode === "audio") return ["audio"];
 
 	const caps = new Set<string>(["chat"]);
@@ -186,25 +188,25 @@ function extractPricing(entry: ModelsDevModel): ModelPricing | undefined {
 	if (!cost) return undefined;
 
 	const hasSignal =
-		isFinite(cost.input) ||
-		isFinite(cost.output) ||
-		isFinite(cost.cache_read) ||
-		isFinite(cost.cache_write) ||
-		isFinite(cost.batch?.input) ||
-		isFinite(cost.batch?.output);
+		isFiniteNumber(cost.input) ||
+		isFiniteNumber(cost.output) ||
+		isFiniteNumber(cost.cache_read) ||
+		isFiniteNumber(cost.cache_write) ||
+		isFiniteNumber(cost.batch?.input) ||
+		isFiniteNumber(cost.batch?.output);
 	if (!hasSignal) return undefined;
 
 	const pricing: ModelPricing = {
 		inputPerMillion: cost.input ?? 0,
 		outputPerMillion: cost.output ?? 0,
 	};
-	if (isFinite(cost.cache_read)) pricing.cacheReadPerMillion = cost.cache_read!;
-	if (isFinite(cost.cache_write)) pricing.cacheWritePerMillion = cost.cache_write!;
-	if (isFinite(cost.batch?.input)) pricing.batchInputPerMillion = cost.batch!.input!;
-	if (isFinite(cost.batch?.output)) pricing.batchOutputPerMillion = cost.batch!.output!;
+	if (isFiniteNumber(cost.cache_read)) pricing.cacheReadPerMillion = cost.cache_read;
+	if (isFiniteNumber(cost.cache_write)) pricing.cacheWritePerMillion = cost.cache_write;
+	if (isFiniteNumber(cost.batch?.input)) pricing.batchInputPerMillion = cost.batch.input;
+	if (isFiniteNumber(cost.batch?.output)) pricing.batchOutputPerMillion = cost.batch.output;
 	return pricing;
 }
 
-function isFinite(value: number | undefined): value is number {
+function isFiniteNumber(value: number | undefined): value is number {
 	return typeof value === "number" && Number.isFinite(value);
 }

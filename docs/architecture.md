@@ -99,6 +99,7 @@ Explicit Key --> Env Var --> CLI Token --> Config File --> None (skip provider)
 | OpenAI | `OPENAI_API_KEY` | `~/.config/github-copilot/hosts.json` | `~/.config/openai/auth.json` |
 | Google | `GOOGLE_API_KEY` / `GEMINI_API_KEY` | `~/.config/gemini/credentials.json` | `~/.config/gcloud/application_default_credentials.json` |
 | OpenRouter | `OPENROUTER_API_KEY` | -- | -- |
+| Vercel AI Gateway | `AI_GATEWAY_API_KEY` / `VERCEL_OIDC_TOKEN` | -- | -- |
 | Ollama | `OLLAMA_HOST` | -- | Default: `http://127.0.0.1:11434` |
 
 All providers also accept an explicit key via `options.apiKey` (highest priority).

@@ -85,6 +85,14 @@ describe("CredentialResolver", () => {
 			expect(result.apiKey).toBe("explicit-key");
 			expect(result.source).toBe("config");
 		});
+
+		it("returns explicit key for Vercel AI Gateway even when env var is set", async () => {
+			process.env.AI_GATEWAY_API_KEY = "env-key";
+			const result = await resolver.resolve("vercel", "explicit-key");
+
+			expect(result.apiKey).toBe("explicit-key");
+			expect(result.source).toBe("config");
+		});
 	});
 
 	// -----------------------------------------------------------------------
@@ -130,6 +138,23 @@ describe("CredentialResolver", () => {
 			const result = await resolver.resolve("openrouter");
 
 			expect(result.apiKey).toBe("sk-or-test");
+			expect(result.source).toBe("env");
+		});
+
+		it("resolves AI_GATEWAY_API_KEY from env", async () => {
+			process.env.AI_GATEWAY_API_KEY = "ai-gateway-test";
+			const result = await resolver.resolve("vercel");
+
+			expect(result.apiKey).toBe("ai-gateway-test");
+			expect(result.source).toBe("env");
+		});
+
+		it("resolves VERCEL_OIDC_TOKEN from env when AI_GATEWAY_API_KEY is not set", async () => {
+			delete process.env.AI_GATEWAY_API_KEY;
+			process.env.VERCEL_OIDC_TOKEN = "oidc-test";
+			const result = await resolver.resolve("vercel");
+
+			expect(result.accessToken).toBe("oidc-test");
 			expect(result.source).toBe("env");
 		});
 

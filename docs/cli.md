@@ -9,7 +9,7 @@ COMMANDS
   list                          List all known models
     --provider <name>             Filter by serving-layer provider
     --origin <name>               Filter by origin/creator provider (e.g. anthropic)
-    --mode <mode>                 Filter by mode (chat, embedding, image, audio)
+    --mode <mode>                 Filter by mode (chat, embedding, image, video, audio, moderation, rerank)
     --capability <cap>            Filter by capability (vision, function_calling, etc.)
   search <query>                Search models by name/ID (fuzzy match)
     --origin <name>               Restrict search to a specific origin provider
@@ -18,14 +18,14 @@ COMMANDS
     --role <role>                 Filter by task role (e.g. embeddings, image, tool_use)
     --provider <name>             Filter by serving-layer provider
     --origin <name>               Filter by model creator provider
-    --mode <mode>                 Filter by mode (chat, embedding, image, audio, moderation)
+    --mode <mode>                 Filter by mode (chat, embedding, image, video, audio, moderation, rerank)
     --capability <cap>            Filter by capability tag
   capabilities (caps)           Show all capabilities across the ecosystem
     --provider <name>             Scope to one provider
   capable <capability>          List models with a given capability
     --provider <name>             Filter by serving-layer provider
     --origin <name>               Filter by origin/creator provider
-    --mode <mode>                 Filter by mode (chat, embedding, image, audio)
+    --mode <mode>                 Filter by mode (chat, embedding, image, video, audio, moderation, rerank)
     --limit <n>                   Maximum models to show
   cheapest                      Find cheapest eligible models
     --role <role>                 Task role, e.g. embeddings or image

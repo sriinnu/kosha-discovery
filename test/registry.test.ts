@@ -326,6 +326,94 @@ describe("ModelRegistry", () => {
 			expect(result.matches[0].score).toBe(0.02);
 		});
 
+		it("ranks video-generation models by per-second output pricing", () => {
+			const cheapVideo = makeModel({
+				id: "alibaba/wan-v2.5-t2v-preview",
+				provider: "vercel",
+				mode: "video",
+				capabilities: ["video_generation"],
+				pricing: { inputPerMillion: 0, outputPerMillion: 0, videoOutputPerSecond: 0.05 },
+			});
+			const expensiveVideo = makeModel({
+				id: "google/veo-expensive",
+				provider: "vercel",
+				mode: "video",
+				capabilities: ["video_generation"],
+				pricing: { inputPerMillion: 0, outputPerMillion: 0, videoOutputPerSecond: 0.1 },
+			});
+
+			const registry = ModelRegistry.fromJSON({
+				providers: [makeProvider("vercel", "Vercel AI Gateway", [expensiveVideo, cheapVideo])],
+				aliases: {},
+				discoveredAt: Date.now(),
+			});
+
+			const result = registry.cheapestModels({ role: "video_generation", limit: 1 });
+			expect(result.priceMetric).toBe("output");
+			expect(result.pricedCandidates).toBe(2);
+			expect(result.matches[0].model.id).toBe("alibaba/wan-v2.5-t2v-preview");
+			expect(result.matches[0].score).toBe(0.05);
+		});
+
+		it("scores web_search role by request rate alone, not summed with token output (merged_bug_003)", () => {
+			// Two chat models, both with web_search pricing. Naive sum (token + unit) would
+			// rank A=39 vs B=45 → A wins. By the request rate alone, B is cheaper (10 vs 14).
+			const opusLikeWithCheapTokens = makeModel({
+				id: "anthropic/claude-opus-likely",
+				provider: "vercel",
+				mode: "chat",
+				capabilities: ["chat", "web_search"],
+				pricing: { inputPerMillion: 15, outputPerMillion: 25, webSearchPerThousandRequests: 14 },
+			});
+			const geminiLikeWithCheapSearch = makeModel({
+				id: "google/gemini-cheap-search",
+				provider: "vercel",
+				mode: "chat",
+				capabilities: ["chat", "web_search"],
+				pricing: { inputPerMillion: 1.25, outputPerMillion: 10, webSearchPerThousandRequests: 10 },
+			});
+
+			const registry = ModelRegistry.fromJSON({
+				providers: [
+					makeProvider("vercel", "Vercel AI Gateway", [opusLikeWithCheapTokens, geminiLikeWithCheapSearch]),
+				],
+				aliases: {},
+				discoveredAt: Date.now(),
+			});
+
+			const result = registry.cheapestModels({ role: "web_search", limit: 2 });
+			expect(result.priceMetric).toBe("output");
+			expect(result.matches[0].model.id).toBe("google/gemini-cheap-search");
+			expect(result.matches[0].score).toBe(10);
+			expect(result.matches[1].score).toBe(14);
+		});
+
+		it("prefers explicit role over capability membership when a model carries both image and video caps (merged_bug_003)", () => {
+			const multimodal = makeModel({
+				id: "vendor/multimodal",
+				provider: "vercel",
+				mode: "chat",
+				capabilities: ["chat", "image_generation", "video_generation"],
+				pricing: {
+					inputPerMillion: 0,
+					outputPerMillion: 0,
+					imageOutputPerImage: 0.04,
+					videoOutputPerSecond: 0.5,
+				},
+			});
+
+			const registry = ModelRegistry.fromJSON({
+				providers: [makeProvider("vercel", "Vercel AI Gateway", [multimodal])],
+				aliases: {},
+				discoveredAt: Date.now(),
+			});
+
+			const videoQuery = registry.cheapestModels({ role: "video_generation", limit: 1 });
+			expect(videoQuery.matches[0].score).toBe(0.5);
+			const imageQuery = registry.cheapestModels({ role: "image_generation", limit: 1 });
+			expect(imageQuery.matches[0].score).toBe(0.04);
+		});
+
 		it("reports missing credentials for providers without required keys", () => {
 			const registry = ModelRegistry.fromJSON({
 				providers: [
@@ -337,15 +425,22 @@ describe("ModelRegistry", () => {
 						authenticated: false,
 						credentialSource: "none",
 					}),
+					makeProvider("vercel", "Vercel AI Gateway", [], {
+						authenticated: false,
+						credentialSource: "none",
+					}),
 				],
 				aliases: {},
 				discoveredAt: Date.now(),
 			});
 
 			const prompts = registry.missingCredentialPrompts();
-			expect(prompts).toHaveLength(1);
-			expect(prompts[0].providerId).toBe("openai");
-			expect(prompts[0].envVars).toEqual(["OPENAI_API_KEY"]);
+			expect(prompts.map((prompt) => prompt.providerId)).toEqual(["openai", "vercel"]);
+			expect(prompts.find((prompt) => prompt.providerId === "openai")?.envVars).toEqual(["OPENAI_API_KEY"]);
+			expect(prompts.find((prompt) => prompt.providerId === "vercel")?.envVars).toEqual([
+				"AI_GATEWAY_API_KEY",
+				"VERCEL_OIDC_TOKEN",
+			]);
 		});
 	});
 

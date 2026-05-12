@@ -20,7 +20,12 @@ import type {
 	DiscoveryProviderV1,
 	DiscoverySnapshotV1,
 } from "./discovery-contract.js";
-import { getProviderConfig, listProviderDescriptors, normalizeProviderId } from "./provider-catalog.js";
+import {
+	getProviderConfig,
+	listProviderDescriptors,
+	normalizeProviderId,
+	providerExecutionCredentialRequired,
+} from "./provider-catalog.js";
 import { diffSnapshots, fullSnapshotChanges } from "./registry-delta.js";
 import { registryModels, registryProviderDescriptor } from "./registry-query.js";
 import type { ModelCard, ProviderCredentialPrompt } from "./types.js";
@@ -220,7 +225,7 @@ export function registrySerializeProvider(state: RegistryState, providerId: stri
 		authenticated: provider?.authenticated ?? false,
 		credentialSource: provider?.credentialSource ?? null,
 		credentialsPresent: provider?.authenticated ?? false,
-		credentialsRequired: descriptor.credentialRequired,
+		credentialsRequired: providerExecutionCredentialRequired(descriptor),
 		credentialEnvVars: [...descriptor.credentialEnvVars],
 		modelCount: provider?.models.length ?? 0,
 		lastRefreshed: provider?.lastRefreshed ?? null,
@@ -368,7 +373,7 @@ function catalogCredentialPrompts(state: RegistryState): ProviderCredentialPromp
 
 	for (const descriptor of listProviderDescriptors()) {
 		const provider = state.providerMap.get(descriptor.providerId);
-		if (!descriptor.credentialRequired || provider?.authenticated) {
+		if (!providerExecutionCredentialRequired(descriptor) || provider?.authenticated) {
 			continue;
 		}
 
@@ -381,7 +386,9 @@ function catalogCredentialPrompts(state: RegistryState): ProviderCredentialPromp
 			providerName: descriptor.name,
 			required: true,
 			envVars: descriptor.credentialEnvVars,
-			message: `${envHint} to enable ${descriptor.name} model discovery.`,
+			message: `${envHint} to enable ${descriptor.name} ${
+				descriptor.credentialRequired ? "model discovery and requests" : "model requests"
+			}.`,
 		});
 	}
 

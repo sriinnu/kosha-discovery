@@ -324,6 +324,7 @@ export class LiteLLMEnricher implements Enricher {
 			entry.input_cost_per_audio_per_second !== undefined ||
 			entry.output_cost_per_audio_per_second !== undefined ||
 			entry.input_cost_per_video_per_second !== undefined ||
+			entry.output_cost_per_video_per_second !== undefined ||
 			entry.input_cost_per_video_token !== undefined ||
 			entry.input_cost_per_character !== undefined ||
 			entry.output_cost_per_character !== undefined;
@@ -378,6 +379,9 @@ export class LiteLLMEnricher implements Enricher {
 		}
 		if (entry.input_cost_per_video_per_second !== undefined) {
 			pricing.videoInputPerSecond = entry.input_cost_per_video_per_second;
+		}
+		if (entry.output_cost_per_video_per_second !== undefined) {
+			pricing.videoOutputPerSecond = entry.output_cost_per_video_per_second;
 		}
 		if (entry.input_cost_per_video_token !== undefined) {
 			pricing.videoInputPerMillion = entry.input_cost_per_video_token * PER_MILLION;
@@ -438,6 +442,8 @@ export class LiteLLMEnricher implements Enricher {
 				return "embedding";
 			case "image_generation":
 				return "image";
+			case "video_generation":
+				return "video";
 			case "audio_transcription":
 			case "audio_speech":
 				return "audio";
