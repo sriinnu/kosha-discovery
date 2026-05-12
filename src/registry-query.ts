@@ -355,10 +355,10 @@ export function computeModelScore(
 	if (metric === "input") return Number.isFinite(model.pricing.inputPerMillion) ? model.pricing.inputPerMillion : undefined;
 	const unitOutput = outputUnitScore(model, roleOrCapability);
 	if (metric === "output") {
-		if (unitOutput !== undefined) {
-			const tokenOutput = Number.isFinite(model.pricing.outputPerMillion) ? model.pricing.outputPerMillion : 0;
-			return tokenOutput > 0 ? tokenOutput + unitOutput : unitOutput;
-		}
+		// A unit-priced rate (USD per image / per second / per 1000 requests / per million chars) is
+		// not commensurable with a per-million-tokens rate. When the role or modality picks a
+		// unit-priced score, return that rate alone; otherwise fall through to token output.
+		if (unitOutput !== undefined) return unitOutput;
 		return Number.isFinite(model.pricing.outputPerMillion) ? model.pricing.outputPerMillion : undefined;
 	}
 	if (
@@ -377,14 +377,14 @@ function outputUnitScore(model: ModelCard, roleOrCapability?: string): number | 
 	const pricing = model.pricing;
 	if (!pricing) return undefined;
 	const effectiveRole = roleOrCapability ? normalizeRoleToken(roleOrCapability) : undefined;
+	// Explicit role always wins, so a multimodal chat model carrying both image_generation and
+	// video_generation caps does not silently return image pricing for a video query.
 	if (effectiveRole === "web_search") return pricing.webSearchPerThousandRequests ?? pricing.requestPerThousand;
 	if (effectiveRole === "maps_search") return pricing.mapsSearchPerThousandRequests ?? pricing.requestPerThousand;
-	if (model.mode === "image" || effectiveRole === "image_generation" || model.capabilities.includes("image_generation")) {
-		return pricing.imageOutputPerImage;
-	}
-	if (model.mode === "video" || effectiveRole === "video_generation" || model.capabilities.includes("video_generation")) {
-		return pricing.videoOutputPerSecond;
-	}
+	if (effectiveRole === "video_generation") return pricing.videoOutputPerSecond;
+	if (effectiveRole === "image_generation") return pricing.imageOutputPerImage;
+	if (model.mode === "image" || model.capabilities.includes("image_generation")) return pricing.imageOutputPerImage;
+	if (model.mode === "video" || model.capabilities.includes("video_generation")) return pricing.videoOutputPerSecond;
 	return pricing.audioOutputPerSecond ?? pricing.outputPerMillionCharacters;
 }
 

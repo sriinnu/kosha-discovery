@@ -179,6 +179,11 @@ function roleRequirements(role: string): TrustedCapability[] {
 			return ["chat", "vision"];
 		case "rerank":
 			return ["rerank"];
+		case "video_generation":
+		case "video":
+		case "videos":
+		case "videogen":
+			return ["video_generation"];
 		case "local":
 		case "local_exec":
 			return ["local_exec"];
@@ -211,6 +216,9 @@ function normalizeTrustedCapabilityToken(value: string | undefined): TrustedCapa
 		cheap_inference: "cheap_inference",
 		free_tier: "free_tier",
 		free: "free_tier",
+		video_generation: "video_generation",
+		videos: "video_generation",
+		videogen: "video_generation",
 	};
 	return map[normalized];
 }

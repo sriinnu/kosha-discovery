@@ -355,6 +355,65 @@ describe("ModelRegistry", () => {
 			expect(result.matches[0].score).toBe(0.05);
 		});
 
+		it("scores web_search role by request rate alone, not summed with token output (merged_bug_003)", () => {
+			// Two chat models, both with web_search pricing. Naive sum (token + unit) would
+			// rank A=39 vs B=45 → A wins. By the request rate alone, B is cheaper (10 vs 14).
+			const opusLikeWithCheapTokens = makeModel({
+				id: "anthropic/claude-opus-likely",
+				provider: "vercel",
+				mode: "chat",
+				capabilities: ["chat", "web_search"],
+				pricing: { inputPerMillion: 15, outputPerMillion: 25, webSearchPerThousandRequests: 14 },
+			});
+			const geminiLikeWithCheapSearch = makeModel({
+				id: "google/gemini-cheap-search",
+				provider: "vercel",
+				mode: "chat",
+				capabilities: ["chat", "web_search"],
+				pricing: { inputPerMillion: 1.25, outputPerMillion: 10, webSearchPerThousandRequests: 10 },
+			});
+
+			const registry = ModelRegistry.fromJSON({
+				providers: [
+					makeProvider("vercel", "Vercel AI Gateway", [opusLikeWithCheapTokens, geminiLikeWithCheapSearch]),
+				],
+				aliases: {},
+				discoveredAt: Date.now(),
+			});
+
+			const result = registry.cheapestModels({ role: "web_search", limit: 2 });
+			expect(result.priceMetric).toBe("output");
+			expect(result.matches[0].model.id).toBe("google/gemini-cheap-search");
+			expect(result.matches[0].score).toBe(10);
+			expect(result.matches[1].score).toBe(14);
+		});
+
+		it("prefers explicit role over capability membership when a model carries both image and video caps (merged_bug_003)", () => {
+			const multimodal = makeModel({
+				id: "vendor/multimodal",
+				provider: "vercel",
+				mode: "chat",
+				capabilities: ["chat", "image_generation", "video_generation"],
+				pricing: {
+					inputPerMillion: 0,
+					outputPerMillion: 0,
+					imageOutputPerImage: 0.04,
+					videoOutputPerSecond: 0.5,
+				},
+			});
+
+			const registry = ModelRegistry.fromJSON({
+				providers: [makeProvider("vercel", "Vercel AI Gateway", [multimodal])],
+				aliases: {},
+				discoveredAt: Date.now(),
+			});
+
+			const videoQuery = registry.cheapestModels({ role: "video_generation", limit: 1 });
+			expect(videoQuery.matches[0].score).toBe(0.5);
+			const imageQuery = registry.cheapestModels({ role: "image_generation", limit: 1 });
+			expect(imageQuery.matches[0].score).toBe(0.04);
+		});
+
 		it("reports missing credentials for providers without required keys", () => {
 			const registry = ModelRegistry.fromJSON({
 				providers: [
