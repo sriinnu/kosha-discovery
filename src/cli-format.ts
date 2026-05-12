@@ -213,7 +213,8 @@ export function formatRelativeTime(ts: number, now: number = Date.now()): string
  */
 export function padRight(str: string, len: number): string {
 	// Strip ANSI codes for length calculation
-	const plainLen = str.replace(/\x1b\[[0-9;]*m/g, "").length;
+	const ansiEscapePattern = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+	const plainLen = str.replace(ansiEscapePattern, "").length;
 	if (plainLen >= len) return str;
 	return str + " ".repeat(len - plainLen);
 }

@@ -62,6 +62,7 @@ export interface LiteLLMModelEntry {
 	input_cost_per_audio_per_second?: number;
 	output_cost_per_audio_per_second?: number;
 	input_cost_per_video_per_second?: number;
+	output_cost_per_video_per_second?: number;
 	input_cost_per_video_token?: number;
 	input_cost_per_character?: number;
 	output_cost_per_character?: number;

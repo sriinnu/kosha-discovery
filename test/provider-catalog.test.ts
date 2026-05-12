@@ -17,6 +17,18 @@ describe("provider-catalog", () => {
 		expect(normalizeProviderId("kimi")).toBe("moonshot");
 		expect(normalizeProviderId("zhipu")).toBe("glm");
 		expect(normalizeProviderId("z.ai")).toBe("zai");
+		expect(normalizeProviderId("ai-gateway")).toBe("vercel");
+		expect(normalizeProviderId("vercel-ai-gateway")).toBe("vercel");
 		expect(getProviderDescriptor("moonshot")?.credentialRequired).toBe(true);
+	});
+
+	it("describes Vercel AI Gateway as a public catalog with authenticated execution", () => {
+		expect(getProviderDescriptor("vercel")).toMatchObject({
+			transport: "openai-compatible-http",
+			credentialRequired: false,
+			executionCredentialRequired: true,
+			credentialEnvVars: ["AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"],
+			primaryCredentialEnvVar: "AI_GATEWAY_API_KEY",
+		});
 	});
 });

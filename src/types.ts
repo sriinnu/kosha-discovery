@@ -8,7 +8,7 @@
  */
 
 /** Supported model operational modes. */
-export type ModelMode = "chat" | "embedding" | "image" | "audio" | "moderation" | "rerank";
+export type ModelMode = "chat" | "embedding" | "image" | "video" | "audio" | "moderation" | "rerank";
 
 /** Normalized transport families used by discovery consumers. */
 export type ProviderTransport = "native-http" | "openai-compatible-http" | "cloud-sdk";
@@ -76,10 +76,21 @@ export interface ModelPricing {
 	 */
 	videoInputPerSecond?: number;
 	/**
+	 * USD cost per second of generated video output for text/image-to-video
+	 * providers that bill by rendered duration.
+	 */
+	videoOutputPerSecond?: number;
+	/**
 	 * USD cost per 1 million video-input tokens for models that tokenize
 	 * video frames (newer Gemini long-video variants).
 	 */
 	videoInputPerMillion?: number;
+	/** USD cost per 1,000 web-search/tool-grounding requests. */
+	webSearchPerThousandRequests?: number;
+	/** USD cost per 1,000 maps/search-grounding requests. */
+	mapsSearchPerThousandRequests?: number;
+	/** USD cost per 1,000 generic requests when a provider bills per query. */
+	requestPerThousand?: number;
 	/**
 	 * USD cost per 1 million characters for providers that bill by character
 	 * rather than token (Vertex AI text models, some Azure endpoints).
@@ -367,7 +378,7 @@ export interface ProviderCredentialPrompt {
 	providerId: string;
 	/** Provider display name. */
 	providerName: string;
-	/** Whether this provider requires credentials to discover/use models. */
+	/** Whether this provider requires credentials to discover or execute models. */
 	required: boolean;
 	/** Environment variable names that satisfy the credential requirement. */
 	envVars: string[];

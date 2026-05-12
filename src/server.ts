@@ -30,7 +30,7 @@ import { registerProxyRoutes } from "./proxy.js";
 import { ModelRegistry } from "./registry.js";
 import { extractModelVersion, normalizeModelId } from "./normalize.js";
 
-const MODEL_MODES: readonly ModelMode[] = ["chat", "embedding", "image", "audio", "moderation", "rerank"];
+const MODEL_MODES: readonly ModelMode[] = ["chat", "embedding", "image", "video", "audio", "moderation", "rerank"];
 const PRICE_METRICS: readonly NonNullable<CheapestModelOptions["priceMetric"]>[] = ["input", "output", "blended"];
 
 function parseMode(value: string | undefined): ModelMode | undefined {

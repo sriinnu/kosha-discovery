@@ -21,8 +21,13 @@ import type {
 	ProviderRoleInfo,
 	RoleQueryOptions,
 } from "./types.js";
-import { extractModelVersion, extractOriginProvider, matchableModelId, normalizeModelId } from "./normalize.js";
-import { getProviderDescriptor, isLocalProvider, normalizeProviderId } from "./provider-catalog.js";
+import { extractModelVersion, extractOriginProvider, matchableModelId } from "./normalize.js";
+import {
+	getProviderDescriptor,
+	isLocalProvider,
+	normalizeProviderId,
+	providerExecutionCredentialRequired,
+} from "./provider-catalog.js";
 import type { RegistryState } from "./registry-state.js";
 
 const ROLE_ALIASES: Record<string, string> = {
@@ -33,6 +38,10 @@ const ROLE_ALIASES: Record<string, string> = {
 	imagegen: "image_generation",
 	image_generation: "image_generation",
 	image_generation_model: "image_generation",
+	videos: "video_generation",
+	videogen: "video_generation",
+	video_generation: "video_generation",
+	video_generation_model: "video_generation",
 	stt: "speech_to_text",
 	transcription: "speech_to_text",
 	tts: "text_to_speech",
@@ -41,6 +50,11 @@ const ROLE_ALIASES: Record<string, string> = {
 	tools: "function_calling",
 	functions: "function_calling",
 	functioncalling: "function_calling",
+	web: "web_search",
+	search: "web_search",
+	websearch: "web_search",
+	maps: "maps_search",
+	map_search: "maps_search",
 	prompt_cache: "prompt_caching",
 };
 
@@ -51,6 +65,8 @@ const MODE_ALIASES: Record<string, ModelMode> = {
 	embedding: "embedding",
 	image: "image",
 	image_generation: "image",
+	video: "video",
+	video_generation: "video",
 	audio: "audio",
 	speech_to_text: "audio",
 	text_to_speech: "audio",
@@ -62,7 +78,7 @@ const MODE_ALIASES: Record<string, ModelMode> = {
 /**
  * Return a stable provider descriptor, even for synthetic test providers.
  */
-export function registryProviderDescriptor(state: RegistryState, providerId: string, providerInfo?: ProviderInfo) {
+export function registryProviderDescriptor(_state: RegistryState, providerId: string, providerInfo?: ProviderInfo) {
 	return getProviderDescriptor(providerId) ?? {
 		providerId,
 		canonicalProviderId: providerId,
@@ -73,6 +89,7 @@ export function registryProviderDescriptor(state: RegistryState, providerId: str
 		transport: "native-http" as const,
 		defaultBaseUrl: providerInfo?.baseUrl ?? "",
 		credentialRequired: false,
+		executionCredentialRequired: false,
 		credentialEnvVars: [],
 	};
 }
@@ -191,14 +208,15 @@ export function registryMissingCredentialPrompts(state: RegistryState, providerI
 
 	for (const provider of providers) {
 		const descriptor = registryProviderDescriptor(state, provider.id, provider);
-		if (!descriptor.credentialRequired || provider.authenticated) continue;
+		if (!providerExecutionCredentialRequired(descriptor) || provider.authenticated) continue;
 		const envHint = descriptor.credentialEnvVars.length > 0 ? `Set ${descriptor.credentialEnvVars.join(" or ")}` : "Configure credentials";
+		const action = descriptor.credentialRequired ? "model discovery and requests" : "model requests";
 		prompts.push({
 			providerId: descriptor.providerId,
 			providerName: descriptor.name,
 			required: true,
 			envVars: descriptor.credentialEnvVars,
-			message: `${envHint} to enable ${descriptor.name} model discovery.`,
+			message: `${envHint} to enable ${descriptor.name} ${action}.`,
 		});
 	}
 
@@ -210,6 +228,7 @@ export function registryMissingCredentialPrompts(state: RegistryState, providerI
  */
 export function registryCheapestModels(state: RegistryState, options?: CheapestModelOptions): CheapestModelResult {
 	const capability = options?.capability ? normalizeRoleToken(options.capability) : undefined;
+	const effectiveRole = capability ?? (options?.role ? normalizeRoleToken(options.role) : undefined);
 	const candidates = registryModels(state, {
 		provider: options?.provider,
 		originProvider: options?.originProvider,
@@ -220,7 +239,7 @@ export function registryCheapestModels(state: RegistryState, options?: CheapestM
 	const unpriced: CheapestModelMatch[] = [];
 
 	for (const model of candidates) {
-		const score = computeModelScore(model, priceMetric, options?.inputWeight ?? 1, options?.outputWeight ?? 1);
+		const score = computeModelScore(model, priceMetric, options?.inputWeight ?? 1, options?.outputWeight ?? 1, effectiveRole);
 		if (score === undefined) {
 			if (options?.includeUnpriced) unpriced.push({ model, score: undefined, priceMetric });
 			continue;
@@ -316,6 +335,8 @@ export function registryCapabilities(state: RegistryState, filter?: { provider?:
 export function defaultPricingMetric(options?: CheapestModelOptions): PricingMetric {
 	const effective = (options?.role ? normalizeRoleToken(options.role) : undefined) ?? (options?.capability ? normalizeRoleToken(options.capability) : undefined);
 	if (options?.mode === "embedding" || effective === "embedding") return "input";
+	if (options?.mode === "image" || options?.mode === "video" || effective === "image_generation" || effective === "video_generation") return "output";
+	if (effective === "web_search" || effective === "maps_search") return "output";
 	if (options?.mode === "audio" && (effective === "speech_to_text" || effective === "text_to_speech")) return "input";
 	return "blended";
 }
@@ -323,13 +344,48 @@ export function defaultPricingMetric(options?: CheapestModelOptions): PricingMet
 /**
  * Compute a comparable score for a model/pricing metric combination.
  */
-export function computeModelScore(model: ModelCard, metric: PricingMetric, inputWeight: number, outputWeight: number): number | undefined {
+export function computeModelScore(
+	model: ModelCard,
+	metric: PricingMetric,
+	inputWeight: number,
+	outputWeight: number,
+	roleOrCapability?: string,
+): number | undefined {
 	if (!model.pricing) return undefined;
 	if (metric === "input") return Number.isFinite(model.pricing.inputPerMillion) ? model.pricing.inputPerMillion : undefined;
-	if (metric === "output") return Number.isFinite(model.pricing.outputPerMillion) ? model.pricing.outputPerMillion : undefined;
+	const unitOutput = outputUnitScore(model, roleOrCapability);
+	if (metric === "output") {
+		if (unitOutput !== undefined) {
+			const tokenOutput = Number.isFinite(model.pricing.outputPerMillion) ? model.pricing.outputPerMillion : 0;
+			return tokenOutput > 0 ? tokenOutput + unitOutput : unitOutput;
+		}
+		return Number.isFinite(model.pricing.outputPerMillion) ? model.pricing.outputPerMillion : undefined;
+	}
+	if (
+		unitOutput !== undefined &&
+		model.pricing.inputPerMillion === 0 &&
+		model.pricing.outputPerMillion === 0
+	) {
+		return unitOutput;
+	}
 	return Number.isFinite(model.pricing.inputPerMillion) && Number.isFinite(model.pricing.outputPerMillion)
 		? model.pricing.inputPerMillion * inputWeight + model.pricing.outputPerMillion * outputWeight
 		: undefined;
+}
+
+function outputUnitScore(model: ModelCard, roleOrCapability?: string): number | undefined {
+	const pricing = model.pricing;
+	if (!pricing) return undefined;
+	const effectiveRole = roleOrCapability ? normalizeRoleToken(roleOrCapability) : undefined;
+	if (effectiveRole === "web_search") return pricing.webSearchPerThousandRequests ?? pricing.requestPerThousand;
+	if (effectiveRole === "maps_search") return pricing.mapsSearchPerThousandRequests ?? pricing.requestPerThousand;
+	if (model.mode === "image" || effectiveRole === "image_generation" || model.capabilities.includes("image_generation")) {
+		return pricing.imageOutputPerImage;
+	}
+	if (model.mode === "video" || effectiveRole === "video_generation" || model.capabilities.includes("video_generation")) {
+		return pricing.videoOutputPerSecond;
+	}
+	return pricing.audioOutputPerSecond ?? pricing.outputPerMillionCharacters;
 }
 
 /**

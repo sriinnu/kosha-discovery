@@ -256,6 +256,29 @@ describe("Hono API Server — createServer()", () => {
 			expect(body.count).toBe(1);
 			expect(body.models[0].id).toBe("text-embedding-3-small");
 		});
+
+		it("filters by video mode", async () => {
+			const videoModel = makeModel({
+				id: "alibaba/wan-v2.5-t2v-preview",
+				provider: "vercel",
+				mode: "video",
+				capabilities: ["video_generation"],
+				pricing: { inputPerMillion: 0, outputPerMillion: 0, videoOutputPerSecond: 0.05 },
+			});
+			const localRegistry = ModelRegistry.fromJSON({
+				providers: [makeProvider("vercel", "Vercel AI Gateway", [videoModel])],
+				aliases: {},
+				discoveredAt: Date.now(),
+			});
+			const localApp = createServer(localRegistry);
+
+			const res = await localApp.request("/api/models?mode=video");
+			expect(res.status).toBe(200);
+
+			const body = await res.json();
+			expect(body.count).toBe(1);
+			expect(body.models[0].mode).toBe("video");
+		});
 	});
 
 	// ── GET /api/models/cheapest ─────────────────────────────────────

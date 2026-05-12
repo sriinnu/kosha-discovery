@@ -56,6 +56,8 @@ export class CredentialResolver {
 				return this.resolveGoogle(explicitKey);
 			case "openrouter":
 				return this.resolveOpenRouter(explicitKey);
+			case "vercel":
+				return this.resolveVercelAIGateway(explicitKey);
 			case "ollama":
 			case "llama.cpp":
 				return this.resolveOllama();
@@ -294,6 +296,34 @@ export class CredentialResolver {
 	}
 
 	// ---------------------------------------------------------------------------
+	// Vercel AI Gateway
+	// ---------------------------------------------------------------------------
+
+	/**
+	 * Search hierarchy for Vercel AI Gateway credentials:
+	 *   1. Explicit config key
+	 *   2. `AI_GATEWAY_API_KEY` env var
+	 *   3. `VERCEL_OIDC_TOKEN` env var (available on Vercel deployments)
+	 */
+	private async resolveVercelAIGateway(explicitKey?: string): Promise<CredentialResult> {
+		if (explicitKey) {
+			return { apiKey: explicitKey, source: "config" };
+		}
+
+		const apiKey = process.env.AI_GATEWAY_API_KEY;
+		if (apiKey) {
+			return { apiKey, source: "env" };
+		}
+
+		const oidcToken = process.env.VERCEL_OIDC_TOKEN;
+		if (oidcToken) {
+			return { accessToken: oidcToken, source: "env" };
+		}
+
+		return { source: "none" };
+	}
+
+	// ---------------------------------------------------------------------------
 	// Ollama (no auth needed)
 	// ---------------------------------------------------------------------------
 
@@ -350,7 +380,7 @@ export class CredentialResolver {
 		const awsCredentialsRaw = await this.readTextFile(awsCredentialsPath);
 		if (awsCredentialsRaw !== null) {
 			const defaultProfile = this.parseAwsIniSection(awsCredentialsRaw, "default");
-			const keyId = defaultProfile["aws_access_key_id"];
+			const keyId = defaultProfile.aws_access_key_id;
 			if (keyId) {
 				const region = await this.resolveAwsRegion();
 				return { apiKey: keyId, source: "cli", path: awsCredentialsPath, metadata: { region } };
@@ -398,8 +428,8 @@ export class CredentialResolver {
 		if (configText !== null) {
 			// AWS config uses [profile default] for non-default profiles and [default] for the default
 			const section =
-				this.parseAwsIniSection(configText, "profile default")["region"] ??
-				this.parseAwsIniSection(configText, "default")["region"];
+				this.parseAwsIniSection(configText, "profile default").region ??
+				this.parseAwsIniSection(configText, "default").region;
 			if (section) {
 				return section;
 			}

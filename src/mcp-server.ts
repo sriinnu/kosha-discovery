@@ -46,7 +46,7 @@ const TOOLS = [
 				provider: { type: "string", description: "Provider ID (e.g. anthropic, openai, groq, openrouter)" },
 				mode: {
 					type: "string",
-					enum: ["chat", "embedding", "image", "audio"],
+					enum: ["chat", "embedding", "image", "video", "audio", "moderation", "rerank"],
 					description: "Primary model mode",
 				},
 				capability: {
@@ -132,19 +132,24 @@ const TOOLS = [
 ] as const;
 
 // ---------------------------------------------------------------------------
-// Registry — load in background on startup so first tool call is fast
+// Registry — lazy-load on first tool call so starting the MCP server has no
+// filesystem/network side effects until a client actually asks for data.
 // ---------------------------------------------------------------------------
 
 let registryInstance: ModelRegistry | null = null;
-const registryReady: Promise<ModelRegistry> = (async () => {
+let registryReady: Promise<ModelRegistry> | null = null;
+
+async function loadRegistry(): Promise<ModelRegistry> {
 	const reg = new ModelRegistry();
 	await reg.discover();
 	registryInstance = reg;
 	return reg;
-})();
+}
 
 async function getRegistry(): Promise<ModelRegistry> {
-	return registryInstance ?? registryReady;
+	if (registryInstance) return registryInstance;
+	registryReady ??= loadRegistry();
+	return registryReady;
 }
 
 // ---------------------------------------------------------------------------
@@ -264,7 +269,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
 // ---------------------------------------------------------------------------
 
 function send(msg: JsonRpcMessage): void {
-	process.stdout.write(JSON.stringify(msg) + "\n");
+	process.stdout.write(`${JSON.stringify(msg)}\n`);
 }
 
 function respond(id: string | number | null | undefined, result: unknown): void {

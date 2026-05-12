@@ -347,7 +347,7 @@ export class ModelRegistry {
 
 	/** Compatibility wrapper retained for tests that probe internal mutation APIs. */
 	private recordDiscoveryMutation(previousSnapshot: DiscoverySnapshotV1 | null): void {
-		return registryRecordDiscoveryMutation(this.state, previousSnapshot);
+		registryRecordDiscoveryMutation(this.state, previousSnapshot);
 	}
 
 	/** Compatibility wrapper retained for tests that probe internal mutation APIs. */
@@ -355,7 +355,7 @@ export class ModelRegistry {
 		providerId: string,
 		entry: { latencyMs: number; errorType: ProviderObservation["lastErrorType"] },
 	): void {
-		return registryRecordObservation(this.state, providerId, entry);
+		registryRecordObservation(this.state, providerId, entry);
 	}
 
 	/** Compatibility wrapper retained for internal error classification hooks. */

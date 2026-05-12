@@ -29,8 +29,10 @@ export interface ProviderDescriptor {
 	transport: ProviderTransport;
 	/** Default base URL used by the built-in discoverer. */
 	defaultBaseUrl: string;
-	/** Whether the provider normally requires credentials. */
+	/** Whether model discovery normally requires credentials. */
 	credentialRequired: boolean;
+	/** Whether execution/model requests require credentials; defaults to `credentialRequired`. */
+	executionCredentialRequired?: boolean;
 	/** Environment variables that satisfy the provider credential requirement. */
 	credentialEnvVars: string[];
 	/** The single env var that `fallbackRegistryCredential` reads for this provider. */
@@ -104,8 +106,23 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		transport: "openai-compatible-http",
 		defaultBaseUrl: "https://openrouter.ai/api/v1",
 		credentialRequired: false,
+		executionCredentialRequired: true,
 		credentialEnvVars: ["OPENROUTER_API_KEY"],
 		primaryCredentialEnvVar: "OPENROUTER_API_KEY",
+	},
+	{
+		providerId: "vercel",
+		canonicalProviderId: "vercel",
+		aliases: ["ai-gateway", "ai_gateway", "vercel-ai", "vercel-ai-gateway"],
+		name: "Vercel AI Gateway",
+		origin: "proxy",
+		isLocal: false,
+		transport: "openai-compatible-http",
+		defaultBaseUrl: "https://ai-gateway.vercel.sh/v1",
+		credentialRequired: false,
+		executionCredentialRequired: true,
+		credentialEnvVars: ["AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"],
+		primaryCredentialEnvVar: "AI_GATEWAY_API_KEY",
 	},
 	{
 		providerId: "ollama",
@@ -388,6 +405,13 @@ export function getProviderConfig(
 	return config.providers[descriptor.providerId] ??
 		config.providers[descriptor.canonicalProviderId] ??
 		descriptor.aliases.map((alias) => config.providers?.[alias]).find(Boolean);
+}
+
+/** Return true when model execution through this provider needs auth. */
+export function providerExecutionCredentialRequired(
+	descriptor: Pick<ProviderDescriptor, "credentialRequired" | "executionCredentialRequired">,
+): boolean {
+	return descriptor.executionCredentialRequired ?? descriptor.credentialRequired;
 }
 
 /**

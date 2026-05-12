@@ -4,6 +4,7 @@ export { GoogleDiscoverer } from "./google.js";
 export { OllamaDiscoverer } from "./ollama.js";
 export { LlamaCppDiscoverer } from "./llama-cpp.js";
 export { OpenRouterDiscoverer } from "./openrouter.js";
+export { VercelAIGatewayDiscoverer } from "./vercel.js";
 export { BedrockDiscoverer, inferOriginFromBedrockId } from "./bedrock.js";
 export { VertexDiscoverer } from "./vertex.js";
 export { NvidiaDiscoverer } from "./nvidia.js";
@@ -38,6 +39,7 @@ import { LlamaCppDiscoverer } from "./llama-cpp.js";
 import { OllamaDiscoverer } from "./ollama.js";
 import { OpenAIDiscoverer } from "./openai.js";
 import { OpenRouterDiscoverer } from "./openrouter.js";
+import { VercelAIGatewayDiscoverer } from "./vercel.js";
 import { PerplexityDiscoverer } from "./perplexity.js";
 import { TogetherDiscoverer } from "./together.js";
 import { VertexDiscoverer } from "./vertex.js";
@@ -64,6 +66,7 @@ const DISCOVERER_REGISTRY: Record<string, DiscovererFactory> = {
 	ollama: (baseUrl) => new OllamaDiscoverer(baseUrl),
 	"llama.cpp": (baseUrl) => new LlamaCppDiscoverer(baseUrl),
 	openrouter: () => new OpenRouterDiscoverer(),
+	vercel: () => new VercelAIGatewayDiscoverer(),
 	bedrock: () => new BedrockDiscoverer(),
 	vertex: () => new VertexDiscoverer(),
 	nvidia: () => new NvidiaDiscoverer(),

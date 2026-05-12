@@ -121,6 +121,11 @@ describe("provider contracts", () => {
 			transport: "openai-compatible-http",
 			credentialEnvVars: ["MINIMAX_API_KEY"],
 		});
+
+		expect(getProviderDescriptor("vercel")).toMatchObject({
+			transport: "openai-compatible-http",
+			credentialEnvVars: ["AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"],
+		});
 	});
 });
 

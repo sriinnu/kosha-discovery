@@ -326,6 +326,35 @@ describe("ModelRegistry", () => {
 			expect(result.matches[0].score).toBe(0.02);
 		});
 
+		it("ranks video-generation models by per-second output pricing", () => {
+			const cheapVideo = makeModel({
+				id: "alibaba/wan-v2.5-t2v-preview",
+				provider: "vercel",
+				mode: "video",
+				capabilities: ["video_generation"],
+				pricing: { inputPerMillion: 0, outputPerMillion: 0, videoOutputPerSecond: 0.05 },
+			});
+			const expensiveVideo = makeModel({
+				id: "google/veo-expensive",
+				provider: "vercel",
+				mode: "video",
+				capabilities: ["video_generation"],
+				pricing: { inputPerMillion: 0, outputPerMillion: 0, videoOutputPerSecond: 0.1 },
+			});
+
+			const registry = ModelRegistry.fromJSON({
+				providers: [makeProvider("vercel", "Vercel AI Gateway", [expensiveVideo, cheapVideo])],
+				aliases: {},
+				discoveredAt: Date.now(),
+			});
+
+			const result = registry.cheapestModels({ role: "video_generation", limit: 1 });
+			expect(result.priceMetric).toBe("output");
+			expect(result.pricedCandidates).toBe(2);
+			expect(result.matches[0].model.id).toBe("alibaba/wan-v2.5-t2v-preview");
+			expect(result.matches[0].score).toBe(0.05);
+		});
+
 		it("reports missing credentials for providers without required keys", () => {
 			const registry = ModelRegistry.fromJSON({
 				providers: [
@@ -337,15 +366,22 @@ describe("ModelRegistry", () => {
 						authenticated: false,
 						credentialSource: "none",
 					}),
+					makeProvider("vercel", "Vercel AI Gateway", [], {
+						authenticated: false,
+						credentialSource: "none",
+					}),
 				],
 				aliases: {},
 				discoveredAt: Date.now(),
 			});
 
 			const prompts = registry.missingCredentialPrompts();
-			expect(prompts).toHaveLength(1);
-			expect(prompts[0].providerId).toBe("openai");
-			expect(prompts[0].envVars).toEqual(["OPENAI_API_KEY"]);
+			expect(prompts.map((prompt) => prompt.providerId)).toEqual(["openai", "vercel"]);
+			expect(prompts.find((prompt) => prompt.providerId === "openai")?.envVars).toEqual(["OPENAI_API_KEY"]);
+			expect(prompts.find((prompt) => prompt.providerId === "vercel")?.envVars).toEqual([
+				"AI_GATEWAY_API_KEY",
+				"VERCEL_OIDC_TOKEN",
+			]);
 		});
 	});
 

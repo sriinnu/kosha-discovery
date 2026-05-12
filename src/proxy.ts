@@ -29,7 +29,7 @@
 import type { Hono } from "hono";
 import type { ModelCard } from "./types.js";
 import type { ModelRegistry } from "./registry.js";
-import { getProviderDescriptor } from "./provider-catalog.js";
+import { getProviderDescriptor, providerExecutionCredentialRequired } from "./provider-catalog.js";
 import { fallbackRegistryCredential, getRegistryCredentialResolver } from "./registry-runtime.js";
 
 // native-http providers that speak the OpenAI wire format natively.
@@ -75,6 +75,13 @@ function isForwardable(model: ModelCard): boolean {
 	return false; // cloud-sdk (bedrock, vertex) needs per-SDK translation
 }
 
+function isExecutableRoute(registry: ModelRegistry, model: ModelCard): boolean {
+	if (!isForwardable(model)) return false;
+	const descriptor = getProviderDescriptor(model.provider);
+	if (!descriptor || !providerExecutionCredentialRequired(descriptor)) return true;
+	return registry.provider(model.provider)?.authenticated === true;
+}
+
 function resolveProxyModel(registry: ModelRegistry, requested: string): ModelCard | null {
 	const hint = parseKoshaHint(requested);
 	if (hint !== null) {
@@ -88,7 +95,9 @@ function resolveProxyModel(registry: ModelRegistry, requested: string): ModelCar
 			? result.matches.filter((m) => m.model.contextWindow >= (hint.minContext as number))
 			: result.matches;
 		// Only pick a provider we can actually forward to.
-		return candidates.find((m) => isForwardable(m.model))?.model ?? null;
+		return candidates.find((m) => isExecutableRoute(registry, m.model))?.model ??
+			candidates.find((m) => isForwardable(m.model))?.model ??
+			null;
 	}
 
 	// For a specific model ID or alias, prefer the canonical card but fall back
@@ -96,10 +105,14 @@ function resolveProxyModel(registry: ModelRegistry, requested: string): ModelCar
 	// "claude-sonnet-4-6" resolves to Anthropic by default, but if the caller
 	// only has an OpenRouter key, we should route through OpenRouter instead).
 	const primary = registry.model(requested);
-	if (primary && isForwardable(primary)) return primary;
+	if (primary && isExecutableRoute(registry, primary)) return primary;
 
 	const routes = registry.modelRoutes(requested);
-	return routes.find(isForwardable) ?? primary ?? null;
+	return routes.find((route) => isExecutableRoute(registry, route)) ??
+		(primary && isForwardable(primary) ? primary : undefined) ??
+		routes.find(isForwardable) ??
+		primary ??
+		null;
 }
 
 // ---------------------------------------------------------------------------
@@ -108,9 +121,14 @@ function resolveProxyModel(registry: ModelRegistry, requested: string): ModelCar
 
 function buildUpstreamUrl(model: ModelCard, registry: ModelRegistry): string {
 	const info = registry.provider(model.provider);
-	const base = (info?.baseUrl ?? getProviderDescriptor(model.provider)?.defaultBaseUrl ?? "").replace(/\/$/, "");
-	// Ollama's root is http://localhost:11434; its OpenAI-compat layer lives at /v1.
-	if (model.provider === "ollama" && !base.endsWith("/v1")) {
+	const descriptor = getProviderDescriptor(model.provider);
+	const base = (
+		descriptor?.isLocal
+			? info?.baseUrl ?? descriptor.defaultBaseUrl
+			: descriptor?.defaultBaseUrl ?? info?.baseUrl ?? ""
+	).replace(/\/$/, "");
+	// Some native/local roots expose the OpenAI-compatible layer under /v1.
+	if ((model.provider === "openai" || model.provider === "ollama" || model.provider === "llama.cpp") && !base.endsWith("/v1")) {
 		return `${base}/v1/chat/completions`;
 	}
 	return `${base}/chat/completions`;
@@ -175,12 +193,16 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry): void {
 		const credential = resolver
 			? await resolver.resolve(model.provider)
 			: fallbackRegistryCredential(model.provider);
-		if (credential.source === "none") {
-			const envVar = getProviderDescriptor(model.provider)?.primaryCredentialEnvVar;
+		const bearerToken = credential.apiKey ?? credential.accessToken;
+		const credentialDescriptor = getProviderDescriptor(model.provider);
+		if (credentialDescriptor && providerExecutionCredentialRequired(credentialDescriptor) && !bearerToken) {
+			const envHint = credentialDescriptor.credentialEnvVars.length
+				? credentialDescriptor.credentialEnvVars.join(" or ")
+				: credentialDescriptor.primaryCredentialEnvVar;
 			return ctx.json(
 				{
 					error: `no credential found for '${model.provider}'`,
-					hint: envVar ? `set ${envVar}` : "configure credentials for this provider",
+					hint: envHint ? `set ${envHint}` : "configure credentials for this provider",
 					resolvedModel: model.id,
 					resolvedProvider: model.provider,
 				},
@@ -191,9 +213,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry): void {
 		// ── Forward ────────────────────────────────────────────────────
 		const upstreamUrl = buildUpstreamUrl(model, registry);
 		const upstreamHeaders: Record<string, string> = { "content-type": "application/json" };
-		if (credential.apiKey) {
-			upstreamHeaders.authorization = `Bearer ${credential.apiKey}`;
-		}
+		if (bearerToken) upstreamHeaders.authorization = `Bearer ${bearerToken}`;
 
 		let upstream: Response;
 		try {

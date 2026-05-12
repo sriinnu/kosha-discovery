@@ -55,11 +55,11 @@ const CREDENTIAL_PATTERNS = [
 	/\bghp_[A-Za-z0-9]{36,}/,          // GitHub personal access tokens
 	/\bgho_[A-Za-z0-9]{36,}/,          // GitHub OAuth tokens
 	/\bghs_[A-Za-z0-9]{36,}/,          // GitHub app installation tokens
-	/\bxoxb-[A-Za-z0-9\-]{24,}/,       // Slack bot tokens
-	/\bxoxp-[A-Za-z0-9\-]{24,}/,       // Slack user tokens
-	/\bAIza[A-Za-z0-9_\-]{30,}/,       // Google API keys
-	/\bya29\.[A-Za-z0-9_\-]{50,}/,     // Google OAuth access tokens
-	/\bglpat-[A-Za-z0-9\-]{20,}/,      // GitLab personal access tokens
+	/\bxoxb-[A-Za-z0-9-]{24,}/,        // Slack bot tokens
+	/\bxoxp-[A-Za-z0-9-]{24,}/,        // Slack user tokens
+	/\bAIza[A-Za-z0-9_-]{30,}/,        // Google API keys
+	/\bya29\.[A-Za-z0-9_-]{50,}/,      // Google OAuth access tokens
+	/\bglpat-[A-Za-z0-9-]{20,}/,       // GitLab personal access tokens
 	/\bnpm_[A-Za-z0-9]{36,}/,          // npm tokens
 	/\bpypi-[A-Za-z0-9]{50,}/,         // PyPI tokens
 	/\bhf_[A-Za-z0-9]{30,}/,           // Hugging Face tokens
@@ -95,7 +95,7 @@ const SHELL_INJECTION_PATTERNS = [
 const DATA_URI_PATTERN = /^data:(text\/html|application\/)/i;
 
 /** Null byte in any form. */
-const NULL_BYTE_PATTERN = /\x00|\\x00|\\u0000|%00/;
+const NULL_BYTE_PATTERN = new RegExp(`${String.fromCharCode(0)}|\\\\x00|\\\\u0000|%00`);
 
 /** Long hex-only blobs (64+ hex chars) — potential obfuscated payloads. */
 const HEX_BLOB_PATTERN = /^(0x)?[0-9a-fA-F]{64,}$/;
@@ -244,4 +244,3 @@ export function assertCleanPayload(data: unknown, source: string): void {
 		);
 	}
 }
-

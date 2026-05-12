@@ -121,6 +121,7 @@ Supported transports: `openai`, `openai-compatible-http`, `ollama`. Anthropic, G
 | Vertex AI | API + gcloud | `GOOGLE_APPLICATION_CREDENTIALS`, ADC |
 | Ollama | local API | — (local) |
 | OpenRouter | API | `OPENROUTER_API_KEY` *(optional)* |
+| Vercel AI Gateway | `/v1/models` | `AI_GATEWAY_API_KEY`, `VERCEL_OIDC_TOKEN` *(public discovery, required for execution)* |
 | NVIDIA / Together / Fireworks / Groq / Cerebras / Cohere / DeepInfra / Perplexity | API | provider key env var |
 | DeepSeek / Mistral / Moonshot (Kimi) / GLM (Zhipu) / Z.AI / MiniMax | API | provider key env var |
 
