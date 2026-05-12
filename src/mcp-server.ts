@@ -15,6 +15,7 @@
  * @module
  */
 
+import { computeContextStrategy } from "./context-strategy.js";
 import { ModelRegistry } from "./registry.js";
 import type { ModelMode } from "./types.js";
 
@@ -127,6 +128,27 @@ const TOOLS = [
 			properties: {
 				provider: { type: "string", description: "Filter to a specific provider ID" },
 			},
+		},
+	},
+	{
+		name: "kosha_context_strategy",
+		description:
+			"Advise on context management for a long-running conversation. Given a model and current token usage, returns ranked options (continue, enable prompt cache, compact + continue, switch to long-context tier, switch model, batch offload) with rough cost-per-turn math. Useful before deciding whether to summarize, swap models, or just keep going.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				model: { type: "string", description: "Model ID or alias the caller is currently using" },
+				current_tokens: { type: "number", description: "Approximate token count of the conversation so far" },
+				expected_output_tokens: {
+					type: "number",
+					description: "Tokens the next reply is expected to produce (default 1024)",
+				},
+				expected_remaining_turns: {
+					type: "number",
+					description: "How many more turns the caller plans (default 5)",
+				},
+			},
+			required: ["model", "current_tokens"],
 		},
 	},
 ] as const;
@@ -257,6 +279,31 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
 				lastRefreshed: p.lastRefreshed ?? null,
 				lastError: errorByProvider.get(p.id) ?? null,
 			}));
+		}
+
+		case "kosha_context_strategy": {
+			const modelId = args.model as string | undefined;
+			if (!modelId) return { error: "model is required" };
+			const currentTokens = typeof args.current_tokens === "number" ? args.current_tokens : undefined;
+			if (currentTokens === undefined || currentTokens < 0) {
+				return { error: "current_tokens must be a non-negative number" };
+			}
+			const model = reg.model(modelId);
+			if (!model) return { error: `model '${modelId}' not found` };
+
+			const candidates = reg
+				.cheapestModels({ mode: "chat", limit: 20 })
+				.matches.map((m) => m.model);
+
+			return computeContextStrategy({
+				model,
+				currentTokens,
+				expectedRemainingTurns:
+					typeof args.expected_remaining_turns === "number" ? args.expected_remaining_turns : undefined,
+				expectedOutputTokens:
+					typeof args.expected_output_tokens === "number" ? args.expected_output_tokens : undefined,
+				candidateAlternatives: candidates,
+			});
 		}
 
 		default:
