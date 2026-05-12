@@ -159,4 +159,34 @@ describe("computeContextStrategy", () => {
 		expect(cache?.viable).toBe(true);
 		expect(cache?.notes).toMatch(/forwards|gateway|underlying/i);
 	});
+
+	it("threads caller's expectedOutputTokens through compaction cost (bug_001)", () => {
+		const reg = computeContextStrategy({
+			model: model({ pricing: claudePricing }),
+			currentTokens: 100_000,
+			expectedOutputTokens: 4000,
+		});
+		const compact = reg.options.find((o) => o.strategy === "compact_and_continue");
+		expect(compact?.viable).toBe(true);
+		// targetTokens = max(1024, 200_000 * 0.25) = 50_000
+		// postCompactionTurnCost = (50_000 * 3 + 4000 * 15) / 1e6 = 0.21
+		expect(compact?.costPerTurnUsd).toBeCloseTo(0.21, 4);
+		// baseline = (100_000 * 3 + 4000 * 15) / 1e6 = 0.36 → savings = 0.15
+		expect(compact?.savingsPerTurnUsd).toBeCloseTo(0.15, 4);
+	});
+
+	it("preserves $0 pricing for free-tier models in compaction (bug_002)", () => {
+		const free: ModelPricing = { inputPerMillion: 0, outputPerMillion: 0 };
+		const summarizer = model({ id: "haiku-cheap", pricing: { inputPerMillion: 0, outputPerMillion: 0 } });
+		const result = computeContextStrategy({
+			model: model({ provider: "ollama", pricing: free, contextWindow: 32_000 }),
+			currentTokens: 28_000,
+			candidateAlternatives: [summarizer],
+		});
+		const compact = result.options.find((o) => o.strategy === "compact_and_continue");
+		expect(compact?.viable).toBe(true);
+		expect(compact?.costPerTurnUsd).toBe(0);
+		expect(compact?.savingsPerTurnUsd).toBe(0);
+		expect(compact?.details?.summarizationCostUsd).toBe(0);
+	});
 });

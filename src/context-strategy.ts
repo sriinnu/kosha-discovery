@@ -92,7 +92,7 @@ export function computeContextStrategy(input: ContextStrategyInput): ContextStra
 	options.push(buildContinueOption(situation, baselineCost, expectedRemainingTurns));
 	options.push(buildPromptCacheOption(model, tokensUsed, expectedOutputTokens, baselineCost, cacheBehavior));
 	options.push(buildLongContextTierOption(model, situation, baselineCost, expectedOutputTokens));
-	options.push(buildCompactionOption(model, situation, baselineCost, candidateAlternatives));
+	options.push(buildCompactionOption(model, situation, baselineCost, expectedOutputTokens, candidateAlternatives));
 	options.push(buildSwitchModelOption(model, tokensUsed, expectedOutputTokens, baselineCost, candidateAlternatives));
 	options.push(buildBatchOffloadOption(model, tokensUsed, expectedOutputTokens, baselineCost));
 
@@ -178,7 +178,10 @@ function buildPromptCacheOption(
 		...(cachedTurnCost !== undefined ? { costPerTurnUsd: round(cachedTurnCost, 6) } : {}),
 		...(savings !== undefined ? { savingsPerTurnUsd: round(savings, 6) } : {}),
 		notes:
-			cacheReadRate !== undefined && inputRate !== undefined && cacheReadRate / inputRate < CACHE_READ_DISCOUNT_FLOOR
+			cacheReadRate !== undefined &&
+			inputRate !== undefined &&
+			inputRate > 0 &&
+			cacheReadRate / inputRate < CACHE_READ_DISCOUNT_FLOOR
 				? `Cache reads cost ${round((cacheReadRate / inputRate) * 100, 1)}% of base input — meaningful savings on a stable prefix. ${ttlGuidance}`
 				: `Mode: ${cacheBehavior.mode}. ${ttlGuidance}`,
 		details: {
@@ -230,6 +233,7 @@ function buildCompactionOption(
 	model: ModelCard,
 	situation: ContextSituation,
 	baselineCost: number | undefined,
+	expectedOutputTokens: number,
 	candidateAlternatives: ModelCard[],
 ): StrategyOption {
 	if (situation.tokensUsed === 0) {
@@ -239,16 +243,16 @@ function buildCompactionOption(
 	const targetTokens = Math.max(1024, Math.floor(model.contextWindow * (COMPACTION_TARGET_PERCENT / 100)));
 	const tokensReclaimed = Math.max(0, situation.tokensUsed - targetTokens);
 	const summarizer = pickCheapestChatModel(candidateAlternatives, model);
-	const summarizationCost = summarizer?.pricing?.inputPerMillion
-		? (situation.tokensUsed * summarizer.pricing.inputPerMillion + targetTokens * (summarizer.pricing.outputPerMillion ?? 0)) /
-			1_000_000
-		: undefined;
+	const summarizationCost =
+		summarizer?.pricing?.inputPerMillion !== undefined
+			? (situation.tokensUsed * summarizer.pricing.inputPerMillion +
+					targetTokens * (summarizer.pricing.outputPerMillion ?? 0)) /
+				1_000_000
+			: undefined;
 
 	const postCompactionTurnCost =
-		model.pricing?.inputPerMillion && model.pricing?.outputPerMillion
-			? (targetTokens * model.pricing.inputPerMillion +
-					DEFAULT_EXPECTED_OUTPUT_TOKENS * model.pricing.outputPerMillion) /
-				1_000_000
+		model.pricing?.inputPerMillion !== undefined && model.pricing?.outputPerMillion !== undefined
+			? (targetTokens * model.pricing.inputPerMillion + expectedOutputTokens * model.pricing.outputPerMillion) / 1_000_000
 			: undefined;
 	const savings =
 		baselineCost !== undefined && postCompactionTurnCost !== undefined ? baselineCost - postCompactionTurnCost : undefined;
