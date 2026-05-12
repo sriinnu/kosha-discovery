@@ -22,6 +22,37 @@ export type ComputeTarget = "cpu" | "gpu" | "hybrid" | "unknown";
 /** Price scoring metric for cheapest-model selection. */
 export type PricingMetric = "input" | "output" | "blended";
 
+/**
+ * How a provider handles prompt-cache TTL.
+ *
+ * - `explicit`: the caller chooses TTL per request (Anthropic cache_control,
+ *   Gemini cachedContent). `ttlTiers` lists discrete options when they exist;
+ *   `defaultTtlSeconds` / `maxTtlSeconds` describe continuous configuration.
+ * - `automatic`: provider manages cache lifetime; `approximateTtlSeconds`
+ *   captures the observed/published rough TTL.
+ * - `passthrough`: a gateway/aggregator that forwards `cache_control` to the
+ *   underlying provider — actual TTL inherits from the routed model.
+ * - `none`: no documented prompt cache.
+ */
+export type ProviderCacheMode = "explicit" | "automatic" | "passthrough" | "none";
+
+/** Provider-level prompt-cache behavior. */
+export interface ProviderCacheBehavior {
+	mode: ProviderCacheMode;
+	/** Discrete TTL options the caller can pick (e.g. ["5m", "1h"] on Anthropic). */
+	ttlTiers?: readonly string[];
+	/** Default TTL applied when the caller does not specify one. */
+	defaultTtlSeconds?: number;
+	/** Maximum TTL allowed by the provider (explicit-mode only). */
+	maxTtlSeconds?: number;
+	/** Approximate eviction window when `mode === "automatic"`. */
+	approximateTtlSeconds?: number;
+	/** True when TTL is provider-documented; false when only empirically observed. */
+	documented: boolean;
+	/** Short prose for nuances that don't fit the structured fields. */
+	notes?: string;
+}
+
 /** Token pricing in USD per million tokens. */
 export interface ModelPricing {
 	/** USD cost per 1 million input tokens. */
