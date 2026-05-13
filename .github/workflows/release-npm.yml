@@ -20,6 +20,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   release:
@@ -77,7 +78,7 @@ jobs:
         if: ${{ github.event.inputs.publish_npm == 'true' }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public
+        run: npm publish --access public --provenance
 
       - name: Create GitHub release
         if: ${{ github.event.inputs.create_github_release == 'true' }}
