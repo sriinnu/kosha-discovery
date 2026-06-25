@@ -375,13 +375,22 @@ process.stdin.on("data", (chunk: string) => {
 	for (const line of lines) {
 		const trimmed = line.trim();
 		if (!trimmed) continue;
+		let parsed: JsonRpcMessage;
 		try {
-			handleMessage(JSON.parse(trimmed) as JsonRpcMessage).catch((err) => {
-				process.stderr.write(`[kosha-mcp] ${err}\n`);
-			});
+			parsed = JSON.parse(trimmed) as JsonRpcMessage;
 		} catch {
-			// malformed JSON — ignore
+			// Malformed JSON. Per JSON-RPC 2.0 we must still answer with a
+			// -32700 Parse error so the client doesn't block forever waiting
+			// on a response. The id is unknowable from unparseable input, so
+			// per spec we respond with id=null (we deliberately avoid scanning
+			// the raw text for an id, which would mean running a regex over
+			// uncontrolled stdin).
+			respondError(null, -32700, "Parse error");
+			continue;
 		}
+		handleMessage(parsed).catch((err) => {
+			process.stderr.write(`[kosha-mcp] ${err}\n`);
+		});
 	}
 });
 

@@ -14,6 +14,8 @@
 
 import { ModelRegistry } from "./registry.js";
 import { DIM, RED, c } from "./cli-format.js";
+import { cmdDoctor } from "./cli-cmd-doctor.js";
+import { cmdSpend } from "./cli-cmd-spend.js";
 import {
 	cmdCapabilities,
 	cmdCapable,
@@ -191,6 +193,16 @@ async function main(): Promise<void> {
 		case "refresh":
 		case "update":
 			await cmdRefresh(registry, flags);
+			break;
+
+		case "doctor":
+		case "health":
+			await cmdDoctor(registry, flags);
+			break;
+
+		case "spend":
+		case "usage":
+			await cmdSpend(registry, flags);
 			break;
 
 		default:
