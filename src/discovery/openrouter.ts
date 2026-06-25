@@ -157,7 +157,11 @@ export class OpenRouterDiscoverer extends BaseDiscoverer {
 			qwen: "qwen",
 		};
 
-		return vendorMap[prefix] ?? prefix;
+		// `prefix` comes from the remote API model id, so guard the lookup with
+		// an own-property check before indexing: a bare `vendorMap[prefix]`
+		// would let a crafted id reach inherited members (`constructor`,
+		// `__proto__`) — the remote-property-injection class.
+		return Object.prototype.hasOwnProperty.call(vendorMap, prefix) ? vendorMap[prefix] : prefix;
 	}
 
 	/** Infer the primary {@link ModelMode} from modality and naming patterns. */
