@@ -258,6 +258,33 @@ export class ModelRegistry {
 		return registryWatchDiscovery(this.state, options);
 	}
 
+	/**
+	 * Subscribe to discovery deltas with a callback API. Easier to wire up
+	 * from a long-running daemon than the async-iterator form. Returns an
+	 * unsubscribe function so the caller can tear down on shutdown.
+	 *
+	 * Errors thrown by the handler are caught and forwarded to an optional
+	 * `onError` callback so one bad subscriber can't crash the emitter for
+	 * everyone else.
+	 */
+	onChange(
+		handler: (delta: DiscoveryDeltaV1) => void | Promise<void>,
+		onError?: (err: unknown) => void,
+	): () => void {
+		const listener = (delta: DiscoveryDeltaV1) => {
+			try {
+				const maybePromise = handler(delta);
+				if (maybePromise && typeof (maybePromise as Promise<void>).catch === "function") {
+					(maybePromise as Promise<void>).catch((err) => onError?.(err));
+				}
+			} catch (err) {
+				onError?.(err);
+			}
+		};
+		this.state.discoveryEventBus.on("delta", listener);
+		return () => this.state.discoveryEventBus.off("delta", listener);
+	}
+
 	/** Return cheapest candidates using the trusted v1 capability taxonomy. */
 	cheapestCandidates(query: DiscoveryBindingQuery = {}): DiscoveryCheapestResultV1 {
 		return registryCheapestCandidates(this.state, query);

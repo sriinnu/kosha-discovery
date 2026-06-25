@@ -157,9 +157,34 @@ export async function readSpendForMonth(nowMs: number, tenant?: string | null, l
  * first write so a torn write on a previously empty file can't poison
  * future reads.
  */
+/** Strip control characters and bound length on a ledger string field. The
+ *  ledger records caller-supplied values (modelId, tenant tag, the original
+ *  requested model string), so we sanitize them before writing to disk: each
+ *  line stays a single, well-formed JSON record. Without this, a crafted
+ *  model id with embedded CR/LF could split one row into two. */
+function sanitizeLedgerString(value: string): string {
+	return value.replace(/[\r\n\t]/g, "").slice(0, 256);
+}
+
+/** Apply sanitizeLedgerString to every string field of the entry. Numeric
+ *  fields are pass-through. */
+function sanitizeEntry(entry: LedgerEntry): LedgerEntry {
+	return {
+		ts: entry.ts,
+		provider: sanitizeLedgerString(entry.provider),
+		modelId: sanitizeLedgerString(entry.modelId),
+		requested: sanitizeLedgerString(entry.requested),
+		tenant: entry.tenant === null ? null : sanitizeLedgerString(entry.tenant),
+		estimatedUsd: entry.estimatedUsd,
+		estimatedInputTokens: entry.estimatedInputTokens,
+		estimatedOutputTokens: entry.estimatedOutputTokens,
+		upstreamStatus: entry.upstreamStatus,
+	};
+}
+
 export async function appendLedgerEntry(entry: LedgerEntry, ledgerPath = DEFAULT_LEDGER_PATH): Promise<void> {
 	await mkdir(dirname(ledgerPath), { recursive: true });
-	const line = `${JSON.stringify(entry)}\n`;
+	const line = `${JSON.stringify(sanitizeEntry(entry))}\n`;
 	try {
 		await appendFile(ledgerPath, line, "utf-8");
 	} catch (err: unknown) {
