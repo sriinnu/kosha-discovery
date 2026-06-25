@@ -211,13 +211,21 @@ function resolveProxyModel(registry: ModelRegistry, requested: string): ModelCar
 // ---------------------------------------------------------------------------
 
 function buildUpstreamUrl(model: ModelCard, registry: ModelRegistry): string {
-	const info = registry.provider(model.provider);
 	const descriptor = getProviderDescriptor(model.provider);
-	const base = (
-		descriptor?.isLocal
-			? info?.baseUrl ?? descriptor.defaultBaseUrl
-			: descriptor?.defaultBaseUrl ?? info?.baseUrl ?? ""
-	).replace(/\/$/, "");
+	// For non-local providers we ONLY use the in-process catalog's
+	// defaultBaseUrl. The registry's `baseUrl` is loaded from disk and is
+	// untrusted for routing decisions; using it in the URL would let a
+	// poisoned cache redirect outbound traffic (SSRF / request forgery).
+	// Local providers are user-configurable, so we still let the registry
+	// override the default host — but the safeUpstreamUrl() loopback check
+	// in the request handler refuses anything outside the loopback families.
+	let base: string;
+	if (descriptor?.isLocal) {
+		const info = registry.provider(model.provider);
+		base = (info?.baseUrl ?? descriptor.defaultBaseUrl).replace(/\/$/, "");
+	} else {
+		base = (descriptor?.defaultBaseUrl ?? "").replace(/\/$/, "");
+	}
 	// Some native/local roots expose the OpenAI-compatible layer under /v1.
 	if ((model.provider === "openai" || model.provider === "ollama" || model.provider === "llama.cpp") && !base.endsWith("/v1")) {
 		return `${base}/v1/chat/completions`;
