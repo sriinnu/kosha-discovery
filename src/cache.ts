@@ -28,6 +28,16 @@ interface CacheEntry<T> {
 const MAX_CACHE_FILE_BYTES = 25 * 1024 * 1024;
 
 /**
+ * Strip CR/LF (and other control chars) from a cache key before it is
+ * interpolated into a log line. A key can derive from a CLI/HTTP-supplied
+ * provider id (`provider_<id>`), so logging it verbatim would let crafted
+ * input forge extra log records (log injection / CWE-117).
+ */
+function sanitizeKeyForLog(key: string): string {
+	return key.replace(/[\r\n\t]/g, "").slice(0, 200);
+}
+
+/**
  * Simple file-based JSON cache with TTL support.
  * Stores discovered provider data to avoid re-fetching on every startup.
  *
@@ -50,7 +60,7 @@ export class KoshaCache {
 			const { size } = await stat(filePath);
 			if (size > MAX_CACHE_FILE_BYTES) {
 				console.warn(
-					`KoshaCache: cache file for key "${key}" is ${size} bytes (> ${MAX_CACHE_FILE_BYTES}); refusing to parse and invalidating`,
+					`KoshaCache: cache file for key "${sanitizeKeyForLog(key)}" is ${size} bytes (> ${MAX_CACHE_FILE_BYTES}); refusing to parse and invalidating`,
 				);
 				await this.invalidate(key);
 				return null;
@@ -65,7 +75,7 @@ export class KoshaCache {
 				console.error(`KoshaCache SECURITY: ${err.message}`);
 				await this.invalidate(key);
 			} else if (err instanceof SyntaxError) {
-				console.warn(`KoshaCache: corrupted cache file for key "${key}"`);
+				console.warn(`KoshaCache: corrupted cache file for key "${sanitizeKeyForLog(key)}"`);
 			}
 			return null;
 		}
