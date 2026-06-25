@@ -73,6 +73,24 @@ describe("translateOpenAIToAnthropic", () => {
 		expect(out.messages[0].role).toBe("user");
 		expect(out.messages[1].role).toBe("assistant");
 	});
+
+	it("merges consecutive same-role messages (Anthropic forbids them)", () => {
+		const out = translateOpenAIToAnthropic({
+			model: "x",
+			messages: [
+				{ role: "user", content: "alpha" },
+				{ role: "user", content: "beta" },
+				{ role: "assistant", content: "one" },
+				{ role: "assistant", content: "two" },
+				{ role: "user", content: "gamma" },
+			],
+		});
+		expect(out.messages).toEqual([
+			{ role: "user", content: "alpha\n\nbeta" },
+			{ role: "assistant", content: "one\n\ntwo" },
+			{ role: "user", content: "gamma" },
+		]);
+	});
 });
 
 describe("translateAnthropicToOpenAI", () => {

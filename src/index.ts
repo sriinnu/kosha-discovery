@@ -36,6 +36,24 @@ export {
 	ROUTE_STRATEGIES,
 } from "./registry-routing.js";
 export type { RankedRoute, RouteHealth, RouteStrategy } from "./registry-routing.js";
+export {
+	appendLedgerEntry,
+	DEFAULT_LEDGER_PATH,
+	estimateRequestCost,
+	readMonthlyBudgetUsd,
+	readSpendForMonth,
+} from "./cost.js";
+export type { CostEstimate, LedgerEntry } from "./cost.js";
+export {
+	translateAnthropicToOpenAI,
+	translateOpenAIToAnthropic,
+} from "./wire-anthropic.js";
+export type {
+	AnthropicMessagesRequest,
+	AnthropicMessagesResponse,
+	OpenAIChatRequest,
+	OpenAIChatResponse,
+} from "./wire-anthropic.js";
 export { extractModelVersion, extractOriginProvider, normalizeModelId } from "./normalize.js";
 export { inferTokenizerFamily } from "./tokenizer-family.js";
 export { inferParallelToolCalls, inferStructuredOutputModes, inferToolDialect } from "./model-features.js";

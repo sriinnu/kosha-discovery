@@ -340,9 +340,27 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry): void {
 		const tenant = parseTenantTag(ctx.req.header("authorization"));
 
 		// ── Budget gate ────────────────────────────────────────────────
+		// When a budget is configured we MUST fail closed: if the ledger is
+		// unreadable (permissions, FS error, partial mount) we cannot prove the
+		// caller is under budget, so we refuse. Treating the read failure as
+		// $0 spent would let an attacker bypass the cap by corrupting the
+		// ledger file.
 		const budget = readMonthlyBudgetUsd();
 		if (budget !== null) {
-			const spent = await readSpendForMonth(Date.now(), tenant).catch(() => 0);
+			let spent: number;
+			try {
+				spent = await readSpendForMonth(Date.now(), tenant);
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				return ctx.json(
+					{
+						error: "budget enforcement unavailable — ledger could not be read",
+						detail: message,
+						budgetUsd: budget,
+					},
+					503,
+				);
+			}
 			if (spent >= budget) {
 				return ctx.json(
 					{ error: "monthly budget exceeded", spentUsd: spent, budgetUsd: budget },

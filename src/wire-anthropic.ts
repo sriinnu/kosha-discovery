@@ -87,10 +87,16 @@ export function translateOpenAIToAnthropic(req: OpenAIChatRequest): AnthropicMes
 		messages.unshift({ role: "user", content: "" });
 	}
 
+	// Anthropic also forbids two messages with the same role in a row. The
+	// OpenAI side allows it (e.g. multiple tool-result messages), so we
+	// collapse consecutive same-role messages into a single message whose
+	// content is the parts joined with a blank line.
+	const collapsed = mergeConsecutiveRoles(messages);
+
 	const out: AnthropicMessagesRequest = {
 		model: req.model,
 		max_tokens: req.max_tokens && req.max_tokens > 0 ? req.max_tokens : DEFAULT_MAX_TOKENS,
-		messages,
+		messages: collapsed,
 	};
 	if (systemParts.length > 0) out.system = systemParts.join("\n\n");
 	if (typeof req.temperature === "number") out.temperature = req.temperature;
@@ -128,6 +134,27 @@ export function translateAnthropicToOpenAI(res: AnthropicMessagesResponse, origi
 			total_tokens: inputTokens + outputTokens,
 		},
 	};
+}
+
+/**
+ * Collapse runs of consecutive same-role messages into one message per role
+ * boundary. Content is joined with a blank line so the boundary survives in
+ * the rendered prompt. Anthropic rejects same-role-in-a-row, so this is a
+ * correctness fix for things like OpenAI tool-result runs.
+ */
+function mergeConsecutiveRoles(
+	messages: AnthropicMessagesRequest["messages"],
+): AnthropicMessagesRequest["messages"] {
+	const out: AnthropicMessagesRequest["messages"] = [];
+	for (const msg of messages) {
+		const tail = out[out.length - 1];
+		if (tail && tail.role === msg.role) {
+			tail.content = tail.content ? `${tail.content}\n\n${msg.content}` : msg.content;
+		} else {
+			out.push({ ...msg });
+		}
+	}
+	return out;
 }
 
 /** Coerce structured content blocks into a flat string for Anthropic's content field. */

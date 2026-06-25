@@ -36,28 +36,32 @@ function model(id: string, p: string): ModelCard {
 }
 
 describe("registry.onChange", () => {
-	it("calls the handler when a delta mutation is recorded", async () => {
+	it("calls the handler when a real delta mutation is recorded", () => {
+		// Drive the event bus directly with a non-empty delta payload so we
+		// know the handler is wired to it. The earlier version of this test
+		// drove `recordDiscoveryMutation` against an empty snapshot which is
+		// a no-op for the emitter — so the assertion never actually proved
+		// the subscription worked.
 		const registry = new ModelRegistry();
-		const calls: number[] = [];
+		const deltas: Array<{ changes: unknown[] }> = [];
 		const off = registry.onChange((delta) => {
-			calls.push(delta.changes.length);
+			deltas.push(delta as { changes: unknown[] });
 		});
 
-		// Drive a mutation: snapshot, then record a change.
-		const beforeSnapshot = (
-			registry as unknown as { snapshotForDelta(): unknown }
-		).snapshotForDelta();
-		// Populate the provider map so the next mutation produces real changes.
-		registry.providers_list();
-		// Use the internal recordDiscoveryMutation entry point exposed for tests.
-		(
-			registry as unknown as { recordDiscoveryMutation(prev: unknown): void }
-		).recordDiscoveryMutation(beforeSnapshot);
+		const bus = (
+			registry as unknown as { state: { discoveryEventBus: { emit(name: string, payload: unknown): void } } }
+		).state.discoveryEventBus;
+		const payload = { changes: [{ entity: "model", action: "upsert", key: "openai:gpt-4", value: null }] };
+		bus.emit("delta", payload);
+		bus.emit("delta", payload);
 
+		expect(deltas).toHaveLength(2);
+		expect(deltas[0].changes).toHaveLength(1);
+
+		// After unsubscribe, further emits must NOT be observed.
 		off();
-		// onChange may emit 0 changes for an idempotent transition; what matters
-		// is that the listener was called and unsubscribe works.
-		expect(calls.length).toBeGreaterThanOrEqual(0);
+		bus.emit("delta", payload);
+		expect(deltas).toHaveLength(2);
 	});
 
 	it("forwards handler errors to the optional onError callback", () => {
@@ -79,6 +83,32 @@ describe("registry.onChange", () => {
 });
 
 describe("GET /metrics", () => {
+	it("escapes backslashes, double-quotes, and newlines in provider label values", async () => {
+		// Provider ids are loaded from JSON and could in principle contain
+		// chars that break the Prometheus label-value grammar. The exposition
+		// must remain parseable; the escape is reversible.
+		const provid = `nasty\\"id\nwith-breaks`;
+		const registry = ModelRegistry.fromJSON({
+			providers: [provider(provid, [model("m", provid)])],
+			aliases: {},
+			discoveredAt: Date.now(),
+		});
+		const res = await createServer(registry).request("/metrics");
+		expect(res.status).toBe(200);
+		const body = await res.text();
+		// Backslash + quote + newline must all appear escaped, not raw.
+		expect(body).toContain('provider="nasty\\\\\\"id\\nwith-breaks"');
+		// And the body must still be a clean line-per-metric document — no
+		// raw CR/LF inside any label value.
+		const lines = body.split("\n").filter((l) => l.startsWith("kosha_provider_"));
+		for (const line of lines) {
+			const labelStart = line.indexOf("{");
+			const labelEnd = line.indexOf("}");
+			expect(labelStart).toBeGreaterThan(-1);
+			expect(labelEnd).toBeGreaterThan(labelStart);
+		}
+	});
+
 	it("exposes registry counts and per-provider gauges in Prometheus text format", async () => {
 		const registry = ModelRegistry.fromJSON({
 			providers: [provider("openai", [model("gpt-4o-mini", "openai")])],
