@@ -296,6 +296,29 @@ describe("proxy failover", () => {
 		}
 	});
 
+	it("reflects an x-kosha-estimated-cost-usd header on a successful forward", async () => {
+		const app = createServer(twoProviderRegistry());
+		mockByModel(() => ({ status: 200 }));
+
+		const res = await app.request("/proxy/v1/chat/completions", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				model: "llama-cheap",
+				messages: [{ role: "user", content: "x".repeat(350) }],
+				max_tokens: 100,
+			}),
+		});
+
+		expect(res.status).toBe(200);
+		const cost = res.headers.get("x-kosha-estimated-cost-usd");
+		expect(cost).toBeTruthy();
+		// llama-cheap pricing: 0.01 in / 0.02 out per MTok.
+		// ~100 input tokens (350 chars / 3.5) + 100 output tokens:
+		//   100/1M*0.01 + 100/1M*0.02 = 1e-6 + 2e-6 = 3e-6
+		expect(Number(cost)).toBeCloseTo(0.000003, 9);
+	});
+
 	it("does not fail over on a 4xx (caller error) and returns it as-is", async () => {
 		const app = createServer(twoProviderRegistry());
 		const fn = mockByModel((m) => (m === "llama-cheap" ? { status: 400 } : { status: 200 }));
