@@ -100,7 +100,15 @@ function isExecutableRoute(registry: ModelRegistry, model: ModelCard): boolean {
 	return registry.provider(model.provider)?.authenticated === true;
 }
 
-function resolveProxyModel(registry: ModelRegistry, requested: string): ModelCard | null {
+/**
+ * Resolve an ordered list of forwardable candidate routes for `requested`.
+ *
+ * The order is the failover sequence: routes we hold credentials for come
+ * first (ranked by the selector's strategy for kosha: hints), then any other
+ * forwardable route. Duplicates (same provider + model id) are removed. An
+ * empty list means nothing forwardable matched.
+ */
+function resolveProxyCandidates(registry: ModelRegistry, requested: string): ModelCard[] {
 	const hint = parseKoshaHint(requested);
 	if (hint !== null) {
 		const ranked = registry.rankedRoutes({
@@ -109,15 +117,14 @@ function resolveProxyModel(registry: ModelRegistry, requested: string): ModelCar
 			provider: hint.provider,
 			limit: 20,
 		}, hint.strategy);
-		const candidates = hint.minContext
+		const filtered = hint.minContext
 			? ranked.filter((r) => r.model.contextWindow >= (hint.minContext as number))
 			: ranked;
-		// Only pick a provider we can actually forward to; prefer a route we
-		// also hold credentials for, then any forwardable route. The ranking
-		// (cheapest/fastest/reliable/balanced) is already baked into `ranked`.
-		return candidates.find((r) => isExecutableRoute(registry, r.model))?.model ??
-			candidates.find((r) => isForwardable(r.model))?.model ??
-			null;
+		const exec = filtered.filter((r) => isExecutableRoute(registry, r.model)).map((r) => r.model);
+		const fwd = filtered
+			.filter((r) => isForwardable(r.model) && !isExecutableRoute(registry, r.model))
+			.map((r) => r.model);
+		return dedupeModels([...exec, ...fwd]);
 	}
 
 	// For a specific model ID or alias, prefer the canonical card but fall back
@@ -125,14 +132,30 @@ function resolveProxyModel(registry: ModelRegistry, requested: string): ModelCar
 	// "claude-sonnet-4-6" resolves to Anthropic by default, but if the caller
 	// only has an OpenRouter key, we should route through OpenRouter instead).
 	const primary = registry.model(requested);
-	if (primary && isExecutableRoute(registry, primary)) return primary;
-
 	const routes = registry.modelRoutes(requested);
-	return routes.find((route) => isExecutableRoute(registry, route)) ??
-		(primary && isForwardable(primary) ? primary : undefined) ??
-		routes.find(isForwardable) ??
-		primary ??
-		null;
+	const ordered: ModelCard[] = [];
+	if (primary && isExecutableRoute(registry, primary)) ordered.push(primary);
+	for (const route of routes) if (isExecutableRoute(registry, route)) ordered.push(route);
+	if (primary && isForwardable(primary)) ordered.push(primary);
+	for (const route of routes) if (isForwardable(route)) ordered.push(route);
+	return dedupeModels(ordered);
+}
+
+/** Stable de-dup of model cards by provider + id, preserving first occurrence. */
+function dedupeModels(models: ModelCard[]): ModelCard[] {
+	const seen = new Set<string>();
+	const out: ModelCard[] = [];
+	for (const model of models) {
+		const key = `${model.provider}:${model.id}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		out.push(model);
+	}
+	return out;
+}
+
+function resolveProxyModel(registry: ModelRegistry, requested: string): ModelCard | null {
+	return resolveProxyCandidates(registry, requested)[0] ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -188,79 +211,117 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry): void {
 			return ctx.json({ error: "missing required field: model" }, 400);
 		}
 
-		// ── Resolve model ──────────────────────────────────────────────
-		const model = resolveProxyModel(registry, requested);
-		if (!model) {
+		// ── Resolve candidate routes (failover order) ──────────────────
+		const candidates = resolveProxyCandidates(registry, requested);
+		if (candidates.length === 0) {
+			// Distinguish "found but not proxiable" (422) from "not found" (404).
+			const primary = registry.model(requested);
+			if (primary && !isForwardable(primary)) {
+				const descriptor = getProviderDescriptor(primary.provider);
+				return ctx.json(
+					{
+						error: `provider '${primary.provider}' uses '${descriptor?.transport ?? "unknown"}' transport — proxy not yet supported`,
+						resolvedModel: primary.id,
+						resolvedProvider: primary.provider,
+					},
+					422,
+				);
+			}
 			return ctx.json({ error: `no model found for '${requested}'` }, 404);
 		}
 
-		if (!isForwardable(model)) {
-			const descriptor = getProviderDescriptor(model.provider);
-			return ctx.json(
-				{
-					error: `provider '${model.provider}' uses '${descriptor?.transport ?? "unknown"}' transport — proxy not yet supported`,
-					resolvedModel: model.id,
-					resolvedProvider: model.provider,
-				},
-				422,
-			);
-		}
-
-		// ── Resolve credential ─────────────────────────────────────────
-		// Use the full 5-tier CredentialResolver (CLI files, ADC, OAuth, env vars)
-		// so the proxy honours the same credential sources as discovery.
-		const resolver = await getRegistryCredentialResolver();
-		const credential = resolver
-			? await resolver.resolve(model.provider)
-			: fallbackRegistryCredential(model.provider);
-		const bearerToken = credential.apiKey ?? credential.accessToken;
-		const credentialDescriptor = getProviderDescriptor(model.provider);
-		if (credentialDescriptor && providerExecutionCredentialRequired(credentialDescriptor) && !bearerToken) {
-			const envHint = credentialDescriptor.credentialEnvVars.length
-				? credentialDescriptor.credentialEnvVars.join(" or ")
-				: credentialDescriptor.primaryCredentialEnvVar;
-			return ctx.json(
-				{
-					error: `no credential found for '${model.provider}'`,
-					hint: envHint ? `set ${envHint}` : "configure credentials for this provider",
-					resolvedModel: model.id,
-					resolvedProvider: model.provider,
-				},
-				401,
-			);
-		}
-
-		// ── Forward ────────────────────────────────────────────────────
-		const upstreamUrl = buildUpstreamUrl(model, registry);
-		const upstreamHeaders: Record<string, string> = { "content-type": "application/json" };
-		if (bearerToken) upstreamHeaders.authorization = `Bearer ${bearerToken}`;
-
-		let upstream: Response;
-		try {
-			upstream = await fetch(upstreamUrl, {
-				method: "POST",
-				headers: upstreamHeaders,
-				body: JSON.stringify({ ...body, model: model.id }),
-			});
-		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			return ctx.json({ error: `upstream unreachable: ${message}`, resolvedProvider: model.provider }, 502);
-		}
-
-		// ── Stream response back ───────────────────────────────────────
 		// `requested` is caller-controlled. Strip control characters (CR/LF/NUL)
 		// and bound the length before reflecting it into a response header:
 		// the Headers constructor throws on raw CRLF, which would turn a
 		// malformed model string into an unhandled 500.
 		const safeRequested = requested.replace(/[\r\n\0]/g, "").slice(0, 200);
-		const responseHeaders = new Headers({
-			"x-kosha-model": model.id,
-			"x-kosha-provider": model.provider,
-			"x-kosha-requested": safeRequested,
-		});
-		const ct = upstream.headers.get("content-type");
-		if (ct) responseHeaders.set("content-type", ct);
 
-		return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
+		// Use the full 5-tier CredentialResolver (CLI files, ADC, OAuth, env vars)
+		// so the proxy honours the same credential sources as discovery.
+		const resolver = await getRegistryCredentialResolver();
+
+		// ── Forward, failing over on transport / 5xx errors ────────────
+		// We try ranked candidates in order, bounding the number of actual
+		// upstream fetches so a wave of dead providers can't stall the caller.
+		// A 4xx is the caller's own fault (bad request, bad key) and is returned
+		// as-is; a 5xx or network error rolls over to the next candidate.
+		const MAX_FETCHES = 3;
+		const attemptChain: string[] = [];
+		let fetchAttempts = 0;
+		let lastNoCred: { provider: string; envHint: string | undefined } | null = null;
+		let sawCredentialedRoute = false;
+
+		for (const model of candidates) {
+			const credential = resolver
+				? await resolver.resolve(model.provider)
+				: fallbackRegistryCredential(model.provider);
+			const bearerToken = credential.apiKey ?? credential.accessToken;
+			const descriptor = getProviderDescriptor(model.provider);
+			if (descriptor && providerExecutionCredentialRequired(descriptor) && !bearerToken) {
+				const envHint = descriptor.credentialEnvVars.length
+					? descriptor.credentialEnvVars.join(" or ")
+					: descriptor.primaryCredentialEnvVar;
+				lastNoCred = { provider: model.provider, envHint };
+				attemptChain.push(`${model.provider}:no-credential`);
+				continue; // can't call this provider — try the next route
+			}
+			sawCredentialedRoute = true;
+			if (fetchAttempts >= MAX_FETCHES) break;
+			fetchAttempts += 1;
+
+			const upstreamUrl = buildUpstreamUrl(model, registry);
+			const upstreamHeaders: Record<string, string> = { "content-type": "application/json" };
+			if (bearerToken) upstreamHeaders.authorization = `Bearer ${bearerToken}`;
+
+			let upstream: Response;
+			try {
+				upstream = await fetch(upstreamUrl, {
+					method: "POST",
+					headers: upstreamHeaders,
+					body: JSON.stringify({ ...body, model: model.id }),
+				});
+			} catch (err) {
+				attemptChain.push(`${model.provider}:error`);
+				if (fetchAttempts < MAX_FETCHES) continue; // fail over
+				const message = err instanceof Error ? err.message : String(err);
+				return ctx.json(
+					{ error: `upstream unreachable: ${message}`, resolvedProvider: model.provider, attemptChain },
+					502,
+				);
+			}
+
+			// A retryable upstream failure (5xx) rolls over to the next route,
+			// unless we've spent our fetch budget — then we surface it.
+			if (upstream.status >= 500 && fetchAttempts < MAX_FETCHES) {
+				attemptChain.push(`${model.provider}:${upstream.status}`);
+				await upstream.body?.cancel().catch(() => {});
+				continue;
+			}
+
+			attemptChain.push(`${model.provider}:${upstream.status}`);
+			const responseHeaders = new Headers({
+				"x-kosha-model": model.id,
+				"x-kosha-provider": model.provider,
+				"x-kosha-requested": safeRequested,
+				"x-kosha-attempt-chain": attemptChain.join(",").replace(/[\r\n\0]/g, "").slice(0, 400),
+			});
+			const ct = upstream.headers.get("content-type");
+			if (ct) responseHeaders.set("content-type", ct);
+			return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
+		}
+
+		// Exhausted candidates without a returnable response.
+		if (!sawCredentialedRoute && lastNoCred) {
+			return ctx.json(
+				{
+					error: `no credential found for '${lastNoCred.provider}'`,
+					hint: lastNoCred.envHint ? `set ${lastNoCred.envHint}` : "configure credentials for this provider",
+					resolvedProvider: lastNoCred.provider,
+					attemptChain,
+				},
+				401,
+			);
+		}
+		return ctx.json({ error: "all upstream providers failed", attemptChain }, 502);
 	});
 }
