@@ -228,10 +228,15 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry): void {
 		}
 
 		// ── Stream response back ───────────────────────────────────────
+		// `requested` is caller-controlled. Strip control characters (CR/LF/NUL)
+		// and bound the length before reflecting it into a response header:
+		// the Headers constructor throws on raw CRLF, which would turn a
+		// malformed model string into an unhandled 500.
+		const safeRequested = requested.replace(/[\r\n\0]/g, "").slice(0, 200);
 		const responseHeaders = new Headers({
 			"x-kosha-model": model.id,
 			"x-kosha-provider": model.provider,
-			"x-kosha-requested": requested,
+			"x-kosha-requested": safeRequested,
 		});
 		const ct = upstream.headers.get("content-type");
 		if (ct) responseHeaders.set("content-type", ct);

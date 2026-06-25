@@ -13,6 +13,14 @@ import { getPublicSeed } from "./public-seed.js";
 /** Safety cap for paginated model listing. */
 export const MAX_MODELS_PER_PROVIDER = 10_000;
 
+/**
+ * Default User-Agent sent on every discovery request. Some provider APIs
+ * throttle or block requests with no User-Agent more aggressively, so we
+ * always identify ourselves. Callers can override by passing their own
+ * `user-agent` header.
+ */
+export const KOSHA_USER_AGENT = "kosha-discovery (+https://github.com/sriinnu/kosha-discovery)";
+
 /** Common API-key patterns to redact from error messages. */
 const API_KEY_PATTERN = /\b(sk-[A-Za-z0-9_-]{8,}|key-[A-Za-z0-9_-]{8,}|Bearer\s+[A-Za-z0-9._-]{20,})\b/gi;
 
@@ -57,13 +65,32 @@ export abstract class BaseDiscoverer implements ProviderDiscoverer {
 		const baseDelayMs = 500;
 		let lastError: Error | undefined;
 
+		// Always identify ourselves; let an explicit caller header win. Header
+		// keys are matched case-insensitively so a caller-supplied "User-Agent"
+		// is not silently shadowed by our lowercase default.
+		const hasUserAgent = headers && Object.keys(headers).some((k) => k.toLowerCase() === "user-agent");
+		const requestHeaders: Record<string, string> = hasUserAgent
+			? { ...headers }
+			: { "user-agent": KOSHA_USER_AGENT, ...headers };
+
+		// Global deadline across ALL retries (incl. backoff sleeps). Without
+		// this, a server that is slow-but-not-dead can stretch one fetchJSON
+		// call to ~timeoutMs × maxRetries + backoff (~31s at defaults), and a
+		// full discovery pass multiplies that across every provider. The
+		// per-attempt timeout below still bounds an individual hung socket.
+		const deadline = Date.now() + timeoutMs * 2;
+
 		for (let attempt = 0; attempt < maxRetries; attempt++) {
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) {
+				throw lastError ?? new Error(`${this.providerName} API request exceeded the overall deadline`);
+			}
 			const controller = new AbortController();
-			const timer = setTimeout(() => controller.abort(), timeoutMs);
+			const timer = setTimeout(() => controller.abort(), Math.min(timeoutMs, remaining));
 
 			try {
 				const response = await fetch(url, {
-					headers,
+					headers: requestHeaders,
 					signal: controller.signal,
 				});
 
@@ -99,9 +126,12 @@ export abstract class BaseDiscoverer implements ProviderDiscoverer {
 				clearTimeout(timer);
 			}
 
-			// Wait before retrying (exponential backoff: 500ms, 1s, 2s)
+			// Wait before retrying (exponential backoff: 500ms, 1s, 2s), but
+			// never sleep past the global deadline.
 			if (attempt < maxRetries - 1) {
-				await new Promise((resolve) => setTimeout(resolve, baseDelayMs * 2 ** attempt));
+				const backoff = Math.min(baseDelayMs * 2 ** attempt, Math.max(0, deadline - Date.now()));
+				if (backoff <= 0) break;
+				await new Promise((resolve) => setTimeout(resolve, backoff));
 			}
 		}
 

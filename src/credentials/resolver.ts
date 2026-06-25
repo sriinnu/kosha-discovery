@@ -459,7 +459,16 @@ export class CredentialResolver {
 
 			// Detect section headers
 			if (trimmed.startsWith("[")) {
-				const header = trimmed.slice(1, trimmed.indexOf("]")).trim();
+				// A line that opens a section but never closes it is malformed.
+				// `indexOf("]")` returns -1 there, and `slice(1, -1)` would
+				// silently extract "everything but the last char" — quietly
+				// matching the wrong section. Skip the line instead.
+				const end = trimmed.indexOf("]");
+				if (end === -1) {
+					inSection = false;
+					continue;
+				}
+				const header = trimmed.slice(1, end).trim();
 				inSection = header === sectionName;
 				continue;
 			}
