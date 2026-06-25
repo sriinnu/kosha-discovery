@@ -31,6 +31,7 @@ import type { ModelCard } from "./types.js";
 import type { ModelRegistry } from "./registry.js";
 import { getProviderDescriptor, providerExecutionCredentialRequired } from "./provider-catalog.js";
 import { fallbackRegistryCredential, getRegistryCredentialResolver } from "./registry-runtime.js";
+import { parseRouteStrategy, type RouteStrategy } from "./registry-routing.js";
 
 // native-http providers that speak the OpenAI wire format natively.
 // All openai-compatible-http providers are implicitly forwardable.
@@ -41,19 +42,36 @@ const NATIVE_OPENAI_WIRE = new Set(["openai", "ollama"]);
 // ---------------------------------------------------------------------------
 
 interface KoshaHint {
+	/** Selection strategy: cheapest | fastest | reliable | balanced. */
+	strategy: RouteStrategy;
 	capability?: string;
 	minContext?: number;
 	provider?: string;
 }
 
+const KOSHA_PREFIX = "kosha:";
+
+/**
+ * Parse a `kosha:<strategy>[filters]` selector. Returns null when the model
+ * string is not a kosha selector or names an unknown strategy (the caller
+ * then falls through to direct model/alias resolution).
+ *
+ * Examples: `kosha:cheapest`, `kosha:fastest[tool_use,128k]`,
+ * `kosha:reliable[provider:groq]`, `kosha:balanced[vision]`.
+ */
 function parseKoshaHint(model: string): KoshaHint | null {
-	if (!model.startsWith("kosha:cheapest")) return null;
-	const m = /\[([^\]]*)\]/.exec(model);
-	if (!m) return {};
-	const hint: KoshaHint = {};
-	for (const part of m[1].split(",").map((s) => s.trim()).filter(Boolean)) {
+	if (!model.startsWith(KOSHA_PREFIX)) return null;
+	const rest = model.slice(KOSHA_PREFIX.length);
+	const bracket = /\[([^\]]*)\]/.exec(rest);
+	const head = (bracket ? rest.slice(0, bracket.index) : rest).trim();
+	const strategy = parseRouteStrategy(head);
+	if (!strategy) return null;
+
+	const hint: KoshaHint = { strategy };
+	if (!bracket) return hint;
+	for (const part of bracket[1].split(",").map((s) => s.trim()).filter(Boolean)) {
 		if (part.startsWith("provider:")) {
-			hint.provider = part.slice(9);
+			hint.provider = part.slice("provider:".length);
 		} else if (/^\d+k$/i.test(part)) {
 			hint.minContext = Number.parseInt(part, 10) * 1_000;
 		} else if (!hint.capability) {
@@ -85,18 +103,20 @@ function isExecutableRoute(registry: ModelRegistry, model: ModelCard): boolean {
 function resolveProxyModel(registry: ModelRegistry, requested: string): ModelCard | null {
 	const hint = parseKoshaHint(requested);
 	if (hint !== null) {
-		const result = registry.cheapestModels({
+		const ranked = registry.rankedRoutes({
 			mode: "chat",
 			capability: hint.capability,
 			provider: hint.provider,
 			limit: 20,
-		});
+		}, hint.strategy);
 		const candidates = hint.minContext
-			? result.matches.filter((m) => m.model.contextWindow >= (hint.minContext as number))
-			: result.matches;
-		// Only pick a provider we can actually forward to.
-		return candidates.find((m) => isExecutableRoute(registry, m.model))?.model ??
-			candidates.find((m) => isForwardable(m.model))?.model ??
+			? ranked.filter((r) => r.model.contextWindow >= (hint.minContext as number))
+			: ranked;
+		// Only pick a provider we can actually forward to; prefer a route we
+		// also hold credentials for, then any forwardable route. The ranking
+		// (cheapest/fastest/reliable/balanced) is already baked into `ranked`.
+		return candidates.find((r) => isExecutableRoute(registry, r.model))?.model ??
+			candidates.find((r) => isForwardable(r.model))?.model ??
 			null;
 	}
 
