@@ -38,6 +38,12 @@ import {
 	readMonthlyBudgetUsd,
 	readSpendForMonth,
 } from "./cost.js";
+import {
+	translateAnthropicToOpenAI,
+	translateOpenAIToAnthropic,
+	type AnthropicMessagesResponse,
+	type OpenAIChatRequest,
+} from "./wire-anthropic.js";
 
 // ---------------------------------------------------------------------------
 // Upstream host allowlist (SSRF guard)
@@ -101,6 +107,10 @@ function safeUpstreamUrl(rawUrl: string, isLocalProvider: boolean): URL | null {
 // All openai-compatible-http providers are implicitly forwardable.
 const NATIVE_OPENAI_WIRE = new Set(["openai", "ollama"]);
 
+// native-http providers whose wire format we translate into OpenAI-compatible
+// at the proxy boundary, so the SDK contract stays OpenAI throughout.
+const TRANSLATABLE_WIRE = new Set(["anthropic"]);
+
 // ---------------------------------------------------------------------------
 // Hint parsing
 // ---------------------------------------------------------------------------
@@ -153,7 +163,9 @@ function isForwardable(model: ModelCard): boolean {
 	const descriptor = getProviderDescriptor(model.provider);
 	if (!descriptor) return false;
 	if (descriptor.transport === "openai-compatible-http") return true;
-	if (descriptor.transport === "native-http") return NATIVE_OPENAI_WIRE.has(model.provider);
+	if (descriptor.transport === "native-http") {
+		return NATIVE_OPENAI_WIRE.has(model.provider) || TRANSLATABLE_WIRE.has(model.provider);
+	}
 	return false; // cloud-sdk (bedrock, vertex) needs per-SDK translation
 }
 
@@ -387,18 +399,44 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry): void {
 				attemptChain.push(`${model.provider}:untrusted-host`);
 				continue;
 			}
+			const usesAnthropicWire = model.provider === "anthropic";
 			const upstreamHeaders: Record<string, string> = { "content-type": "application/json" };
-			if (bearerToken) upstreamHeaders.authorization = `Bearer ${bearerToken}`;
+			let upstreamBody: string;
+			let upstreamUrlString: string;
+			if (usesAnthropicWire) {
+				// Anthropic /v1/messages: auth via x-api-key + anthropic-version,
+				// body translated from OpenAI chat-completions on the way in,
+				// response translated back on the way out. Streaming is not yet
+				// supported through the translator — fall through cleanly with a
+				// 422 so the caller switches to a non-translated route.
+				if (body.stream === true) {
+					return ctx.json(
+						{
+							error: "anthropic streaming through the OpenAI-compatible proxy is not yet supported",
+							resolvedModel: model.id,
+							resolvedProvider: model.provider,
+						},
+						422,
+					);
+				}
+				upstreamHeaders["x-api-key"] = bearerToken ?? "";
+				upstreamHeaders["anthropic-version"] = "2023-06-01";
+				upstreamBody = JSON.stringify(
+					translateOpenAIToAnthropic({ ...(body as unknown as OpenAIChatRequest), model: model.id }),
+				);
+				upstreamUrlString = safeUrl.toString().replace(/\/chat\/completions$/, "/v1/messages");
+			} else {
+				if (bearerToken) upstreamHeaders.authorization = `Bearer ${bearerToken}`;
+				upstreamBody = JSON.stringify({ ...body, model: model.id });
+				upstreamUrlString = safeUrl.toString();
+			}
 
 			let upstream: Response;
 			try {
-				// Use safeUrl.toString() so test mocks and downstream consumers
-				// receive a plain string (matches the pre-allowlist contract);
-				// the value going into fetch has still been allowlist-validated.
-				upstream = await fetch(safeUrl.toString(), {
+				upstream = await fetch(upstreamUrlString, {
 					method: "POST",
 					headers: upstreamHeaders,
-					body: JSON.stringify({ ...body, model: model.id }),
+					body: upstreamBody,
 				});
 			} catch (err) {
 				attemptChain.push(`${model.provider}:error`);
@@ -447,6 +485,22 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry): void {
 					estimatedOutputTokens: estimate.expectedOutputTokens,
 					upstreamStatus: upstream.status,
 				}).catch(() => {});
+			}
+			if (usesAnthropicWire && upstream.ok) {
+				// Translate the JSON body back to OpenAI chat-completions shape
+				// so the caller's SDK keeps working unchanged.
+				let raw: AnthropicMessagesResponse;
+				try {
+					raw = (await upstream.json()) as AnthropicMessagesResponse;
+				} catch {
+					return ctx.json(
+						{ error: "anthropic upstream returned unparseable JSON", resolvedProvider: model.provider },
+						502,
+					);
+				}
+				const translated = translateAnthropicToOpenAI(raw, model.id);
+				responseHeaders.set("content-type", "application/json");
+				return new Response(JSON.stringify(translated), { status: upstream.status, headers: responseHeaders });
 			}
 			const ct = upstream.headers.get("content-type");
 			if (ct) responseHeaders.set("content-type", ct);
