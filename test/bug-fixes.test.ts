@@ -29,14 +29,25 @@ afterEach(() => {
 
 /** Capture every fetch call's url + headers and return a canned JSON body. */
 function captureFetch(body: unknown) {
-	const calls: { url: string; headers: Headers }[] = [];
+	const calls: { url: string; host: string; headers: Headers }[] = [];
 	globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
 		const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-		calls.push({ url, headers: new Headers(init?.headers) });
+		// Parse the host rather than substring-matching the raw URL: a
+		// substring check can be fooled by an attacker host that merely
+		// contains the expected domain (flagged by CodeQL).
+		let host = "";
+		try {
+			host = new URL(url).hostname;
+		} catch {
+			host = "";
+		}
+		calls.push({ url, host, headers: new Headers(init?.headers) });
 		return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
 	}) as typeof globalThis.fetch;
 	return calls;
 }
+
+const GOOGLE_HOST = "generativelanguage.googleapis.com";
 
 describe("Google discoverer: key never in URL", () => {
 	const credential: CredentialResult = { apiKey: "AIzaSy-secret-123", source: "env" };
@@ -47,7 +58,7 @@ describe("Google discoverer: key never in URL", () => {
 
 		// Only the Google models endpoint carries the credential; the public
 		// seed / enrichment fetches go elsewhere and are not relevant here.
-		const googleCalls = calls.filter((c) => c.url.includes("generativelanguage.googleapis.com"));
+		const googleCalls = calls.filter((c) => c.host === GOOGLE_HOST);
 		expect(googleCalls.length).toBeGreaterThan(0);
 		for (const call of googleCalls) {
 			expect(call.url).not.toContain("key=");
@@ -59,7 +70,7 @@ describe("Google discoverer: key never in URL", () => {
 	it("attaches a default User-Agent to discovery requests", async () => {
 		const calls = captureFetch({ models: [], nextPageToken: undefined });
 		await new GoogleDiscoverer().discover(credential, { timeout: 2_000 });
-		const googleCall = calls.find((c) => c.url.includes("generativelanguage.googleapis.com"));
+		const googleCall = calls.find((c) => c.host === GOOGLE_HOST);
 		expect(googleCall?.headers.get("user-agent")).toMatch(/kosha-discovery/);
 	});
 });
