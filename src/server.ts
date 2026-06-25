@@ -317,6 +317,17 @@ export function createServer(registry: ModelRegistry): Hono {
 		});
 	});
 
+	// Provider ids come from a JSON-loaded registry; per the Prometheus
+	// exposition spec, label values need '\\', '\"', and '\n' escaped — a
+	// plain quote-strip is not sufficient and could let a crafted id break
+	// the exposition format. https://prometheus.io/docs/instrumenting/exposition_formats/
+	const escapePrometheusLabel = (value: string): string =>
+		value
+			.replace(/\\/g, "\\\\")
+			.replace(/"/g, '\\"')
+			.replace(/\n/g, "\\n")
+			.replace(/\r/g, "");
+
 	// ── Prometheus metrics ───────────────────────────────────────────
 	// Plain-text exposition format. Operators can scrape this directly with
 	// Prometheus / Grafana Agent / VictoriaMetrics; no extra dependency.
@@ -340,7 +351,7 @@ export function createServer(registry: ModelRegistry): Hono {
 		lines.push("# TYPE kosha_provider_breaker_open gauge");
 		for (const provider of providers) {
 			const health = registry.providerRouteHealth(provider.id);
-			const safeId = provider.id.replace(/"/g, "");
+			const safeId = escapePrometheusLabel(provider.id);
 			lines.push(`kosha_provider_reliability{provider="${safeId}"} ${health.reliabilityScore}`);
 			if (typeof health.p95LatencyMs === "number") {
 				lines.push(`kosha_provider_p95_latency_ms{provider="${safeId}"} ${health.p95LatencyMs}`);

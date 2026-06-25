@@ -205,10 +205,14 @@ export async function appendLedgerEntry(entry: LedgerEntry, ledgerPath = DEFAULT
 
 function startOfMonth(nowMs: number): number {
 	const d = new Date(nowMs);
-	return new Date(d.getUTCFullYear(), d.getUTCMonth(), 1).getTime();
+	// Important: pair `getUTCMonth()`/`getUTCFullYear()` with `Date.UTC()`.
+	// The numeric `new Date(year, month, …)` constructor interprets its args
+	// as LOCAL time, so the previous code drifted by up to ~24h around month
+	// boundaries in any non-UTC timezone — breaking budget cutoffs.
+	return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
 }
 
 function startOfNextMonth(nowMs: number): number {
 	const d = new Date(nowMs);
-	return new Date(d.getUTCFullYear(), d.getUTCMonth() + 1, 1).getTime();
+	return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1);
 }

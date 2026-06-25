@@ -104,6 +104,12 @@ export function rankCandidatesByStrategy(
 	matches: CheapestModelMatch[],
 	strategy: RouteStrategy,
 ): RankedRoute[] {
+	// Early-exit on an empty candidate set. Without this, the Math.min/max
+	// spread calls below would return Infinity / -Infinity (no-op rather than
+	// crash, but it produces nonsense metadata that downstream consumers
+	// shouldn't have to filter).
+	if (matches.length === 0) return [];
+
 	const rows = matches.map((match) => {
 		const health = providerRouteHealth(state, match.model.provider);
 		return {
