@@ -254,12 +254,39 @@ describe("CircuitBreaker", () => {
 
 			expect(cb.health().state).toBe("open");
 
-			// Second cycle: probe succeeds
-			vi.advanceTimersByTime(1_000);
+			// Second cycle: the open-state cooldown adaptively doubles after a
+			// failed probe, so we have to wait longer than the base timeout
+			// before the next probe is allowed.
+			expect(cb.currentResetTimeoutMs()).toBe(2_000);
+			vi.advanceTimersByTime(2_000);
 			cb.canExecute(); // → half-open
 			cb.onSuccess(); // → closed
 
 			expect(cb.health().state).toBe("closed");
+			// A successful close resets the adaptive backoff to the base value.
+			expect(cb.currentResetTimeoutMs()).toBe(1_000);
+			vi.useRealTimers();
+		});
+
+		it("backs off exponentially across repeated failed probes (adaptive)", () => {
+			vi.useFakeTimers();
+			const cb = new CircuitBreaker("p", { failureThreshold: 1, resetTimeoutMs: 1_000, maxResetTimeoutMs: 5_000 });
+
+			cb.onFailure(); // cycle 1 → open, cooldown = 1s
+			expect(cb.currentResetTimeoutMs()).toBe(1_000);
+
+			vi.advanceTimersByTime(1_000);
+			cb.canExecute(); cb.onFailure(); // cycle 2 → cooldown = 2s
+			expect(cb.currentResetTimeoutMs()).toBe(2_000);
+
+			vi.advanceTimersByTime(2_000);
+			cb.canExecute(); cb.onFailure(); // cycle 3 → cooldown = 4s
+			expect(cb.currentResetTimeoutMs()).toBe(4_000);
+
+			vi.advanceTimersByTime(4_000);
+			cb.canExecute(); cb.onFailure(); // cycle 4 → cooldown would be 8s, capped at 5s
+			expect(cb.currentResetTimeoutMs()).toBe(5_000);
+
 			vi.useRealTimers();
 		});
 	});
