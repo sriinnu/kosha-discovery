@@ -32,6 +32,12 @@ import type { ModelRegistry } from "./registry.js";
 import { getProviderDescriptor, listProviderDescriptors, providerExecutionCredentialRequired } from "./provider-catalog.js";
 import { fallbackRegistryCredential, getRegistryCredentialResolver } from "./registry-runtime.js";
 import { parseRouteStrategy, type RouteStrategy } from "./registry-routing.js";
+import {
+	appendLedgerEntry,
+	estimateRequestCost,
+	readMonthlyBudgetUsd,
+	readSpendForMonth,
+} from "./cost.js";
 
 // ---------------------------------------------------------------------------
 // Upstream host allowlist (SSRF guard)
@@ -199,6 +205,19 @@ function resolveProxyCandidates(registry: ModelRegistry, requested: string): Mod
 	return dedupeModels(ordered);
 }
 
+/**
+ * Extract a tenant tag from an `Authorization: Bearer kosha-tenant-<name>`
+ * header. We use it as a bucketing label only (per-tenant ledger rows + budget),
+ * never as actual authentication — the bearer is consumed and replaced with
+ * the resolved upstream credential before forwarding. Returns null for any
+ * non-conforming header so downstream code doesn't have to guard for empties.
+ */
+function parseTenantTag(authHeader: string | undefined): string | null {
+	if (!authHeader) return null;
+	const match = /^\s*Bearer\s+kosha-tenant-([A-Za-z0-9_.-]{1,64})\s*$/i.exec(authHeader);
+	return match ? match[1] : null;
+}
+
 /** Stable de-dup of model cards by provider + id, preserving first occurrence. */
 function dedupeModels(models: ModelCard[]): ModelCard[] {
 	const seen = new Set<string>();
@@ -302,6 +321,28 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry): void {
 		// malformed model string into an unhandled 500.
 		const safeRequested = requested.replace(/[\r\n\0]/g, "").slice(0, 200);
 
+		// Optional per-tenant tag, drawn from a kosha-tenant-<name> bearer token.
+		// We don't trust the value as authentication — it just buckets ledger
+		// rows and per-tenant budgets. The proxy still resolves real upstream
+		// credentials from env / CLI files as usual.
+		const tenant = parseTenantTag(ctx.req.header("authorization"));
+
+		// ── Budget gate ────────────────────────────────────────────────
+		const budget = readMonthlyBudgetUsd();
+		if (budget !== null) {
+			const spent = await readSpendForMonth(Date.now(), tenant).catch(() => 0);
+			if (spent >= budget) {
+				return ctx.json(
+					{ error: "monthly budget exceeded", spentUsd: spent, budgetUsd: budget },
+					429,
+					{
+						"x-kosha-budget-remaining-usd": Math.max(0, budget - spent).toFixed(4),
+						"x-kosha-budget-usd": budget.toFixed(2),
+					},
+				);
+			}
+		}
+
 		// Use the full 5-tier CredentialResolver (CLI files, ADC, OAuth, env vars)
 		// so the proxy honours the same credential sources as discovery.
 		const resolver = await getRegistryCredentialResolver();
@@ -378,12 +419,35 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry): void {
 			}
 
 			attemptChain.push(`${model.provider}:${upstream.status}`);
+
+			// Pre-flight cost estimate. We compute (input tokens × inputRate +
+			// expected_output × outputRate) and reflect it on the response so the
+			// caller can audit before paying. The same number is appended to the
+			// ledger so kosha spend can roll it up. We do NOT block on cost here
+			// — the budget gate above already short-circuited if applicable.
+			const estimate = estimateRequestCost(model, body);
 			const responseHeaders = new Headers({
 				"x-kosha-model": model.id,
 				"x-kosha-provider": model.provider,
 				"x-kosha-requested": safeRequested,
 				"x-kosha-attempt-chain": attemptChain.join(",").replace(/[\r\n\0]/g, "").slice(0, 400),
 			});
+			if (estimate) {
+				responseHeaders.set("x-kosha-estimated-cost-usd", estimate.estimatedUsd.toFixed(6));
+				// Best-effort ledger append. Failures here are observability
+				// losses, never a reason to fail the request itself.
+				appendLedgerEntry({
+					ts: Date.now(),
+					provider: model.provider,
+					modelId: model.id,
+					requested: safeRequested,
+					tenant,
+					estimatedUsd: estimate.estimatedUsd,
+					estimatedInputTokens: estimate.inputTokens,
+					estimatedOutputTokens: estimate.expectedOutputTokens,
+					upstreamStatus: upstream.status,
+				}).catch(() => {});
+			}
 			const ct = upstream.headers.get("content-type");
 			if (ct) responseHeaders.set("content-type", ct);
 			return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
