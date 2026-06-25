@@ -327,22 +327,6 @@ function respondError(id: string | number | null | undefined, code: number, mess
 	send({ jsonrpc: "2.0", id: id ?? null, error: { code, message } });
 }
 
-/**
- * Best-effort extraction of a top-level JSON-RPC `id` from a string that
- * failed to parse, so a Parse-error response can still be correlated by the
- * client. Returns null when no simple id is recoverable.
- */
-function salvageId(raw: string): string | number | null {
-	const m = /"id"\s*:\s*("(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?)/.exec(raw);
-	if (!m) return null;
-	try {
-		const value = JSON.parse(m[1]) as string | number;
-		return value;
-	} catch {
-		return null;
-	}
-}
-
 async function handleMessage(msg: JsonRpcMessage): Promise<void> {
 	const { id, method, params } = msg;
 
@@ -398,9 +382,10 @@ process.stdin.on("data", (chunk: string) => {
 			// Malformed JSON. Per JSON-RPC 2.0 we must still answer with a
 			// -32700 Parse error so the client doesn't block forever waiting
 			// on a response. The id is unknowable from unparseable input, so
-			// we best-effort salvage a top-level numeric/string id for
-			// correlation and fall back to null.
-			respondError(salvageId(trimmed), -32700, "Parse error");
+			// per spec we respond with id=null (we deliberately avoid scanning
+			// the raw text for an id, which would mean running a regex over
+			// uncontrolled stdin).
+			respondError(null, -32700, "Parse error");
 			continue;
 		}
 		handleMessage(parsed).catch((err) => {
