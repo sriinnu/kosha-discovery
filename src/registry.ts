@@ -38,6 +38,13 @@ import {
 	registryCheapestCandidates,
 	registryExecutionBindingHints,
 } from "./registry-selection.js";
+import {
+	providerRouteHealth,
+	rankCandidatesByStrategy,
+	type RankedRoute,
+	type RouteHealth,
+	type RouteStrategy,
+} from "./registry-routing.js";
 import { createRegistryState } from "./registry-state.js";
 import type { ProviderObservation, RegistryState, DiscoveryDependencies } from "./registry-state.js";
 import {
@@ -164,6 +171,26 @@ export class ModelRegistry {
 	/** Return the cheapest ranked legacy candidates for the requested query. */
 	cheapestModels(options?: CheapestModelOptions): CheapestModelResult {
 		return registryCheapestModels(this.state, options);
+	}
+
+	/**
+	 * Rank candidate routes for a query by a selection {@link RouteStrategy}
+	 * — `cheapest` (price), `fastest` (observed p95 latency), `reliable`
+	 * (circuit-breaker + timeout health), or `balanced` (a weighted blend).
+	 *
+	 * The candidate set is the same price-filtered pool as
+	 * {@link cheapestModels}; the strategy only changes the ordering and folds
+	 * in the runtime health kosha already tracks. Open-breaker providers always
+	 * sort last, which is what makes this usable as a failover order.
+	 */
+	rankedRoutes(options?: CheapestModelOptions, strategy: RouteStrategy = "cheapest"): RankedRoute[] {
+		const result = registryCheapestModels(this.state, { includeUnpriced: true, ...options });
+		return rankCandidatesByStrategy(this.state, result.matches, strategy);
+	}
+
+	/** Read-only runtime health for one provider (breaker state, latency, reliability). */
+	providerRouteHealth(providerId: string): RouteHealth {
+		return providerRouteHealth(this.state, normalizeProviderId(providerId) ?? providerId);
 	}
 
 	/** Return every provider route for a normalized model identifier. */
