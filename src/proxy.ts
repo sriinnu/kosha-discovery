@@ -38,16 +38,14 @@ import { parseRouteStrategy, type RouteStrategy } from "./registry-routing.js";
 // ---------------------------------------------------------------------------
 
 /**
- * Hostnames the proxy is allowed to forward to. Built once at module load from
- * the in-process provider catalog (NOT from any file/cache value), so even if
- * a cached `provider.baseUrl` is poisoned and reaches `buildUpstreamUrl`, the
- * resulting URL still has to clear this fixed set before we issue the fetch.
- *
- * Local-runtime providers (Ollama, llama.cpp, LM Studio, vLLM) are configurable
- * to any user-chosen host, so we accept the loopback families instead of
- * baking a specific hostname.
+ * Hostnames the proxy is allowed to forward to. Built once at module load
+ * from the in-process provider catalog (NOT from any file/cache value).
+ * Even though buildUpstreamUrl already only takes the host from the in-process
+ * catalog for non-local providers, validating the parsed URL's hostname
+ * against this list here lets static analyzers (CodeQL `js/request-forgery`)
+ * recognize this code as a sanitizer for the outbound fetch.
  */
-const ALLOWED_UPSTREAM_HOSTS: ReadonlySet<string> = (() => {
+const ALLOWED_UPSTREAM_HOSTS: readonly string[] = (() => {
 	const hosts = new Set<string>();
 	for (const descriptor of listProviderDescriptors()) {
 		try {
@@ -56,15 +54,16 @@ const ALLOWED_UPSTREAM_HOSTS: ReadonlySet<string> = (() => {
 			// A malformed catalog entry should not block loading the module.
 		}
 	}
-	return hosts;
+	return Object.freeze(Array.from(hosts));
 })();
 
-const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
-
 /**
- * Return the upstream URL if-and-only-if its hostname is in the allowlist.
- * Returns null for an unparseable URL or one whose host isn't trusted. The
- * caller refuses the request in that case rather than dialing a tainted host.
+ * Return the upstream URL if-and-only-if its hostname is one we trust.
+ * Returns null for an unparseable URL, an exotic protocol, or a hostname
+ * outside the catalog allowlist / loopback families. The caller refuses the
+ * request in that case rather than dialing a tainted host. Written with
+ * explicit `===` checks against literal strings so static taint analysis
+ * recognizes this function as a sanitizer.
  */
 function safeUpstreamUrl(rawUrl: string, isLocalProvider: boolean): URL | null {
 	let parsed: URL;
@@ -75,10 +74,21 @@ function safeUpstreamUrl(rawUrl: string, isLocalProvider: boolean): URL | null {
 	}
 	// Block exotic schemes that fetch would otherwise accept (data:, file:, …).
 	if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null;
+	const host = parsed.hostname;
 	if (isLocalProvider) {
-		return LOOPBACK_HOSTS.has(parsed.hostname) ? parsed : null;
+		// Loopback-only for user-configurable local runtimes. Explicit literal
+		// comparisons let CodeQL recognize this as a sanitizer.
+		if (host === "localhost") return parsed;
+		if (host === "127.0.0.1") return parsed;
+		if (host === "::1") return parsed;
+		if (host === "0.0.0.0") return parsed;
+		return null;
 	}
-	return ALLOWED_UPSTREAM_HOSTS.has(parsed.hostname) ? parsed : null;
+	// Non-local: hostname must match one drawn from the in-process catalog.
+	for (const allowed of ALLOWED_UPSTREAM_HOSTS) {
+		if (host === allowed) return parsed;
+	}
+	return null;
 }
 
 // native-http providers that speak the OpenAI wire format natively.
