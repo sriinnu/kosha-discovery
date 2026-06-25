@@ -626,7 +626,19 @@ async function readPreviousManifest(manifestPath: string): Promise<DiscoverySnap
 	}
 }
 
-function mergeManifests(
+/** Beyond this fractional rate change in either direction, we treat a fresh
+ *  price as suspect and keep the previous value (quarantine). The 25% delta
+ *  used by anomaly logging is a UI-alert threshold; quarantine fires only on
+ *  a much larger swing so legitimate price updates aren't blocked. */
+const PRICING_QUARANTINE_THRESHOLD = 0.75;
+
+/** After this many consecutive discovery passes in which a previously-known
+ *  model is missing from the fresh snapshot, the model is dropped from the
+ *  merged manifest. Prevents the manifest from becoming a graveyard of
+ *  deprecated SKUs while still riding through transient outages. */
+const MISSING_RUNS_TTL = 14;
+
+export function mergeManifests(
 	previous: DiscoverySnapshotV1 | null,
 	fresh: DiscoverySnapshotV1,
 ): DiscoverySnapshotV1 {
@@ -639,33 +651,45 @@ function mergeManifests(
 		if (m.key) previousByKey.set(m.key, m);
 	}
 
-	// Per-model merge with two rules:
-	//   (1) Old entries fresh dropped entirely → keep them.
+	// Per-model merge with three rules:
+	//   (1) Old entries fresh dropped entirely → keep until missingRunCount
+	//       exceeds MISSING_RUNS_TTL (model lifecycle TTL).
 	//   (2) Fresh entries that came back with NO pricing while the old entry
 	//       HAD pricing → keep the old pricing block (degraded-fresh defence).
-	//       This guards against transient enrichment failures (LiteLLM
-	//       offline, models.dev 503, etc.) that would otherwise silently
-	//       zero out previously-known prices on the next refresh.
+	//   (3) Fresh entries whose rates moved beyond PRICING_QUARANTINE_THRESHOLD
+	//       → keep the previous pricing and tag the row pricing_quarantined,
+	//       so a one-shot bad publish (provider returns 0, garbage units, …)
+	//       can't silently overcharge or underprice downstream consumers.
 	const freshModelKeys = new Set<string>();
 	const mergedModels: (typeof fresh.models)[number][] = [];
 	for (const f of fresh.models ?? []) {
 		if (f.key) freshModelKeys.add(f.key);
 		const old = f.key ? previousByKey.get(f.key) : undefined;
+
+		let kept = { ...f, missingRunCount: 0 } as (typeof fresh.models)[number] & { missingRunCount?: number };
 		if (old && !hasUsablePricing(f) && hasUsablePricing(old)) {
 			// Keep all of fresh's metadata but restore pricing from old.
-			mergedModels.push({
-				...f,
+			kept = { ...kept, pricing: old.pricing, originPricing: old.originPricing };
+		} else if (old && quarantinePricingMove(old, f)) {
+			// Quarantine the suspect rates: keep the old pricing block and
+			// tag the operational `rawCapabilities` array (the trusted
+			// `capabilities` taxonomy stays clean, since this isn't a routing
+			// signal — it's a "don't trust the freshly-published rate" flag).
+			kept = {
+				...kept,
 				pricing: old.pricing,
 				originPricing: old.originPricing,
-			});
-		} else {
-			mergedModels.push(f);
+				rawCapabilities: tagCapability(kept.rawCapabilities, "pricing_quarantined"),
+			};
 		}
+		mergedModels.push(kept);
 	}
 	for (const old of previous.models) {
-		if (old.key && !freshModelKeys.has(old.key)) {
-			mergedModels.push(old);
-		}
+		if (!old.key || freshModelKeys.has(old.key)) continue;
+		const prevMissing = (old as { missingRunCount?: number }).missingRunCount ?? 0;
+		const nextMissing = prevMissing + 1;
+		if (nextMissing > MISSING_RUNS_TTL) continue; // drop after TTL
+		mergedModels.push({ ...old, missingRunCount: nextMissing } as typeof old);
 	}
 
 	const freshProviderIds = new Set((fresh.providers ?? []).map((p) => p.providerId));
@@ -681,6 +705,46 @@ function mergeManifests(
 		models: mergedModels,
 		providers: mergedProviders,
 	};
+}
+
+/** True if any defined per-million rate moved by more than the quarantine
+ *  threshold (either direction), compared to the previous snapshot. */
+function quarantinePricingMove(
+	previous: { pricing?: unknown; originPricing?: unknown },
+	fresh: { pricing?: unknown; originPricing?: unknown },
+): boolean {
+	type Rates = {
+		inputPerMillion?: number;
+		outputPerMillion?: number;
+		cacheReadPerMillion?: number;
+		cacheWritePerMillion?: number;
+	} | null | undefined;
+	const fields: Array<keyof NonNullable<Rates>> = [
+		"inputPerMillion",
+		"outputPerMillion",
+		"cacheReadPerMillion",
+		"cacheWritePerMillion",
+	];
+	for (const side of ["pricing", "originPricing"] as const) {
+		const a = (previous[side] as Rates) ?? null;
+		const b = (fresh[side] as Rates) ?? null;
+		if (!a || !b) continue;
+		for (const field of fields) {
+			const prev = a[field];
+			const next = b[field];
+			if (typeof prev !== "number" || typeof next !== "number") continue;
+			if (prev === 0 || next === 0) continue; // zero on either side is a "not reported" placeholder, not a price move
+			if (prev === next) continue;
+			if (Math.abs((next - prev) / prev) >= PRICING_QUARANTINE_THRESHOLD) return true;
+		}
+	}
+	return false;
+}
+
+/** Add a capability tag exactly once, preserving order. */
+function tagCapability(existing: string[] | undefined, tag: string): string[] {
+	if (!existing) return [tag];
+	return existing.includes(tag) ? existing : [...existing, tag];
 }
 
 /** True if the entry carries defined input + output rates on EITHER the
