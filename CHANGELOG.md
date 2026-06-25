@@ -16,8 +16,9 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 A broad release that hardens the proxy/runtime, expands routing intelligence,
 adds cost tracking with a budget gate, brings the Anthropic wire format under
 the OpenAI-compatible proxy contract, and lights up new operator surfaces.
-789 tests; full security-extended CodeQL coverage outside the two intentional
-credential-forwarding / ledger-write paths.
+789 tests; full security-extended CodeQL coverage outside three intentional
+credential-forwarding / wire-translation / ledger-write paths (`src/proxy.ts`,
+`src/wire-anthropic.ts`, `src/cost.ts`).
 
 ### Added
 
