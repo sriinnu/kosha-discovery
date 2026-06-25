@@ -29,9 +29,57 @@
 import type { Hono } from "hono";
 import type { ModelCard } from "./types.js";
 import type { ModelRegistry } from "./registry.js";
-import { getProviderDescriptor, providerExecutionCredentialRequired } from "./provider-catalog.js";
+import { getProviderDescriptor, listProviderDescriptors, providerExecutionCredentialRequired } from "./provider-catalog.js";
 import { fallbackRegistryCredential, getRegistryCredentialResolver } from "./registry-runtime.js";
 import { parseRouteStrategy, type RouteStrategy } from "./registry-routing.js";
+
+// ---------------------------------------------------------------------------
+// Upstream host allowlist (SSRF guard)
+// ---------------------------------------------------------------------------
+
+/**
+ * Hostnames the proxy is allowed to forward to. Built once at module load from
+ * the in-process provider catalog (NOT from any file/cache value), so even if
+ * a cached `provider.baseUrl` is poisoned and reaches `buildUpstreamUrl`, the
+ * resulting URL still has to clear this fixed set before we issue the fetch.
+ *
+ * Local-runtime providers (Ollama, llama.cpp, LM Studio, vLLM) are configurable
+ * to any user-chosen host, so we accept the loopback families instead of
+ * baking a specific hostname.
+ */
+const ALLOWED_UPSTREAM_HOSTS: ReadonlySet<string> = (() => {
+	const hosts = new Set<string>();
+	for (const descriptor of listProviderDescriptors()) {
+		try {
+			hosts.add(new URL(descriptor.defaultBaseUrl).hostname);
+		} catch {
+			// A malformed catalog entry should not block loading the module.
+		}
+	}
+	return hosts;
+})();
+
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
+
+/**
+ * Return the upstream URL if-and-only-if its hostname is in the allowlist.
+ * Returns null for an unparseable URL or one whose host isn't trusted. The
+ * caller refuses the request in that case rather than dialing a tainted host.
+ */
+function safeUpstreamUrl(rawUrl: string, isLocalProvider: boolean): URL | null {
+	let parsed: URL;
+	try {
+		parsed = new URL(rawUrl);
+	} catch {
+		return null;
+	}
+	// Block exotic schemes that fetch would otherwise accept (data:, file:, …).
+	if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null;
+	if (isLocalProvider) {
+		return LOOPBACK_HOSTS.has(parsed.hostname) ? parsed : null;
+	}
+	return ALLOWED_UPSTREAM_HOSTS.has(parsed.hostname) ? parsed : null;
+}
 
 // native-http providers that speak the OpenAI wire format natively.
 // All openai-compatible-http providers are implicitly forwardable.
@@ -270,12 +318,25 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry): void {
 			fetchAttempts += 1;
 
 			const upstreamUrl = buildUpstreamUrl(model, registry);
+			// The proxy never forwards to a host outside the in-process catalog
+			// allowlist. The registry's `provider.baseUrl` is loaded from disk
+			// cache (or could come from a user config file), so a poisoned
+			// value must NOT redirect a request to an attacker-chosen host —
+			// this is the SSRF / `js/request-forgery` guard.
+			const safeUrl = safeUpstreamUrl(upstreamUrl, descriptor?.isLocal === true);
+			if (!safeUrl) {
+				attemptChain.push(`${model.provider}:untrusted-host`);
+				continue;
+			}
 			const upstreamHeaders: Record<string, string> = { "content-type": "application/json" };
 			if (bearerToken) upstreamHeaders.authorization = `Bearer ${bearerToken}`;
 
 			let upstream: Response;
 			try {
-				upstream = await fetch(upstreamUrl, {
+				// Use safeUrl.toString() so test mocks and downstream consumers
+				// receive a plain string (matches the pre-allowlist contract);
+				// the value going into fetch has still been allowlist-validated.
+				upstream = await fetch(safeUrl.toString(), {
 					method: "POST",
 					headers: upstreamHeaders,
 					body: JSON.stringify({ ...body, model: model.id }),
