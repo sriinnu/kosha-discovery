@@ -7,7 +7,7 @@
  * @module
  */
 
-import { mkdir, readFile, readdir, rename, rm, unlink, writeFile } from "fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from "fs/promises";
 import { randomBytes } from "crypto";
 import { homedir } from "os";
 import { join } from "path";
@@ -17,6 +17,15 @@ interface CacheEntry<T> {
 	data: T;
 	timestamp: number;
 }
+
+/**
+ * Hard ceiling on a single cache file before we even attempt to parse it.
+ * A legitimate full-registry snapshot is a few hundred KB; anything past
+ * this is either corruption or a hostile payload crafted to exhaust memory
+ * (a "JSON bomb"). We reject it as a cache miss rather than feeding it to
+ * `JSON.parse`, which buffers and parses the whole string eagerly.
+ */
+const MAX_CACHE_FILE_BYTES = 25 * 1024 * 1024;
 
 /**
  * Simple file-based JSON cache with TTL support.
@@ -38,6 +47,14 @@ export class KoshaCache {
 	async get<T>(key: string): Promise<CacheEntry<T> | null> {
 		try {
 			const filePath = this.keyToPath(key);
+			const { size } = await stat(filePath);
+			if (size > MAX_CACHE_FILE_BYTES) {
+				console.warn(
+					`KoshaCache: cache file for key "${key}" is ${size} bytes (> ${MAX_CACHE_FILE_BYTES}); refusing to parse and invalidating`,
+				);
+				await this.invalidate(key);
+				return null;
+			}
 			const raw = await readFile(filePath, "utf-8");
 			const entry = JSON.parse(raw) as CacheEntry<T>;
 			assertCleanPayload(entry, `cache/${key}`);

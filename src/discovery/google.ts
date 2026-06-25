@@ -60,10 +60,16 @@ export class GoogleDiscoverer extends BaseDiscoverer {
 		const allModels: GoogleModel[] = [];
 		let pageToken: string | undefined;
 
+		// Pass the key via the `x-goog-api-key` header rather than a `?key=`
+		// query parameter. A key in the URL leaks into proxy access logs, the
+		// HTTP Referer, and any place a URL is logged for diagnostics; a header
+		// does not. Google accepts both forms for this API.
+		const headers: Record<string, string> = { "x-goog-api-key": apiKey };
+
 		// Token-based pagination: keep fetching while a nextPageToken is returned
 		do {
-			const url = this.buildUrl(apiKey, pageToken);
-			const response = await this.fetchJSON<GoogleListResponse>(url, undefined, timeoutMs);
+			const url = this.buildUrl(pageToken);
+			const response = await this.fetchJSON<GoogleListResponse>(url, headers, timeoutMs);
 			allModels.push(...response.models);
 			pageToken = response.nextPageToken;
 			if (allModels.length >= MAX_MODELS_PER_PROVIDER) break;
@@ -77,12 +83,14 @@ export class GoogleDiscoverer extends BaseDiscoverer {
 	}
 
 	/**
-	 * Build the paginated list URL with API key and optional page token.
+	 * Build the paginated list URL with an optional page token. The API key is
+	 * sent via the `x-goog-api-key` header (see {@link discover}), never in the
+	 * URL, so it cannot leak through logs or referrers.
 	 */
-	private buildUrl(apiKey: string, pageToken?: string): string {
-		let url = `${this.baseUrl}/v1beta/models?key=${apiKey}&pageSize=100`;
+	private buildUrl(pageToken?: string): string {
+		let url = `${this.baseUrl}/v1beta/models?pageSize=100`;
 		if (pageToken) {
-			url += `&pageToken=${pageToken}`;
+			url += `&pageToken=${encodeURIComponent(pageToken)}`;
 		}
 		return url;
 	}
