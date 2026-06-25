@@ -31,6 +31,11 @@ export type {
 	DiscoverySnapshotV1,
 	TrustedCapability,
 } from "./discovery-contract.js";
+export {
+	parseRouteStrategy,
+	ROUTE_STRATEGIES,
+} from "./registry-routing.js";
+export type { RankedRoute, RouteHealth, RouteStrategy } from "./registry-routing.js";
 export { extractModelVersion, extractOriginProvider, normalizeModelId } from "./normalize.js";
 export { inferTokenizerFamily } from "./tokenizer-family.js";
 export { inferParallelToolCalls, inferStructuredOutputModes, inferToolDialect } from "./model-features.js";
