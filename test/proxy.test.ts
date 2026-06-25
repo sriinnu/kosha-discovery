@@ -40,6 +40,8 @@ const originalFetch = globalThis.fetch;
 const originalOpenAIKey = process.env.OPENAI_API_KEY;
 const originalGatewayKey = process.env.AI_GATEWAY_API_KEY;
 const originalOidcToken = process.env.VERCEL_OIDC_TOKEN;
+const originalGroqKey = process.env.GROQ_API_KEY;
+const originalDeepinfraKey = process.env.DEEPINFRA_API_KEY;
 
 afterEach(() => {
 	globalThis.fetch = originalFetch;
@@ -47,6 +49,8 @@ afterEach(() => {
 	restoreEnv("OPENAI_API_KEY", originalOpenAIKey);
 	restoreEnv("AI_GATEWAY_API_KEY", originalGatewayKey);
 	restoreEnv("VERCEL_OIDC_TOKEN", originalOidcToken);
+	restoreEnv("GROQ_API_KEY", originalGroqKey);
+	restoreEnv("DEEPINFRA_API_KEY", originalDeepinfraKey);
 });
 
 describe("OpenAI-compatible proxy", () => {
@@ -183,6 +187,92 @@ describe("OpenAI-compatible proxy", () => {
 			body: JSON.stringify({ model: "kosha:turbofast", messages: [{ role: "user", content: "hi" }] }),
 		});
 		expect(res.status).toBe(404);
+	});
+});
+
+describe("proxy failover", () => {
+	// groq (cheaper) is tried first under kosha:cheapest; deepinfra is the
+	// fallback. Both are openai-compatible-http (forwardable). The mock keys
+	// off the forwarded body.model so we never substring-match a URL host.
+	function twoProviderRegistry() {
+		process.env.GROQ_API_KEY = "g-test";
+		process.env.DEEPINFRA_API_KEY = "d-test";
+		return ModelRegistry.fromJSON({
+			providers: [
+				makeProvider("groq", "Groq", [
+					makeModel({ id: "llama-cheap", provider: "groq", pricing: { inputPerMillion: 0.01, outputPerMillion: 0.02 } }),
+				]),
+				makeProvider("deepinfra", "DeepInfra", [
+					makeModel({ id: "llama-mid", provider: "deepinfra", pricing: { inputPerMillion: 1, outputPerMillion: 2 } }),
+				]),
+			],
+			aliases: {},
+			discoveredAt: Date.now(),
+		});
+	}
+
+	/** Mock fetch that responds based on the forwarded model id. */
+	function mockByModel(responder: (model: string) => { status: number } | "throw") {
+		const fn = vi.fn(async (_url: string, init?: RequestInit) => {
+			const model = JSON.parse(String(init?.body)).model as string;
+			const out = responder(model);
+			if (out === "throw") throw new Error("ECONNREFUSED");
+			return new Response(JSON.stringify({ id: "x", choices: [] }), {
+				status: out.status,
+				headers: { "content-type": "application/json" },
+			});
+		});
+		globalThis.fetch = fn as unknown as typeof fetch;
+		return fn;
+	}
+
+	it("fails over to the next ranked provider on a 5xx", async () => {
+		const app = createServer(twoProviderRegistry());
+		mockByModel((m) => (m === "llama-cheap" ? { status: 503 } : { status: 200 }));
+
+		const res = await app.request("/proxy/v1/chat/completions", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ model: "kosha:cheapest", messages: [{ role: "user", content: "hi" }] }),
+		});
+
+		expect(res.status).toBe(200);
+		expect(res.headers.get("x-kosha-provider")).toBe("deepinfra");
+		expect(res.headers.get("x-kosha-model")).toBe("llama-mid");
+		const chain = res.headers.get("x-kosha-attempt-chain") ?? "";
+		expect(chain).toContain("groq:503");
+		expect(chain).toContain("deepinfra:200");
+	});
+
+	it("fails over on a network error", async () => {
+		const app = createServer(twoProviderRegistry());
+		mockByModel((m) => (m === "llama-cheap" ? "throw" : { status: 200 }));
+
+		const res = await app.request("/proxy/v1/chat/completions", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ model: "kosha:cheapest", messages: [{ role: "user", content: "hi" }] }),
+		});
+
+		expect(res.status).toBe(200);
+		expect(res.headers.get("x-kosha-provider")).toBe("deepinfra");
+		expect(res.headers.get("x-kosha-attempt-chain")).toContain("groq:error");
+	});
+
+	it("does not fail over on a 4xx (caller error) and returns it as-is", async () => {
+		const app = createServer(twoProviderRegistry());
+		const fn = mockByModel((m) => (m === "llama-cheap" ? { status: 400 } : { status: 200 }));
+
+		const res = await app.request("/proxy/v1/chat/completions", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ model: "kosha:cheapest", messages: [{ role: "user", content: "hi" }] }),
+		});
+
+		expect(res.status).toBe(400);
+		expect(res.headers.get("x-kosha-provider")).toBe("groq");
+		// Only the first provider should have been contacted.
+		expect(fn).toHaveBeenCalledOnce();
 	});
 });
 
