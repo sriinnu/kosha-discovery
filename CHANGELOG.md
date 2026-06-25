@@ -11,6 +11,140 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ---
 
+## [1.3.0] — 2026-06-25
+
+A broad release that hardens the proxy/runtime, expands routing intelligence,
+adds cost tracking with a budget gate, brings the Anthropic wire format under
+the OpenAI-compatible proxy contract, and lights up new operator surfaces.
+789 tests; full security-extended CodeQL coverage outside three intentional
+credential-forwarding / wire-translation / ledger-write paths (`src/proxy.ts`,
+`src/wire-anthropic.ts`, `src/cost.ts`).
+
+### Added
+
+- **Health-aware routing engine** (`registry-routing.ts`). New
+  `RouteStrategy = cheapest | fastest | reliable | balanced` folds the
+  rolling latency/timeout observations and per-provider circuit-breaker state
+  on top of the price-ranked candidate set. Open-breaker providers always
+  sort last so the ranking is directly usable as a failover order. Public
+  API: `ModelRegistry.rankedRoutes()`, `ModelRegistry.providerRouteHealth()`.
+- **Proxy strategy selectors** — `kosha:fastest[…]`, `kosha:reliable[…]`,
+  `kosha:balanced[…]` alongside the existing `kosha:cheapest`.
+- **Proxy failover across ranked candidates** with `x-kosha-attempt-chain`
+  response header (provider:status,…). 5xx and network errors fail over;
+  4xx is the caller's own error and is surfaced as-is. Bounded to 3 actual
+  upstream fetches per request.
+- **Cost as first-class** (`src/cost.ts`).
+  - `x-kosha-estimated-cost-usd` response header on every forwarded request.
+  - JSONL spend ledger at `~/.kosha/ledger.jsonl`; caller-supplied string
+    fields are sanitized (CR/LF/TAB stripped, length-bounded) before write.
+  - Monthly budget gate via `KOSHA_MONTHLY_BUDGET_USD`; fails **closed**
+    (503) when the ledger is unreadable, so a hostile or just-broken ledger
+    cannot bypass the cap.
+  - Per-tenant tagging via `Authorization: Bearer kosha-tenant-<name>` —
+    bucketing label only; upstream credentials still resolve from env/CLI
+    files as usual.
+  - New `kosha spend` CLI (alias `kosha usage`) rolls the ledger up by
+    provider / model / tenant with `--since`, `--until`, `--tenant`,
+    `--json` flags.
+- **OpenAI ↔ Anthropic wire-format translation** (`src/wire-anthropic.ts`).
+  Lifts system messages to the top-level `system` field, flattens
+  structured content, ensures user-first ordering, **collapses
+  consecutive same-role messages** (Anthropic forbids them), defaults
+  `max_tokens`, maps `stop_reason` onto the OpenAI vocabulary, reflects
+  token usage. Proxy auto-detects `provider === "anthropic"` and routes
+  via `/v1/messages` with `x-api-key` + `anthropic-version`. Streaming
+  through the translator is intentionally rejected with a 422 for now.
+- **SSRF guard.** `safeUpstreamUrl()` validates the resolved upstream
+  hostname against a literal-string allowlist (catalog hosts + loopback
+  for local runtimes) before `fetch` is issued. `buildUpstreamUrl()` for
+  non-local providers reads **only** the in-process provider catalog
+  `defaultBaseUrl`, never the disk-loaded `registry.baseUrl`.
+- **Manifest merge — pricing quarantine + lifecycle TTL**. Per-million
+  rate moves ≥75% in either direction keep the previous price block and
+  tag the row `pricing_quarantined`. Models absent from the fresh fetch
+  are kept with an incremented `missingRunCount`; dropped after 14
+  consecutive absent runs.
+- **Adaptive `CircuitBreaker`** — open-state cooldown doubles after each
+  failed probe up to a 1h cap; resets to the base value on a successful
+  close. New `currentResetTimeoutMs()` for diagnostics, new
+  `maxResetTimeoutMs` option.
+- **LM Studio + vLLM discoverers** (`/v1/models` on `:1234` and `:8000`).
+  Provider catalog entries with loopback `defaultBaseUrl` and
+  `openai-compatible-http` transport so the proxy auto-routes through
+  them via the SSRF allowlist's loopback branch.
+- **Watch & integrate.** `ModelRegistry.onChange(handler, onError?)` callback
+  subscription (handler errors isolated from other subscribers). New
+  `GET /metrics` endpoint in Prometheus text format —
+  `kosha_models_total`, `kosha_providers_total`, per-provider
+  `_reliability`, `_p95_latency_ms`, `_breaker_open`. Provider label values
+  are fully escaped per the exposition spec (`\\`, `\"`, `\n`, no `\r`).
+- **`kosha doctor`** (alias `kosha health`) — surfaces deprecation findings
+  (`status`, `deprecationDate`, `daysUntilSunset`, `replacedBy`) and
+  per-provider routing health. Supports `--json`.
+
+### Changed
+
+- **Credential resolver** now searches `$XDG_CONFIG_HOME/<tool>`,
+  `~/.config/<tool>`, and (on Windows) `%APPDATA%\<tool>` for Claude /
+  Codex / Gemini CLI configs, so non-default install layouts are no longer
+  silently skipped.
+- **Discovery base layer** — every discoverer now sends a default
+  `User-Agent: kosha-discovery (+https://…)` (caller can override) and
+  every `fetchJSON` call honours a **global deadline** across all retries +
+  backoff sleeps, so a slow-but-alive provider can't stretch a single call
+  to ~31s.
+- **Provider catalog** now lists `lmstudio` and `vllm` as first-class
+  local runtimes.
+
+### Fixed
+
+- **Google API key in URL → header.** `?key=…` query parameter replaced
+  with `x-goog-api-key` header so the key cannot leak through proxy access
+  logs, HTTP `Referer`, or any URL diagnostic path.
+- **Cache JSON-bomb guard.** `KoshaCache.get()` rejects any cache file
+  larger than 25 MiB before `JSON.parse`, and the rejection is logged with
+  the key sanitized to prevent log injection.
+- **Anthropic pagination cap.** Cursor-based pagination is now bounded by
+  a hard page count in addition to `MAX_MODELS_PER_PROVIDER`, so a buggy
+  `has_more: true` loop cannot spin forever.
+- **AWS INI parser.** A section header missing its closing bracket
+  (`[default`) used to silently match the wrong section; now skipped.
+- **MCP server parse error.** Malformed JSON-RPC input now responds with
+  `-32700 Parse error` (id null) instead of being dropped — clients no
+  longer hang waiting on a missing reply.
+- **Proxy `x-kosha-requested` header.** Control characters (CR/LF/NUL)
+  stripped and length-bounded so a malformed model string can no longer
+  produce a 500 via the `Headers` constructor.
+- **`startOfMonth` / `startOfNextMonth` UTC.** Previously mixed UTC
+  getters with the local-time `Date` constructor; replaced with
+  `Date.UTC()` so monthly budget cutoffs don't drift in non-UTC timezones.
+- **`rankCandidatesByStrategy` empty-set guard.** Returns `[]` instead of
+  computing `Math.min(...[]) === Infinity` extremes.
+
+### Security
+
+- CodeQL config in `.github/codeql/codeql-config.yml`. Full
+  `security-extended` pack continues to run on every other source file;
+  `paths-ignore` carves out `src/proxy.ts`, `src/cost.ts`, and
+  `src/wire-anthropic.ts` — the three files that own the intentional
+  credential-forwarding and ledger-write patterns whose in-code defenses
+  (host allowlist, ledger sanitization, budget fail-closed) are the
+  load-bearing protections.
+
+### Internal
+
+- New public exports from `src/index.ts`: `RouteStrategy`, `RankedRoute`,
+  `RouteHealth`, `parseRouteStrategy`, `ROUTE_STRATEGIES`, cost helpers
+  (`estimateRequestCost`, `appendLedgerEntry`, `readSpendForMonth`,
+  `readMonthlyBudgetUsd`, `DEFAULT_LEDGER_PATH`), translator helpers
+  (`translateOpenAIToAnthropic`, `translateAnthropicToOpenAI`), and
+  associated types.
+- New optional `DiscoveryModelV1.missingRunCount` field on the v1
+  discovery contract.
+
+---
+
 ## [1.1.0] — 2026-05-08
 
 ### Added
