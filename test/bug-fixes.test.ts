@@ -117,7 +117,7 @@ describe("Anthropic discoverer: pagination is bounded", () => {
 });
 
 describe("Proxy: x-kosha-requested is sanitized", () => {
-	it("strips CR/LF from the reflected requested-model header", async () => {
+	function appWithOpenAI() {
 		const model: ModelCard = {
 			id: "gpt-4o-mini",
 			name: "gpt-4o-mini",
@@ -141,18 +141,17 @@ describe("Proxy: x-kosha-requested is sanitized", () => {
 			lastRefreshed: Date.now(),
 		};
 		const registry = ModelRegistry.fromJSON({ providers: [provider], aliases: {}, discoveredAt: Date.now() });
-		const app = createServer(registry);
 		process.env.OPENAI_API_KEY = "openai-test";
 		globalThis.fetch = (async () =>
 			new Response(JSON.stringify({ id: "x", choices: [] }), {
 				status: 200,
 				headers: { "content-type": "application/json" },
 			})) as typeof globalThis.fetch;
+		return createServer(registry);
+	}
 
-		// The `kosha:cheapest` selector matches by prefix, so a CRLF-injection
-		// suffix still resolves to a real model while leaving control chars in
-		// the reflected `requested` string — the exact path that used to 500.
-		const res = await app.request("/proxy/v1/chat/completions", {
+	it("handles a control-character model string gracefully (no 500)", async () => {
+		const res = await appWithOpenAI().request("/proxy/v1/chat/completions", {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({
@@ -160,10 +159,20 @@ describe("Proxy: x-kosha-requested is sanitized", () => {
 				messages: [{ role: "user", content: "hi" }],
 			}),
 		});
-
-		// The request must not 500, and the reflected header must be free of CRLF.
-		expect(res.status).toBe(200);
+		// A malformed selector must never crash the proxy. Strict strategy
+		// parsing rejects the CRLF-laden token, so it resolves to nothing → 404.
+		expect(res.status).not.toBe(500);
 		const reflected = res.headers.get("x-kosha-requested") ?? "";
 		expect(reflected).not.toMatch(/[\r\n]/);
+	});
+
+	it("reflects a clean requested string on the forward path", async () => {
+		const res = await appWithOpenAI().request("/proxy/v1/chat/completions", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ model: "kosha:cheapest", messages: [{ role: "user", content: "hi" }] }),
+		});
+		expect(res.status).toBe(200);
+		expect(res.headers.get("x-kosha-requested")).toBe("kosha:cheapest");
 	});
 });

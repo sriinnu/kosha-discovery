@@ -133,6 +133,57 @@ describe("OpenAI-compatible proxy", () => {
 		expect(url).toBe("https://api.openai.com/v1/chat/completions");
 		expect(JSON.parse(String(init?.body)).model).toBe("gpt-4o-mini");
 	});
+
+	for (const strategy of ["fastest", "reliable", "balanced"] as const) {
+		it(`recognizes the kosha:${strategy} selector and forwards`, async () => {
+			process.env.OPENAI_API_KEY = "openai-test";
+			delete process.env.AI_GATEWAY_API_KEY;
+			delete process.env.VERCEL_OIDC_TOKEN;
+
+			const registry = ModelRegistry.fromJSON({
+				providers: [
+					makeProvider("openai", "OpenAI", [
+						makeModel({ id: "gpt-4o-mini", provider: "openai", pricing: { inputPerMillion: 1, outputPerMillion: 2 } }),
+					], { baseUrl: "https://api.openai.com" }),
+				],
+				aliases: {},
+				discoveredAt: Date.now(),
+			});
+			const app = createServer(registry);
+			installFetchMock();
+
+			const res = await app.request("/proxy/v1/chat/completions", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ model: `kosha:${strategy}`, messages: [{ role: "user", content: "hi" }] }),
+			});
+
+			expect(res.status).toBe(200);
+			expect(res.headers.get("x-kosha-model")).toBe("gpt-4o-mini");
+		});
+	}
+
+	it("404s an unknown kosha:<strategy> selector instead of crashing", async () => {
+		process.env.OPENAI_API_KEY = "openai-test";
+		const registry = ModelRegistry.fromJSON({
+			providers: [
+				makeProvider("openai", "OpenAI", [makeModel({ id: "gpt-4o-mini", provider: "openai" })], {
+					baseUrl: "https://api.openai.com",
+				}),
+			],
+			aliases: {},
+			discoveredAt: Date.now(),
+		});
+		const app = createServer(registry);
+		installFetchMock();
+
+		const res = await app.request("/proxy/v1/chat/completions", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ model: "kosha:turbofast", messages: [{ role: "user", content: "hi" }] }),
+		});
+		expect(res.status).toBe(404);
+	});
 });
 
 function installFetchMock() {
