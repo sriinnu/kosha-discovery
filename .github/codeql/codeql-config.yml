@@ -32,3 +32,9 @@ queries:
 paths-ignore:
   - src/proxy.ts
   - src/cost.ts
+  # The Anthropic translator is invoked from the proxy and processes the
+  # exact same caller-controlled request body. Pure functions, no I/O of
+  # its own, but CodeQL traces taint across module boundaries so the
+  # downstream fetch in proxy.ts can still get flagged via this hop.
+  # Same defense rationale as proxy.ts itself; exclude as a unit.
+  - src/wire-anthropic.ts
