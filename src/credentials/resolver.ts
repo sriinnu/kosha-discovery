@@ -38,6 +38,32 @@ export class CredentialResolver {
 	private readonly isWindows = platform() === "win32";
 
 	/**
+	 * Return every plausible config-directory path for a per-tool config file,
+	 * in resolution order. We honour both common Linux conventions
+	 * (`$XDG_CONFIG_HOME/<tool>`, `~/.config/<tool>`) and the Windows
+	 * convention (`%APPDATA%\<tool>`), so a user with credentials in any
+	 * standard location is found rather than silently skipped.
+	 */
+	private toolConfigCandidates(tool: string, file: string): string[] {
+		const paths: string[] = [];
+		const xdg = process.env.XDG_CONFIG_HOME;
+		if (xdg) paths.push(join(xdg, tool, file));
+		paths.push(join(this.home, ".config", tool, file));
+		const appData = process.env.APPDATA;
+		if (this.isWindows && appData) paths.push(join(appData, tool, file));
+		return paths;
+	}
+
+	/** Read the first existing JSON file from a list of candidate paths. */
+	private async readFirstJson<T>(paths: string[]): Promise<{ data: T; path: string } | null> {
+		for (const path of paths) {
+			const data = await this.readJson<T>(path);
+			if (data !== null) return { data, path };
+		}
+		return null;
+	}
+
+	/**
 	 * Resolve credentials for the given provider.
 	 *
 	 * @param providerId  - Provider slug (e.g. "anthropic", "openai").
@@ -123,22 +149,21 @@ export class CredentialResolver {
 			return { apiKey: envKey, source: "env" };
 		}
 
-		// 3. Claude CLI config — ~/.claude.json
-		const claudeJson = await this.readJson<{ apiKey?: string }>(join(this.home, ".claude.json"));
-		if (claudeJson?.apiKey) {
-			return { apiKey: claudeJson.apiKey, source: "cli", path: join(this.home, ".claude.json") };
+		// 3. Claude CLI config — ~/.claude.json (also %APPDATA%\claude\config.json on Windows)
+		const claudeJsonPaths = [join(this.home, ".claude.json")];
+		const appData = process.env.APPDATA;
+		if (this.isWindows && appData) claudeJsonPaths.push(join(appData, "claude", "config.json"));
+		const claudeJson = await this.readFirstJson<{ apiKey?: string }>(claudeJsonPaths);
+		if (claudeJson?.data?.apiKey) {
+			return { apiKey: claudeJson.data.apiKey, source: "cli", path: claudeJson.path };
 		}
 
-		// 4. Claude CLI settings — ~/.config/claude/settings.json
-		const claudeSettings = await this.readJson<{ apiKey?: string }>(
-			join(this.home, ".config", "claude", "settings.json"),
+		// 4. Claude CLI settings — XDG / ~/.config / APPDATA.
+		const claudeSettings = await this.readFirstJson<{ apiKey?: string }>(
+			this.toolConfigCandidates("claude", "settings.json"),
 		);
-		if (claudeSettings?.apiKey) {
-			return {
-				apiKey: claudeSettings.apiKey,
-				source: "cli",
-				path: join(this.home, ".config", "claude", "settings.json"),
-			};
+		if (claudeSettings?.data?.apiKey) {
+			return { apiKey: claudeSettings.data.apiKey, source: "cli", path: claudeSettings.path };
 		}
 
 		// 5. Claude CLI OAuth — ~/.claude/credentials.json
@@ -153,10 +178,11 @@ export class CredentialResolver {
 			};
 		}
 
-		// 6. Codex CLI — ~/.codex/auth.json
-		const codexAuth = await this.readJson<{ anthropic?: string }>(join(this.home, ".codex", "auth.json"));
-		if (codexAuth?.anthropic) {
-			return { apiKey: codexAuth.anthropic, source: "cli", path: join(this.home, ".codex", "auth.json") };
+		// 6. Codex CLI — ~/.codex/auth.json, also XDG/APPDATA fallbacks.
+		const codexPaths = [join(this.home, ".codex", "auth.json"), ...this.toolConfigCandidates("codex", "auth.json")];
+		const codexAuth = await this.readFirstJson<{ anthropic?: string }>(codexPaths);
+		if (codexAuth?.data?.anthropic) {
+			return { apiKey: codexAuth.data.anthropic, source: "cli", path: codexAuth.path };
 		}
 
 		return { source: "none" };
@@ -235,23 +261,17 @@ export class CredentialResolver {
 			return { apiKey: envKey, source: "env" };
 		}
 
-		// 3. Gemini CLI credentials
-		const geminiCreds = await this.readJson<{ apiKey?: string; access_token?: string }>(
+		// 3. Gemini CLI credentials — ~/.gemini, also XDG/APPDATA fallbacks.
+		const geminiPaths = [
 			join(this.home, ".gemini", "credentials.json"),
-		);
-		if (geminiCreds?.apiKey) {
-			return {
-				apiKey: geminiCreds.apiKey,
-				source: "cli",
-				path: join(this.home, ".gemini", "credentials.json"),
-			};
+			...this.toolConfigCandidates("gemini", "credentials.json"),
+		];
+		const geminiCreds = await this.readFirstJson<{ apiKey?: string; access_token?: string }>(geminiPaths);
+		if (geminiCreds?.data?.apiKey) {
+			return { apiKey: geminiCreds.data.apiKey, source: "cli", path: geminiCreds.path };
 		}
-		if (geminiCreds?.access_token) {
-			return {
-				accessToken: geminiCreds.access_token,
-				source: "cli",
-				path: join(this.home, ".gemini", "credentials.json"),
-			};
+		if (geminiCreds?.data?.access_token) {
+			return { accessToken: geminiCreds.data.access_token, source: "cli", path: geminiCreds.path };
 		}
 
 		// 4. gcloud application default credentials
@@ -459,7 +479,16 @@ export class CredentialResolver {
 
 			// Detect section headers
 			if (trimmed.startsWith("[")) {
-				const header = trimmed.slice(1, trimmed.indexOf("]")).trim();
+				// A line that opens a section but never closes it is malformed.
+				// `indexOf("]")` returns -1 there, and `slice(1, -1)` would
+				// silently extract "everything but the last char" — quietly
+				// matching the wrong section. Skip the line instead.
+				const end = trimmed.indexOf("]");
+				if (end === -1) {
+					inSection = false;
+					continue;
+				}
+				const header = trimmed.slice(1, end).trim();
 				inSection = header === sectionName;
 				continue;
 			}

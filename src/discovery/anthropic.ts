@@ -61,14 +61,25 @@ export class AnthropicDiscoverer extends BaseDiscoverer {
 
 		// Cursor-based pagination: keep fetching pages while `has_more` is true.
 		// Each page returns up to 100 models; `last_id` serves as the cursor.
+		// Two independent guards bound the loop so a buggy or hostile API that
+		// keeps returning `has_more: true` (or a repeating cursor) cannot spin
+		// forever: the model-count cap and a hard page-count cap.
+		const MAX_PAGES = Math.ceil(MAX_MODELS_PER_PROVIDER / 100) + 1;
+		let pages = 0;
 		while (url) {
+			if (pages >= MAX_PAGES) {
+				throw new Error(
+					`${this.providerName} pagination exceeded ${MAX_PAGES} pages — refusing to loop further`,
+				);
+			}
+			pages += 1;
 			const response = await this.fetchJSON<AnthropicListResponse>(url, headers, timeoutMs);
 			allModels.push(...response.data);
 
 			if (allModels.length >= MAX_MODELS_PER_PROVIDER) break;
 
 			if (response.has_more && response.last_id) {
-				url = `${this.baseUrl}/v1/models?limit=100&after_id=${response.last_id}`;
+				url = `${this.baseUrl}/v1/models?limit=100&after_id=${encodeURIComponent(response.last_id)}`;
 			} else {
 				url = "";
 			}

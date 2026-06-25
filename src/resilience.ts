@@ -38,6 +38,13 @@ export interface CircuitBreakerOptions {
 	 * @default 1
 	 */
 	halfOpenSuccessThreshold?: number;
+	/**
+	 * Upper bound on the adaptive `resetTimeoutMs`. Each time the circuit
+	 * re-opens without successfully closing, the cooldown doubles up to this
+	 * cap, so a chronically broken provider is probed less often.
+	 * @default 3_600_000 (1 hour)
+	 */
+	maxResetTimeoutMs?: number;
 }
 
 /**
@@ -106,6 +113,10 @@ export class CircuitBreaker {
 	private lastFailureTime = 0;
 	private lastSuccessTime = 0;
 	private lastError?: string;
+	/** Consecutive open cycles since the last successful close. Used to
+	 *  exponentially extend the open-state cooldown so a chronically broken
+	 *  provider gets probed less often. Resets to 0 on a closed transition. */
+	private openCycles = 0;
 
 	/** Resolved threshold: consecutive failures before opening. */
 	private readonly failureThreshold: number;
@@ -113,11 +124,25 @@ export class CircuitBreaker {
 	private readonly resetTimeoutMs: number;
 	/** Resolved success count in half-open needed to close. */
 	private readonly halfOpenSuccessThreshold: number;
+	/** Resolved upper bound on the adaptive open-state cooldown. */
+	private readonly maxResetTimeoutMs: number;
 
 	constructor(readonly providerId: string, private options: CircuitBreakerOptions = {}) {
 		this.failureThreshold = options.failureThreshold ?? 3;
 		this.resetTimeoutMs = options.resetTimeoutMs ?? 60_000;
 		this.halfOpenSuccessThreshold = options.halfOpenSuccessThreshold ?? 1;
+		// One hour is the practical ceiling for a discovery-pass cooldown —
+		// past that, the provider catalog re-publishes and a fresh user run
+		// resets state anyway.
+		this.maxResetTimeoutMs = options.maxResetTimeoutMs ?? 3_600_000;
+	}
+
+	/** Current adaptive open-state cooldown, in ms. Public for diagnostics. */
+	currentResetTimeoutMs(): number {
+		if (this.openCycles <= 1) return this.resetTimeoutMs;
+		// Exponential: 60s, 120s, 240s, 480s, … capped at maxResetTimeoutMs.
+		const escalated = this.resetTimeoutMs * 2 ** (this.openCycles - 1);
+		return Math.min(escalated, this.maxResetTimeoutMs);
 	}
 
 	/**
@@ -135,7 +160,7 @@ export class CircuitBreaker {
 
 		if (this.state === "open") {
 			const elapsed = Date.now() - this.lastFailureTime;
-			if (elapsed >= this.resetTimeoutMs) {
+			if (elapsed >= this.currentResetTimeoutMs()) {
 				// Transition to half-open: allow a single probe
 				this.state = "half-open";
 				this.successCount = 0;
@@ -231,12 +256,16 @@ export class CircuitBreaker {
 	private transitionToOpen(): void {
 		this.state = "open";
 		this.successCount = 0;
+		this.openCycles += 1;
 	}
 
 	private transitionToClosed(): void {
 		this.state = "closed";
 		this.failureCount = 0;
 		this.successCount = 0;
+		// A successful close clears the adaptive backoff; next opening starts
+		// at the base resetTimeoutMs again.
+		this.openCycles = 0;
 	}
 }
 

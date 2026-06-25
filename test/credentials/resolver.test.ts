@@ -407,4 +407,44 @@ describe("CredentialResolver", () => {
 			expect(result.source).toBe("env");
 		});
 	});
+
+	// -----------------------------------------------------------------------
+	// XDG / APPDATA fallbacks
+	// -----------------------------------------------------------------------
+
+	describe("XDG_CONFIG_HOME and APPDATA fallbacks", () => {
+		it("finds Claude CLI settings at $XDG_CONFIG_HOME/claude/settings.json", async () => {
+			delete process.env.ANTHROPIC_API_KEY;
+			process.env.XDG_CONFIG_HOME = "/custom-xdg";
+			// Default ~/.claude.json + ~/.config/... must all miss; only the
+			// XDG-rooted path resolves.
+			mockedReadFile.mockImplementation(async (p: any) => {
+				if (typeof p === "string" && p === "/custom-xdg/claude/settings.json") {
+					return JSON.stringify({ apiKey: "xdg-anthropic" });
+				}
+				throw new Error("ENOENT");
+			});
+
+			const result = await new CredentialResolver().resolve("anthropic");
+			expect(result.apiKey).toBe("xdg-anthropic");
+			expect(result.source).toBe("cli");
+			expect(result.path).toBe("/custom-xdg/claude/settings.json");
+		});
+
+		it("finds Gemini credentials at $XDG_CONFIG_HOME/gemini/credentials.json", async () => {
+			delete process.env.GOOGLE_API_KEY;
+			delete process.env.GEMINI_API_KEY;
+			process.env.XDG_CONFIG_HOME = "/custom-xdg";
+			mockedReadFile.mockImplementation(async (p: any) => {
+				if (typeof p === "string" && p === "/custom-xdg/gemini/credentials.json") {
+					return JSON.stringify({ apiKey: "xdg-gemini" });
+				}
+				throw new Error("ENOENT");
+			});
+
+			const result = await new CredentialResolver().resolve("google");
+			expect(result.apiKey).toBe("xdg-gemini");
+			expect(result.source).toBe("cli");
+		});
+	});
 });

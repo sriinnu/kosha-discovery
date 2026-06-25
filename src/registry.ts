@@ -38,6 +38,13 @@ import {
 	registryCheapestCandidates,
 	registryExecutionBindingHints,
 } from "./registry-selection.js";
+import {
+	providerRouteHealth,
+	rankCandidatesByStrategy,
+	type RankedRoute,
+	type RouteHealth,
+	type RouteStrategy,
+} from "./registry-routing.js";
 import { createRegistryState } from "./registry-state.js";
 import type { ProviderObservation, RegistryState, DiscoveryDependencies } from "./registry-state.js";
 import {
@@ -166,6 +173,26 @@ export class ModelRegistry {
 		return registryCheapestModels(this.state, options);
 	}
 
+	/**
+	 * Rank candidate routes for a query by a selection {@link RouteStrategy}
+	 * — `cheapest` (price), `fastest` (observed p95 latency), `reliable`
+	 * (circuit-breaker + timeout health), or `balanced` (a weighted blend).
+	 *
+	 * The candidate set is the same price-filtered pool as
+	 * {@link cheapestModels}; the strategy only changes the ordering and folds
+	 * in the runtime health kosha already tracks. Open-breaker providers always
+	 * sort last, which is what makes this usable as a failover order.
+	 */
+	rankedRoutes(options?: CheapestModelOptions, strategy: RouteStrategy = "cheapest"): RankedRoute[] {
+		const result = registryCheapestModels(this.state, { includeUnpriced: true, ...options });
+		return rankCandidatesByStrategy(this.state, result.matches, strategy);
+	}
+
+	/** Read-only runtime health for one provider (breaker state, latency, reliability). */
+	providerRouteHealth(providerId: string): RouteHealth {
+		return providerRouteHealth(this.state, normalizeProviderId(providerId) ?? providerId);
+	}
+
 	/** Return every provider route for a normalized model identifier. */
 	modelRoutes(modelId: string): ModelCard[] {
 		return registryModelRoutes(this.state, modelId);
@@ -229,6 +256,33 @@ export class ModelRegistry {
 	/** Stream live discovery deltas through an async iterator. */
 	watchDiscovery(options?: { sinceCursor?: string | null }): AsyncGenerator<DiscoveryDeltaV1, void, void> {
 		return registryWatchDiscovery(this.state, options);
+	}
+
+	/**
+	 * Subscribe to discovery deltas with a callback API. Easier to wire up
+	 * from a long-running daemon than the async-iterator form. Returns an
+	 * unsubscribe function so the caller can tear down on shutdown.
+	 *
+	 * Errors thrown by the handler are caught and forwarded to an optional
+	 * `onError` callback so one bad subscriber can't crash the emitter for
+	 * everyone else.
+	 */
+	onChange(
+		handler: (delta: DiscoveryDeltaV1) => void | Promise<void>,
+		onError?: (err: unknown) => void,
+	): () => void {
+		const listener = (delta: DiscoveryDeltaV1) => {
+			try {
+				const maybePromise = handler(delta);
+				if (maybePromise && typeof (maybePromise as Promise<void>).catch === "function") {
+					(maybePromise as Promise<void>).catch((err) => onError?.(err));
+				}
+			} catch (err) {
+				onError?.(err);
+			}
+		};
+		this.state.discoveryEventBus.on("delta", listener);
+		return () => this.state.discoveryEventBus.off("delta", listener);
 	}
 
 	/** Return cheapest candidates using the trusted v1 capability taxonomy. */

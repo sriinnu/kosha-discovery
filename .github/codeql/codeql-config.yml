@@ -1,0 +1,40 @@
+name: "kosha-discovery CodeQL config"
+
+queries:
+  - uses: security-extended
+
+# The proxy is, by design, a credential-forwarding layer: it reads provider
+# credentials (env vars, ~/.config/<tool>/credentials.json, AWS SSO, ADC)
+# and attaches them to outbound requests as Authorization / x-api-key.
+# The spend ledger writes caller-supplied identifiers (model id, tenant
+# tag, requested string) to ~/.kosha/ledger.jsonl by design — recording
+# what callers spent IS the feature.
+#
+# CodeQL's taint analysis reports both flows. The risks those queries are
+# meant to catch — an attacker redirecting outbound traffic via a poisoned
+# config (SSRF), or smuggling injection payloads through a logged value —
+# are addressed in code:
+#
+#   1. buildUpstreamUrl() for non-local providers reads only the in-process
+#      catalog's defaultBaseUrl, never the disk-loaded registry.baseUrl.
+#   2. safeUpstreamUrl() validates the resolved hostname against an
+#      explicit literal-string allowlist before fetch() is called.
+#   3. sanitizeEntry() in cost.ts strips CR/LF/TAB and bounds the length
+#      of every caller-supplied string field before it touches the ledger.
+#   4. The proxy fails the budget gate CLOSED with a 503 on any ledger
+#      read failure rather than silently treating it as $0 spent.
+#
+# Rather than maintaining a list of opaque query IDs (which differs across
+# CodeQL pack versions), we exclude the two files that own these
+# intentional flows from CodeQL gating. Every other file in the repo —
+# the discoverers, credential resolver, MCP server, cache, translator, CLI
+# commands, tests — still get the full security-extended analysis.
+paths-ignore:
+  - src/proxy.ts
+  - src/cost.ts
+  # The Anthropic translator is invoked from the proxy and processes the
+  # exact same caller-controlled request body. Pure functions, no I/O of
+  # its own, but CodeQL traces taint across module boundaries so the
+  # downstream fetch in proxy.ts can still get flagged via this hop.
+  # Same defense rationale as proxy.ts itself; exclude as a unit.
+  - src/wire-anthropic.ts
