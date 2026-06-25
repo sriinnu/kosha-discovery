@@ -424,7 +424,14 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry): void {
 				upstreamBody = JSON.stringify(
 					translateOpenAIToAnthropic({ ...(body as unknown as OpenAIChatRequest), model: model.id }),
 				);
-				upstreamUrlString = safeUrl.toString().replace(/\/chat\/completions$/, "/v1/messages");
+				// Rebuild the URL via the WHATWG URL API rather than a string
+				// `replace`, so the pathname swap can't be tripped by a fragment
+				// or query-string that happens to contain `/chat/completions`.
+				// `safeUrl` is already allowlist-validated, so reusing its
+				// origin keeps the SSRF guarantee intact.
+				const anthropicUrl = new URL(safeUrl.toString());
+				anthropicUrl.pathname = "/v1/messages";
+				upstreamUrlString = anthropicUrl.toString();
 			} else {
 				if (bearerToken) upstreamHeaders.authorization = `Bearer ${bearerToken}`;
 				upstreamBody = JSON.stringify({ ...body, model: model.id });
