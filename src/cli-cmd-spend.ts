@@ -7,7 +7,8 @@
  * @module
  */
 
-import { readFile } from "fs/promises";
+import { readFile, readdir } from "fs/promises";
+import { basename, dirname, join } from "node:path";
 import { c, CYAN, DIM, GREEN } from "./cli-format.js";
 import { DEFAULT_LEDGER_PATH, type LedgerEntry } from "./cost.js";
 
@@ -65,9 +66,17 @@ export async function cmdSpend(_unused: unknown, flags: Record<string, string | 
 }
 
 async function loadLedger(path: string): Promise<LedgerEntry[]> {
-	try {
-		const raw = await readFile(path, "utf-8");
-		const rows: LedgerEntry[] = [];
+	const rows: LedgerEntry[] = [];
+	const ingest = async (file: string): Promise<void> => {
+		let raw: string;
+		try {
+			raw = await readFile(file, "utf-8");
+		} catch (err) {
+			// Missing file is fine — the legacy ledger and any given monthly
+			// partition may not exist yet.
+			if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return;
+			throw err;
+		}
 		for (const line of raw.split("\n")) {
 			if (!line) continue;
 			try {
@@ -76,11 +85,21 @@ async function loadLedger(path: string): Promise<LedgerEntry[]> {
 				// skip corrupt line
 			}
 		}
-		return rows;
-	} catch (err: unknown) {
-		if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return [];
-		throw err;
+	};
+	// Legacy append-only ledger.jsonl (pre-rotation) plus the monthly
+	// ledger-YYYY-MM.jsonl partitions written since rotation shipped.
+	await ingest(path);
+	try {
+		const dir = dirname(path);
+		for (const entry of await readdir(dir)) {
+			if (entry !== basename(path) && entry.startsWith("ledger-") && entry.endsWith(".jsonl")) {
+				await ingest(join(dir, entry));
+			}
+		}
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
 	}
+	return rows;
 }
 
 function bucketBy(rows: LedgerEntry[], keyFn: (row: LedgerEntry) => string): Map<string, BucketSummary> {

@@ -104,13 +104,17 @@ export function rankCandidatesByStrategy(
 	matches: CheapestModelMatch[],
 	strategy: RouteStrategy,
 ): RankedRoute[] {
+	// Drop retired routes entirely — they are no longer served and must never
+	// win a routable/cheapest selection. Deprecated routes stay in the pool
+	// but are demoted in the final ordering (see statusDemotionRank).
+	const routable = matches.filter((match) => match.model.status !== "retired");
 	// Early-exit on an empty candidate set. Without this, the Math.min/max
 	// spread calls below would return Infinity / -Infinity (no-op rather than
 	// crash, but it produces nonsense metadata that downstream consumers
 	// shouldn't have to filter).
-	if (matches.length === 0) return [];
+	if (routable.length === 0) return [];
 
-	const rows = matches.map((match) => {
+	const rows = routable.map((match) => {
 		const health = providerRouteHealth(state, match.model.provider);
 		return {
 			model: match.model,
@@ -142,13 +146,27 @@ export function rankCandidatesByStrategy(
 	}));
 
 	// Stable, deterministic ordering: available providers first, then the
-	// strategy score, then price, then model id as a final tiebreak.
+	// strategy score, then deprecated models are pushed behind active/preview
+	// ones among otherwise-equal candidates, then price, then model id as a
+	// final tiebreak. Deprecated routes are demoted, not hidden — a cheaper
+	// or faster deprecated route can still win on its composite score.
 	return scored.sort((a, b) =>
 		Number(b.health.available) - Number(a.health.available) ||
 		a.compositeScore - b.compositeScore ||
+		statusDemotionRank(a.model) - statusDemotionRank(b.model) ||
 		(a.price ?? Number.POSITIVE_INFINITY) - (b.price ?? Number.POSITIVE_INFINITY) ||
 		a.model.id.localeCompare(b.model.id),
 	);
+}
+
+/**
+ * Sort-key that demotes deprecated routes below active/preview/unknown ones
+ * when their composite scores tie. Retired routes never reach this comparator
+ * — they are filtered out before scoring. Returns 1 for deprecated, 0
+ * otherwise, so among otherwise-equal candidates an active route sorts first.
+ */
+function statusDemotionRank(model: ModelCard): number {
+	return model.status === "deprecated" ? 1 : 0;
 }
 
 interface Extremes {

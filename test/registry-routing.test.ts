@@ -29,6 +29,13 @@ function match(id: string, provider: string, score: number | undefined): Cheapes
 	return { model: model(id, provider), score, priceMetric: "blended" };
 }
 
+/** Same as match() but lets the caller pin a lifecycle status on the model. */
+function matchWithStatus(id: string, provider: string, score: number | undefined, status: ModelCard["status"]): CheapestModelMatch {
+	const card = model(id, provider);
+	card.status = status;
+	return { model: card, score, priceMetric: "blended" };
+}
+
 /** Build a state and seed each provider's observation window. */
 function seed(observations: Record<string, { latencies: number[]; timeouts?: number; attempts?: number; lastError?: "auth_error" | "throttled" | "timeout" | "transport" | "unknown" }>) {
 	const state = createRegistryState();
@@ -132,5 +139,51 @@ describe("rankCandidatesByStrategy", () => {
 		expect(a).toEqual(b);
 		expect(a).toHaveLength(4);
 		expect(a.at(-1)).toBe("down");
+	});
+});
+
+describe("rankCandidatesByStrategy — lifecycle gating", () => {
+	it("excludes retired models from the ranking entirely", () => {
+		const retired = matchWithStatus("m-retired", "retired-prov", 0.1, "retired");
+		const active = matchWithStatus("m-active", "active-prov", 1, "active");
+		const state = createRegistryState();
+		const ranked = rankCandidatesByStrategy(state, [retired, active], "cheapest");
+		// Retired is dropped; only the active route survives.
+		expect(ranked).toHaveLength(1);
+		expect(ranked[0].providerId).toBe("active-prov");
+	});
+
+	it("returns an empty list when every candidate is retired", () => {
+		const state = createRegistryState();
+		const ranked = rankCandidatesByStrategy(
+			state,
+			[matchWithStatus("m1", "p1", 1, "retired"), matchWithStatus("m2", "p2", 2, "retired")],
+			"cheapest",
+		);
+		expect(ranked).toEqual([]);
+	});
+
+	it("demotes deprecated routes below active routes among otherwise-equal candidates", () => {
+		// Two routes with identical price AND identical (unknown) latency →
+		// identical balanced composite. The deprecated one must sort after
+		// the active one via the status tiebreak, but it is NOT hidden.
+		const active = matchWithStatus("m-active", "prov-a", 5, "active");
+		const deprecated = matchWithStatus("m-deprecated", "prov-d", 5, "deprecated");
+		const state = createRegistryState(); // no observations → both unknown latency
+		const ranked = rankCandidatesByStrategy(state, [deprecated, active], "balanced");
+		expect(ranked).toHaveLength(2);
+		expect(ranked.map((r) => r.providerId)).toEqual(["prov-a", "prov-d"]);
+	});
+
+	it("still lets a deprecated route win when its composite is genuinely better", () => {
+		// Deprecated but strictly cheaper — its balanced composite is lower,
+		// so it ranks first. The demotion only breaks ties; it never hides a
+		// clearly-better route.
+		const active = matchWithStatus("m-active", "prov-a", 5, "active");
+		const deprecated = matchWithStatus("m-deprecated", "prov-d", 1, "deprecated");
+		const state = createRegistryState();
+		const ranked = rankCandidatesByStrategy(state, [active, deprecated], "balanced");
+		expect(ranked[0].providerId).toBe("prov-d");
+		expect(ranked).toHaveLength(2);
 	});
 });

@@ -3,8 +3,11 @@
  *
  * Three pieces, all pure synthesis over the model + provider catalog:
  *   - Pre-flight cost estimation (input + expected-output tokens × rates).
- *   - JSONL spend ledger persisted to `~/.kosha/ledger.jsonl` so downstream
- *     dashboards / `kosha spend` can read a stable file.
+ *   - JSONL spend ledger persisted under `~/.kosha/`, partitioned one file
+ *     per calendar month (`ledger-YYYY-MM.jsonl`) so the budget gate only
+ *     ever scans the month it cares about — not the full history. The legacy
+ *     append-only `ledger.jsonl` is still read for backward compat so
+ *     existing installs keep working until it stops growing.
  *   - Monthly budget gate driven by `KOSHA_MONTHLY_BUDGET_USD`.
  *
  * No tokenizer dependency — request bodies travel through the proxy
@@ -12,7 +15,7 @@
  * @module
  */
 
-import { appendFile, mkdir, readFile, rename, writeFile } from "fs/promises";
+import { appendFile, mkdir, readFile, readdir, rename, unlink, writeFile } from "fs/promises";
 import { randomBytes } from "crypto";
 import { homedir } from "os";
 import { dirname, join } from "path";
@@ -35,6 +38,15 @@ export interface LedgerEntry {
 }
 
 export const DEFAULT_LEDGER_PATH: string = join(homedir(), ".kosha", "ledger.jsonl");
+
+/**
+ * How many monthly partitions to retain on disk. Older partitions are
+ * trimmed opportunistically on append. Tunable via
+ * `KOSHA_LEDGER_RETENTION_MONTHS`; non-positive / unparseable values fall
+ * back to the default. The legacy `ledger.jsonl` is never trimmed by the
+ * partition sweeper — only `ledger-YYYY-MM.jsonl` siblings are.
+ */
+const DEFAULT_RETENTION_MONTHS = 12;
 
 /**
  * Conservative chars-per-token used when we don't have a tokenizer wired up.
@@ -121,15 +133,33 @@ export function readMonthlyBudgetUsd(): number | null {
 }
 
 /**
- * Read the ledger and sum estimated USD spend for entries falling in the
- * calendar month that contains `nowMs`. Tenant scopes the sum when given.
+ * Sum estimated USD spend for entries falling in the calendar month that
+ * contains `nowMs`. Tenant scopes the sum when given.
+ *
+ * Reads only the month's partition (`ledger-YYYY-MM.jsonl` next to
+ * `ledgerPath`) plus, for backward compat, the legacy append-only
+ * `ledgerPath` itself — so existing installs whose history still lives in
+ * the un-partitioned file keep counting until that file stops growing. At
+ * most two files are read, never the full history.
  */
 export async function readSpendForMonth(nowMs: number, tenant?: string | null, ledgerPath = DEFAULT_LEDGER_PATH): Promise<number> {
 	const cutoffStart = startOfMonth(nowMs);
 	const cutoffEnd = startOfNextMonth(nowMs);
+	// The month partition is the hot path; the legacy file is the fallback
+	// for pre-partitioning history. Order matters only for readability —
+	// both are filtered by the same ts window below.
+	const sources = [partitionPathFor(ledgerPath, nowMs), ledgerPath];
 	let total = 0;
-	try {
-		const raw = await readFile(ledgerPath, "utf-8");
+	for (const file of sources) {
+		let raw: string;
+		try {
+			raw = await readFile(file, "utf-8");
+		} catch (err: unknown) {
+			// Missing file (partition not yet created, or legacy absent) is
+			// a clean "nothing here" — try the next source.
+			if ((err as NodeJS.ErrnoException)?.code === "ENOENT") continue;
+			throw err;
+		}
 		for (const line of raw.split("\n")) {
 			if (!line) continue;
 			let row: LedgerEntry;
@@ -142,21 +172,10 @@ export async function readSpendForMonth(nowMs: number, tenant?: string | null, l
 			if (tenant && row.tenant !== tenant) continue;
 			if (typeof row.estimatedUsd === "number") total += row.estimatedUsd;
 		}
-	} catch (err: unknown) {
-		// Missing ledger is a clean "spent $0 this month" — not an error.
-		if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return 0;
-		throw err;
 	}
 	return total;
 }
 
-/**
- * Append one ledger entry atomically. The file is JSONL — one record per
- * line — and writes are append-only so concurrent processes don't clobber
- * each other. A best-effort atomic create-and-rename is used for the very
- * first write so a torn write on a previously empty file can't poison
- * future reads.
- */
 /** Strip control characters and bound length on a ledger string field. The
  *  ledger records caller-supplied values (modelId, tenant tag, the original
  *  requested model string), so we sanitize them before writing to disk: each
@@ -182,24 +201,118 @@ function sanitizeEntry(entry: LedgerEntry): LedgerEntry {
 	};
 }
 
+/** `YYYY-MM` (zero-padded month) for the UTC calendar month containing ts.
+ *  UTC matches startOfMonth/startOfNextMonth so the partition a row lands in
+ *  is exactly the month the budget cutoffs bracket. */
+function monthKeyFromTs(ts: number): string {
+	const d = new Date(ts);
+	return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+/** Parse a `YYYY-MM` key back to its UTC month-start epoch ms, or null when
+ *  the shape is wrong. Used by trim to age partitions out deterministically. */
+function monthStartFromKey(key: string): number | null {
+	const m = /^(\d{4})-(\d{2})$/.exec(key);
+	if (!m) return null;
+	const year = Number(m[1]);
+	const month = Number(m[2]) - 1; // JS months are 0-indexed
+	if (month < 0 || month > 11) return null;
+	return Date.UTC(year, month, 1);
+}
+
+/** Path of the monthly partition file a given ts belongs in. Partitions are
+ *  siblings of the legacy ledger file so they share its directory and perms. */
+function partitionPathFor(ledgerPath: string, ts: number): string {
+	return join(dirname(ledgerPath), `ledger-${monthKeyFromTs(ts)}.jsonl`);
+}
+
+/** Read the retention window from `KOSHA_LEDGER_RETENTION_MONTHS`, falling
+ *  back to the default for missing/non-positive/unparseable values. */
+function readRetentionMonths(): number {
+	const raw = process.env.KOSHA_LEDGER_RETENTION_MONTHS;
+	if (!raw) return DEFAULT_RETENTION_MONTHS;
+	const parsed = Number.parseInt(raw, 10);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_RETENTION_MONTHS;
+}
+
+/**
+ * Drop monthly partition files older than the retention window. Best-effort:
+ * errors are swallowed because retention is housekeeping, not correctness.
+ * The legacy `ledgerPath` file itself is never touched — only
+ * `ledger-YYYY-MM.jsonl` siblings are eligible. Returns the count of
+ * partitions removed (handy for tests / a future `kosha ledger trim`).
+ *
+ * The window is "current month plus `retentionMonths - 1` prior months", so
+ * the default of 12 keeps a rolling year. Exported so the CLI can run an
+ * explicit sweep without waiting for an append.
+ */
+export async function trimLedgerPartitions(
+	ledgerPath: string,
+	nowMs: number,
+	retentionMonths: number = readRetentionMonths(),
+): Promise<number> {
+	const dir = dirname(ledgerPath);
+	const d = new Date(nowMs);
+	// First month we keep: current month shifted back (N-1). Date.UTC wraps
+	// negative months into prior years correctly (month -5 of 2026 → Aug 2025).
+	const cutoffStart = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - (retentionMonths - 1), 1);
+	let entries: string[];
+	try {
+		entries = await readdir(dir);
+	} catch {
+		// No directory yet (ENOENT) or unreadable — nothing to trim.
+		return 0;
+	}
+	let removed = 0;
+	for (const name of entries) {
+		const m = /^ledger-(\d{4})-(\d{2})\.jsonl$/.exec(name);
+		if (!m) continue;
+		const start = monthStartFromKey(`${m[1]}-${m[2]}`);
+		if (start === null || start >= cutoffStart) continue;
+		await unlink(join(dir, name)).catch(() => {
+			// raced with another sweeper or permission issue — fine, best-effort
+		});
+		removed += 1;
+	}
+	return removed;
+}
+
+/**
+ * Append one ledger entry atomically. The entry is written to the monthly
+ * partition for its own `ts` (`ledger-YYYY-MM.jsonl`), keeping each file
+ * bounded to a single month so budget reads don't scan the full history.
+ *
+ * Writes are append-only so concurrent processes don't clobber each other.
+ * A best-effort atomic create-and-rename is used if the first append hits
+ * ENOENT, so a fresh install comes up cleanly. After the write we run a
+ * best-effort retention trim so old partitions age out without a cron job.
+ */
 export async function appendLedgerEntry(entry: LedgerEntry, ledgerPath = DEFAULT_LEDGER_PATH): Promise<void> {
 	await mkdir(dirname(ledgerPath), { recursive: true });
+	const partPath = partitionPathFor(ledgerPath, entry.ts);
 	const line = `${JSON.stringify(sanitizeEntry(entry))}\n`;
 	try {
-		await appendFile(ledgerPath, line, "utf-8");
+		await appendFile(partPath, line, "utf-8");
 	} catch (err: unknown) {
 		// If append fails (e.g. permissions) we just swallow — ledger is
 		// observability, not load-bearing routing state. A best-effort
 		// create-and-rename gets us going on a fresh install.
 		if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
-			const tmp = `${ledgerPath}.${randomBytes(4).toString("hex")}.tmp`;
+			const tmp = `${partPath}.${randomBytes(4).toString("hex")}.tmp`;
 			try {
 				await writeFile(tmp, line, "utf-8");
-				await rename(tmp, ledgerPath);
+				await rename(tmp, partPath);
 			} catch {
 				// give up silently
 			}
 		}
+	}
+	// Opportunistic, best-effort retention sweep. Housekeeping must never
+	// break the append — the ledger is observability.
+	try {
+		await trimLedgerPartitions(ledgerPath, entry.ts);
+	} catch {
+		// swallowed
 	}
 }
 

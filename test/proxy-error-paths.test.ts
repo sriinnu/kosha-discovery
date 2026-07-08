@@ -126,8 +126,10 @@ describe("proxy: Anthropic 502 on unparseable upstream JSON", () => {
 
 		expect(res.status).toBe(502);
 		const json = await res.json();
-		expect(json.error).toMatch(/unparseable/i);
-		expect(json.resolvedProvider).toBe("anthropic");
+		// Anthropic error bodies are re-shaped into the OpenAI error envelope.
+		expect(json.error.message).toMatch(/unparseable/i);
+		expect(json.error.type).toBe("upstream_error");
+		expect(res.headers.get("x-kosha-provider")).toBe("anthropic");
 	});
 });
 

@@ -334,6 +334,47 @@ describe("proxy failover", () => {
 		// Only the first provider should have been contacted.
 		expect(fn).toHaveBeenCalledOnce();
 	});
+
+	it("passes an SSE streaming response through unchanged with kosha headers", async () => {
+		const app = createServer(twoProviderRegistry());
+		const sseBody = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n';
+		globalThis.fetch = vi.fn(
+			async () => new Response(sseBody, { status: 200, headers: { "content-type": "text/event-stream" } }),
+		) as unknown as typeof fetch;
+
+		const res = await app.request("/proxy/v1/chat/completions", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ model: "llama-cheap", stream: true, messages: [{ role: "user", content: "hi" }] }),
+		});
+
+		expect(res.status).toBe(200);
+		expect(res.headers.get("content-type")).toBe("text/event-stream");
+		expect(res.headers.get("x-kosha-model")).toBe("llama-cheap");
+		expect(await res.text()).toBe(sseBody);
+	});
+
+	it("opens a provider's breaker after repeated 5xx failures (proxy feeds health)", async () => {
+		const registry = twoProviderRegistry();
+		const app = createServer(registry);
+		// groq is cheapest → tried first every time; always 503. deepinfra (200)
+		// is the failover, so each request still returns 200 overall.
+		mockByModel((m) => (m === "llama-cheap" ? { status: 503 } : { status: 200 }));
+
+		for (let i = 0; i < 3; i++) {
+			const res = await app.request("/proxy/v1/chat/completions", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ model: "kosha:cheapest", messages: [{ role: "user", content: "hi" }] }),
+			});
+			expect(res.status).toBe(200);
+		}
+
+		// Three consecutive groq 5xx failures, recorded via recordProxyOutcome,
+		// must trip groq's circuit breaker — proving proxy traffic feeds the
+		// health tracker, not just discovery-ping latency.
+		expect(registry.providerRouteHealth("groq").available).toBe(false);
+	});
 });
 
 function installFetchMock() {

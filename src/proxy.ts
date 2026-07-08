@@ -16,8 +16,9 @@
  *   provider:<id>  pin to a specific serving-layer provider
  *
  * Supported transports: openai, openai-compatible-http, ollama.
- * Anthropic, Google, Cohere, Bedrock, Vertex speak different wire formats
- * and are not yet proxied.
+ * Anthropic is proxied via OpenAI/Anthropic wire-format translation
+ * (non-streaming, text-only for now). Google, Bedrock, and Vertex speak
+ * cloud-SDK / non-OpenAI wire formats and are not yet proxied.
  *
  * Response headers added by the proxy:
  *   x-kosha-model      — resolved model ID
@@ -39,11 +40,69 @@ import {
 	readSpendForMonth,
 } from "./cost.js";
 import {
+	UnsupportedWireContentError,
+	coerceOpenAIChatRequest,
 	translateAnthropicToOpenAI,
 	translateOpenAIToAnthropic,
 	type AnthropicMessagesResponse,
-	type OpenAIChatRequest,
 } from "./wire-anthropic.js";
+
+// ---------------------------------------------------------------------------
+// Proxy hot-path metrics (exposed via /metrics)
+// ---------------------------------------------------------------------------
+
+interface ProxyProviderCounters {
+	requests: number;
+	errors: number;
+	latencySumMs: number;
+}
+
+const proxyCounters: {
+	requestsTotal: number;
+	errorsTotal: number;
+	byProvider: Record<string, ProxyProviderCounters>;
+} = {
+	requestsTotal: 0,
+	errorsTotal: 0,
+	byProvider: {},
+};
+
+/** Record one forwarded outcome: total + per-provider requests/errors/latency. */
+function bumpProxyMetric(provider: string, ok: boolean, latencyMs: number): void {
+	proxyCounters.requestsTotal += 1;
+	if (!ok) proxyCounters.errorsTotal += 1;
+	let c = proxyCounters.byProvider[provider];
+	if (!c) {
+		c = { requests: 0, errors: 0, latencySumMs: 0 };
+		proxyCounters.byProvider[provider] = c;
+	}
+	c.requests += 1;
+	if (!ok) c.errors += 1;
+	c.latencySumMs += latencyMs;
+}
+
+/** In-memory snapshot of proxy hot-path counters for Prometheus `/metrics`. */
+export interface ProxyMetricsSnapshot {
+	requestsTotal: number;
+	errorsTotal: number;
+	byProvider: Record<string, { requests: number; errors: number; avgLatencyMs: number }>;
+}
+
+/**
+ * Snapshot the proxy hot-path counters. In-memory only (resets on restart);
+ * complements the breaker / provider-observation data the registry exposes.
+ */
+export function snapshotProxyMetrics(): ProxyMetricsSnapshot {
+	const byProvider: ProxyMetricsSnapshot["byProvider"] = {};
+	for (const [provider, c] of Object.entries(proxyCounters.byProvider)) {
+		byProvider[provider] = {
+			requests: c.requests,
+			errors: c.errors,
+			avgLatencyMs: c.requests > 0 ? Math.round(c.latencySumMs / c.requests) : 0,
+		};
+	}
+	return { requestsTotal: proxyCounters.requestsTotal, errorsTotal: proxyCounters.errorsTotal, byProvider };
+}
 
 // ---------------------------------------------------------------------------
 // Upstream host allowlist (SSRF guard)
@@ -160,6 +219,9 @@ function parseKoshaHint(model: string): KoshaHint | null {
 // ---------------------------------------------------------------------------
 
 function isForwardable(model: ModelCard): boolean {
+	// Retired models are no longer served upstream — never offer them as a
+	// proxy route, even when their transport would otherwise be forwardable.
+	if (model.status === "retired") return false;
 	const descriptor = getProviderDescriptor(model.provider);
 	if (!descriptor) return false;
 	if (descriptor.transport === "openai-compatible-http") return true;
@@ -230,6 +292,24 @@ function parseTenantTag(authHeader: string | undefined): string | null {
 	return match ? match[1] : null;
 }
 
+/**
+ * Pull a `{ message, type }` error shape out of an Anthropic upstream error
+ * body. Anthropic errors are `{ type, error: { type, message } }`; a flat
+ * `{ message, type }` is also tolerated. Defaults keep the OpenAI error
+ * envelope well-formed when the body doesn't match either shape.
+ */
+function extractAnthropicError(raw: unknown): { message: string; type: string } {
+	if (raw && typeof raw === "object") {
+		const obj = raw as Record<string, unknown>;
+		const err = obj.error && typeof obj.error === "object" ? (obj.error as Record<string, unknown>) : obj;
+		return {
+			message: typeof err.message === "string" ? err.message : "anthropic upstream error",
+			type: typeof err.type === "string" ? err.type : "upstream_error",
+		};
+	}
+	return { message: "anthropic upstream error", type: "upstream_error" };
+}
+
 /** Stable de-dup of model cards by provider + id, preserving first occurrence. */
 function dedupeModels(models: ModelCard[]): ModelCard[] {
 	const seen = new Set<string>();
@@ -278,7 +358,7 @@ function buildUpstreamUrl(model: ModelCard, registry: ModelRegistry): string {
 // Route registration
 // ---------------------------------------------------------------------------
 
-export function registerProxyRoutes(app: Hono, registry: ModelRegistry): void {
+export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdownSignal?: AbortSignal): void {
 	// OpenAI-compatible model list — returns all models the proxy can forward.
 	// Required for SDK compatibility: OpenAI clients call this before chat requests.
 	app.get("/proxy/v1/models", (ctx) => {
@@ -383,7 +463,11 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry): void {
 		// A 4xx is the caller's own fault (bad request, bad key) and is returned
 		// as-is; a 5xx or network error rolls over to the next candidate.
 		const MAX_FETCHES = 3;
+		// Hard ceiling on a single upstream call so a hung provider can't stall
+		// the caller or hold a connection open past shutdown.
+		const UPSTREAM_TIMEOUT_MS = 30_000;
 		const attemptChain: string[] = [];
+		let streamingRejectedOn: { resolvedModel: string; resolvedProvider: string } | null = null;
 		let fetchAttempts = 0;
 		let lastNoCred: { provider: string; envHint: string | undefined } | null = null;
 		let sawCredentialedRoute = false;
@@ -428,20 +512,30 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry): void {
 				// supported through the translator — fall through cleanly with a
 				// 422 so the caller switches to a non-translated route.
 				if (body.stream === true) {
-					return ctx.json(
-						{
-							error: "anthropic streaming through the OpenAI-compatible proxy is not yet supported",
-							resolvedModel: model.id,
-							resolvedProvider: model.provider,
-						},
-						422,
-					);
+					// Don't hard-return: a later candidate may route the same model
+					// through a native-OpenAI provider (OpenRouter, etc.) that
+					// streams natively. Remember why we skipped and try the next
+					// route; only surface the 422 if nothing else worked.
+					streamingRejectedOn = { resolvedModel: model.id, resolvedProvider: model.provider };
+					continue;
 				}
 				upstreamHeaders["x-api-key"] = bearerToken ?? "";
 				upstreamHeaders["anthropic-version"] = "2023-06-01";
-				upstreamBody = JSON.stringify(
-					translateOpenAIToAnthropic({ ...(body as unknown as OpenAIChatRequest), model: model.id }),
-				);
+				// The translator is fail-safe: tools / vision / structured-output
+				// requests throw UnsupportedWireContentError rather than being
+				// silently mangled. Catch it and fail over to a native-OpenAI
+				// route for the same model (OpenRouter, etc.); only 422 if none.
+				let translatedBody: ReturnType<typeof translateOpenAIToAnthropic>;
+				try {
+					translatedBody = translateOpenAIToAnthropic({ ...coerceOpenAIChatRequest(body), model: model.id });
+				} catch (err) {
+					if (err instanceof UnsupportedWireContentError) {
+						attemptChain.push(`${model.provider}:unsupported-wire-content`);
+						continue;
+					}
+					throw err;
+				}
+				upstreamBody = JSON.stringify(translatedBody);
 				// Rebuild the URL via the WHATWG URL API rather than a string
 				// `replace`, so the pathname swap can't be tripped by a fragment
 				// or query-string that happens to contain `/chat/completions`.
@@ -456,15 +550,26 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry): void {
 				upstreamUrlString = safeUrl.toString();
 			}
 
+			const attemptStart = Date.now();
 			let upstream: Response;
 			try {
+				// Bound the upstream call so a hung provider can't stall the
+				// caller, and abort in-flight requests when kosha is shutting
+				// down so we drain instead of dropping streams mid-flight.
+				const timeoutSignal = AbortSignal.timeout(UPSTREAM_TIMEOUT_MS);
+				const signal = shutdownSignal ? AbortSignal.any([timeoutSignal, shutdownSignal]) : timeoutSignal;
 				upstream = await fetch(upstreamUrlString, {
 					method: "POST",
 					headers: upstreamHeaders,
 					body: upstreamBody,
+					signal,
 				});
 			} catch (err) {
 				attemptChain.push(`${model.provider}:error`);
+				const errLatency = Date.now() - attemptStart;
+				const errorType = err instanceof Error && err.name === "TimeoutError" ? "timeout" : "transport";
+				registry.recordProxyOutcome(model.provider, { ok: false, latencyMs: errLatency, errorType });
+				bumpProxyMetric(model.provider, false, errLatency);
 				if (fetchAttempts < MAX_FETCHES) continue; // fail over
 				const message = err instanceof Error ? err.message : String(err);
 				return ctx.json(
@@ -478,10 +583,34 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry): void {
 			if (upstream.status >= 500 && fetchAttempts < MAX_FETCHES) {
 				attemptChain.push(`${model.provider}:${upstream.status}`);
 				await upstream.body?.cancel().catch(() => {});
+				registry.recordProxyOutcome(model.provider, {
+					ok: false,
+					status: upstream.status,
+					latencyMs: Date.now() - attemptStart,
+					errorType: "transport",
+				});
+				bumpProxyMetric(model.provider, false, Date.now() - attemptStart);
 				continue;
 			}
 
 			attemptChain.push(`${model.provider}:${upstream.status}`);
+			// Feed the real inference outcome into the health tracker so
+			// kosha:reliable/fastest/balanced rank on actual proxy traffic, not
+			// just discovery-ping latency. A 4xx is the caller's fault and not a
+			// provider-health signal, so we neither credit nor penalize it.
+			const attemptLatencyMs = Date.now() - attemptStart;
+			if (upstream.ok) {
+				registry.recordProxyOutcome(model.provider, { ok: true, status: upstream.status, latencyMs: attemptLatencyMs });
+				bumpProxyMetric(model.provider, true, attemptLatencyMs);
+			} else if (upstream.status >= 500) {
+				registry.recordProxyOutcome(model.provider, {
+					ok: false,
+					status: upstream.status,
+					latencyMs: attemptLatencyMs,
+					errorType: "transport",
+				});
+				bumpProxyMetric(model.provider, false, attemptLatencyMs);
+			}
 
 			// Pre-flight cost estimate. We compute (input tokens × inputRate +
 			// expected_output × outputRate) and reflect it on the response so the
@@ -497,33 +626,51 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry): void {
 			});
 			if (estimate) {
 				responseHeaders.set("x-kosha-estimated-cost-usd", estimate.estimatedUsd.toFixed(6));
-				// Best-effort ledger append. Failures here are observability
-				// losses, never a reason to fail the request itself.
-				appendLedgerEntry({
-					ts: Date.now(),
-					provider: model.provider,
-					modelId: model.id,
-					requested: safeRequested,
-					tenant,
-					estimatedUsd: estimate.estimatedUsd,
-					estimatedInputTokens: estimate.inputTokens,
-					estimatedOutputTokens: estimate.expectedOutputTokens,
-					upstreamStatus: upstream.status,
-				}).catch(() => {});
+				// Only charge the ledger on a successful upstream response. A 4xx
+				// is the caller's fault (malformed request, bad key) and costs
+				// nothing upstream — charging it would let malformed traffic
+				// exhaust a tenant's monthly budget. Append failures are
+				// observability losses, never a reason to fail the request.
+				if (upstream.ok) {
+					appendLedgerEntry({
+						ts: Date.now(),
+						provider: model.provider,
+						modelId: model.id,
+						requested: safeRequested,
+						tenant,
+						estimatedUsd: estimate.estimatedUsd,
+						estimatedInputTokens: estimate.inputTokens,
+						estimatedOutputTokens: estimate.expectedOutputTokens,
+						upstreamStatus: upstream.status,
+					}).catch(() => {});
+				}
 			}
-			if (usesAnthropicWire && upstream.ok) {
-				// Translate the JSON body back to OpenAI chat-completions shape
-				// so the caller's SDK keeps working unchanged.
-				let raw: AnthropicMessagesResponse;
+			if (usesAnthropicWire) {
+				// Anthropic /v1/messages: translate the body to/from OpenAI
+				// chat-completions shape so the caller's SDK is unaware of the
+				// wire swap. Error bodies are re-shaped into the OpenAI error
+				// envelope ({ error: { message, type, code } }) so a client using
+				// the OpenAI SDK reads a structured error instead of an Anthropic
+				// blob it can't parse.
+				let raw: unknown;
 				try {
-					raw = (await upstream.json()) as AnthropicMessagesResponse;
+					raw = await upstream.json();
 				} catch {
-					return ctx.json(
-						{ error: "anthropic upstream returned unparseable JSON", resolvedProvider: model.provider },
-						502,
+					responseHeaders.set("content-type", "application/json");
+					return new Response(
+						JSON.stringify({ error: { message: "anthropic upstream returned unparseable JSON", type: "upstream_error" } }),
+						{ status: 502, headers: responseHeaders },
 					);
 				}
-				const translated = translateAnthropicToOpenAI(raw, model.id);
+				if (!upstream.ok) {
+					const aErr = extractAnthropicError(raw);
+					responseHeaders.set("content-type", "application/json");
+					return new Response(
+						JSON.stringify({ error: { ...aErr, code: String(upstream.status) } }),
+						{ status: upstream.status, headers: responseHeaders },
+					);
+				}
+				const translated = translateAnthropicToOpenAI(raw as AnthropicMessagesResponse, model.id);
 				responseHeaders.set("content-type", "application/json");
 				return new Response(JSON.stringify(translated), { status: upstream.status, headers: responseHeaders });
 			}
@@ -542,6 +689,17 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry): void {
 					attemptChain,
 				},
 				401,
+			);
+		}
+		if (streamingRejectedOn) {
+			return ctx.json(
+				{
+					error:
+						"anthropic streaming through the OpenAI-compatible proxy is not yet supported; no native-streaming route was available",
+					...streamingRejectedOn,
+					attemptChain,
+				},
+				422,
 			);
 		}
 		return ctx.json({ error: "all upstream providers failed", attemptChain }, 502);

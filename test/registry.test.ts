@@ -3,6 +3,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PROVIDER_CATALOG } from "../src/provider-catalog.js";
+import * as registryRuntime from "../src/registry-runtime.js";
 import { ModelRegistry } from "../src/registry.js";
 import type { ModelCard, ProviderInfo } from "../src/types.js";
 
@@ -791,6 +792,131 @@ describe("ModelRegistry", () => {
 			const allModels = registry.models();
 			expect(allModels).toHaveLength(1);
 			expect(allModels[0].provider).toBe("provider-a");
+		});
+	});
+
+	describe("recordProxyOutcome()", () => {
+		it("opens the breaker after repeated proxy failures and records latency observations", () => {
+			const registry = new ModelRegistry();
+			// Default failure threshold is 3 — two failures keep it closed.
+			registry.recordProxyOutcome("anthropic", { ok: false, status: 500, latencyMs: 120, errorType: "transport" });
+			registry.recordProxyOutcome("anthropic", { ok: false, status: 500, latencyMs: 130, errorType: "transport" });
+			expect(registry.providerRouteHealth("anthropic").breakerState).toBe("closed");
+
+			// Third consecutive failure trips the breaker open.
+			registry.recordProxyOutcome("anthropic", { ok: false, status: 500, latencyMs: 140, errorType: "transport" });
+			const open = registry.providerRouteHealth("anthropic");
+			expect(open.breakerState).toBe("open");
+			// Three latency samples appended from proxy traffic — routing now
+			// sees real serving latency, not just discovery-ping latency.
+			expect(open.samples).toBe(3);
+		});
+
+		it("records a success observation and keeps the breaker closed", () => {
+			const registry = new ModelRegistry();
+			registry.recordProxyOutcome("openai", { ok: true, status: 200, latencyMs: 50 });
+			const health = registry.providerRouteHealth("openai");
+			expect(health.breakerState).toBe("closed");
+			expect(health.samples).toBe(1);
+			expect(health.lastErrorType).toBeNull();
+		});
+
+		it("classifies a free-form proxy error message into an observation class", () => {
+			const registry = new ModelRegistry();
+			registry.recordProxyOutcome("anthropic", { ok: false, status: 401, latencyMs: 40, errorType: "401 Unauthorized" });
+			// "401 Unauthorized" is not a known token, so it runs through the
+			// same classifier discovery uses → auth_error.
+			expect(registry.providerRouteHealth("anthropic").lastErrorType).toBe("auth_error");
+		});
+
+		it("passes already-normalized error tokens through unchanged", () => {
+			const registry = new ModelRegistry();
+			registry.recordProxyOutcome("anthropic", { ok: false, status: 429, latencyMs: 40, errorType: "throttled" });
+			expect(registry.providerRouteHealth("anthropic").lastErrorType).toBe("throttled");
+		});
+
+		it("resets the failure count after a success", () => {
+			const registry = new ModelRegistry();
+			registry.recordProxyOutcome("anthropic", { ok: false, latencyMs: 10, errorType: "transport" });
+			registry.recordProxyOutcome("anthropic", { ok: false, latencyMs: 10, errorType: "transport" });
+			// A success mid-streak resets the breaker's failure counter.
+			registry.recordProxyOutcome("anthropic", { ok: true, latencyMs: 30 });
+			registry.recordProxyOutcome("anthropic", { ok: false, latencyMs: 10, errorType: "transport" });
+			// Only one failure since the success — breaker stays closed.
+			expect(registry.providerRouteHealth("anthropic").breakerState).toBe("closed");
+		});
+	});
+
+	describe("discover() serialization", () => {
+		it("runs concurrent discover() calls strictly one at a time (FIFO, no interleaving)", async () => {
+			const registry = new ModelRegistry({ cacheDir: tempDir, providers: allProvidersDisabledConfig() });
+			let active = 0;
+			let maxActive = 0;
+			let seq = 0;
+			const order: string[] = [];
+			// Mock the registryDiscover call so we can observe concurrency.
+			// Without serialization, the three awaits below would overlap and
+			// maxActive would climb past 1.
+			const spy = vi.spyOn(registryRuntime, "registryDiscover").mockImplementation(async () => {
+				active += 1;
+				maxActive = Math.max(maxActive, active);
+				seq += 1;
+				const mySeq = seq;
+				order.push(`start-${mySeq}`);
+				await new Promise((r) => setTimeout(r, 10));
+				order.push(`end-${mySeq}`);
+				active -= 1;
+				return [];
+			});
+
+			await Promise.all([
+				registry.discover({ force: true }),
+				registry.discover({ force: true }),
+				registry.discover({ force: true }),
+			]);
+
+			// Mutual exclusion: never more than one pass in flight.
+			expect(maxActive).toBe(1);
+			// FIFO: each pass completes before the next begins.
+			expect(order).toEqual(["start-1", "end-1", "start-2", "end-2", "start-3", "end-3"]);
+			spy.mockRestore();
+		});
+
+		it("keeps the chain usable after a rejected discover (chain never dead-ends)", async () => {
+			const registry = new ModelRegistry({ cacheDir: tempDir, providers: allProvidersDisabledConfig() });
+			let calls = 0;
+			const spy = vi.spyOn(registryRuntime, "registryDiscover").mockImplementation(async () => {
+				calls += 1;
+				if (calls === 1) throw new Error("boom");
+				return [];
+			});
+
+			// The first call rejects and the caller observes it.
+			await expect(registry.discover({ force: true })).rejects.toThrow("boom");
+			// The rejected pass must NOT permanently block the chain — the
+			// next caller still gets its turn and succeeds.
+			const result = await registry.discover({ force: true });
+			expect(result).toEqual([]);
+			expect(calls).toBe(2);
+			spy.mockRestore();
+		});
+
+		it("does not corrupt the discovery revision/cursor under concurrent calls", async () => {
+			const registry = new ModelRegistry({ cacheDir: tempDir, providers: allProvidersDisabledConfig() });
+			const cursorBefore = registry.discoverySnapshot().cursor;
+			const revBefore = Number(cursorBefore.split("-")[1]);
+
+			await Promise.all([
+				registry.discover({ force: true }),
+				registry.discover({ force: true }),
+				registry.discover({ force: true }),
+			]);
+
+			const cursorAfter = registry.discoverySnapshot().cursor;
+			const revAfter = Number(cursorAfter.split("-")[1]);
+			// Each of the three serialized passes records exactly one mutation
+			// — no doubled or interleaved cursor advances.
+			expect(revAfter - revBefore).toBe(3);
 		});
 	});
 });

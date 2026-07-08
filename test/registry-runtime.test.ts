@@ -27,8 +27,11 @@ import {
 	type DiscoveryProviderV1,
 	type DiscoverySnapshotV1,
 } from "../src/discovery-contract.js";
-import { exportRegistryManifest } from "../src/registry-runtime.js";
+import { exportRegistryManifest, registryDiscover } from "../src/registry-runtime.js";
 import { createRegistryState } from "../src/registry-state.js";
+import { registryClassifyError, registryRecordObservation } from "../src/registry-discovery.js";
+import type { DiscoveryDependencies } from "../src/registry-state.js";
+import type { ModelCard, ProviderDiscoverer } from "../src/types.js";
 
 let workDir: string;
 let manifestPath: string;
@@ -277,4 +280,117 @@ describe("exportRegistryManifest — central-registry merge guarantees", () => {
 		expect(existsSync(lockPath)).toBe(true);
 		expect(readFileSync(lockPath, "utf-8")).toBe(before);
 	}, 10_000);
+});
+
+/** Build a minimal ModelCard for pricing-provenance attribution tests. */
+function makeModelCard(overrides: Partial<ModelCard> & { id: string }): ModelCard {
+	return {
+		name: overrides.id,
+		provider: "anthropic",
+		mode: "chat",
+		capabilities: ["chat"],
+		contextWindow: 128_000,
+		maxOutputTokens: 8_192,
+		aliases: [],
+		discoveredAt: Date.now(),
+		source: "api",
+		...overrides,
+	};
+}
+
+describe("registryDiscover — pricingSource attribution", () => {
+	it("tags provider-live, static-seed, litellm, and missing origins at the merge boundary", async () => {
+		const state = createRegistryState({ cacheDir: join(workDir, "cache") });
+
+		// (a) API-returned pricing → provider-live.
+		const apiPriced = makeModelCard({
+			id: "api-priced",
+			source: "api",
+			pricing: { inputPerMillion: 1, outputPerMillion: 2 },
+		});
+		// (b) Pricing carried by a keyless seed (source: "litellm") → static-seed.
+		const seedPriced = makeModelCard({
+			id: "seed-priced",
+			source: "litellm",
+			pricing: { inputPerMillion: 1, outputPerMillion: 2 },
+		});
+		// (c) No pricing yet — the fake enrichment pass fills it → litellm.
+		const enrichMe = makeModelCard({ id: "enrich-me", source: "api" });
+		// (d) No pricing, and enrichment doesn't touch it → missing.
+		const noPricing = makeModelCard({ id: "no-pricing", source: "api" });
+
+		const discoverer: ProviderDiscoverer = {
+			providerId: "anthropic",
+			providerName: "Anthropic",
+			baseUrl: "https://api.anthropic.com",
+			async discover() {
+				return [apiPriced, seedPriced, enrichMe, noPricing];
+			},
+		};
+
+		const dependencies: DiscoveryDependencies = {
+			resolveCredential: null,
+			loadDiscoverers: async () => [discoverer],
+			enrichModels: async () => {
+				// Simulate the litellm enrichment pass filling pricing on the
+				// one model that came back unpriced but enrichable.
+				enrichMe.pricing = { inputPerMillion: 3, outputPerMillion: 4 };
+			},
+			populateModelAliases: () => undefined,
+			loadFromCache: async () => false,
+			saveToCache: async () => undefined,
+			fallbackCredential: () => ({ source: "none" }),
+			snapshotForDelta: () => null,
+			recordDiscoveryMutation: () => undefined,
+			recordObservation: (providerId, entry) => registryRecordObservation(state, providerId, entry),
+			classifyError: (message) => registryClassifyError(message),
+		};
+
+		await registryDiscover(state, dependencies, { force: true });
+
+		const models = state.providerMap.get("anthropic")!.models;
+		const byId = new Map(models.map((m) => [m.id, m]));
+		expect(byId.get("api-priced")!.pricingSource).toBe("provider-live");
+		expect(byId.get("seed-priced")!.pricingSource).toBe("static-seed");
+		expect(byId.get("enrich-me")!.pricingSource).toBe("litellm");
+		expect(byId.get("no-pricing")!.pricingSource).toBe("missing");
+	});
+
+	it("leaves an existing pricingSource untouched (idempotent on cache rehydration)", async () => {
+		const state = createRegistryState({ cacheDir: join(workDir, "cache") });
+		// A model that already carries a trusted provenance tag from a prior
+		// pass must not be overwritten by a hand-typed attribution.
+		const preset = makeModelCard({
+			id: "preset",
+			source: "api",
+			pricing: { inputPerMillion: 1, outputPerMillion: 2 },
+			pricingSource: "provider-live",
+		});
+
+		const discoverer: ProviderDiscoverer = {
+			providerId: "anthropic",
+			providerName: "Anthropic",
+			baseUrl: "https://api.anthropic.com",
+			async discover() {
+				return [preset];
+			},
+		};
+		const dependencies: DiscoveryDependencies = {
+			resolveCredential: null,
+			loadDiscoverers: async () => [discoverer],
+			enrichModels: async () => undefined,
+			populateModelAliases: () => undefined,
+			loadFromCache: async () => false,
+			saveToCache: async () => undefined,
+			fallbackCredential: () => ({ source: "none" }),
+			snapshotForDelta: () => null,
+			recordDiscoveryMutation: () => undefined,
+			recordObservation: (providerId, entry) => registryRecordObservation(state, providerId, entry),
+			classifyError: (message) => registryClassifyError(message),
+		};
+
+		await registryDiscover(state, dependencies, { force: true });
+
+		expect(state.providerMap.get("anthropic")!.models[0].pricingSource).toBe("provider-live");
+	});
 });

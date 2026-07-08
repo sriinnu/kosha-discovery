@@ -4,7 +4,11 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { translateAnthropicToOpenAI, translateOpenAIToAnthropic } from "../src/wire-anthropic.js";
+import {
+	translateAnthropicToOpenAI,
+	translateOpenAIToAnthropic,
+	UnsupportedWireContentError,
+} from "../src/wire-anthropic.js";
 import { createServer } from "../src/server.js";
 import { ModelRegistry } from "../src/registry.js";
 import type { ModelCard, ProviderInfo } from "../src/types.js";
@@ -93,6 +97,127 @@ describe("translateOpenAIToAnthropic", () => {
 	});
 });
 
+describe("translateOpenAIToAnthropic — fail-safe on unsupported wire content", () => {
+	it("throws UnsupportedWireContentError when a tools array is present", () => {
+		expect(() =>
+			translateOpenAIToAnthropic({
+				model: "x",
+				messages: [{ role: "user", content: "hi" }],
+				tools: [{ type: "function", function: { name: "do_thing" } }],
+			}),
+		).toThrow(UnsupportedWireContentError);
+	});
+
+	it("throws UnsupportedWireContentError when tool_choice is present", () => {
+		expect(() =>
+			translateOpenAIToAnthropic({
+				model: "x",
+				messages: [{ role: "user", content: "hi" }],
+				tool_choice: "auto",
+			}),
+		).toThrow(UnsupportedWireContentError);
+	});
+
+	it("throws UnsupportedWireContentError for response_format json_schema", () => {
+		expect(() =>
+			translateOpenAIToAnthropic({
+				model: "x",
+				messages: [{ role: "user", content: "hi" }],
+				response_format: { type: "json_schema", json_schema: { name: "thing", schema: {} } },
+			}),
+		).toThrow(UnsupportedWireContentError);
+	});
+
+	it("throws UnsupportedWireContentError for response_format json_object", () => {
+		expect(() =>
+			translateOpenAIToAnthropic({
+				model: "x",
+				messages: [{ role: "user", content: "hi" }],
+				response_format: { type: "json_object" },
+			}),
+		).toThrow(UnsupportedWireContentError);
+	});
+
+	it("throws UnsupportedWireContentError for an image_url content block", () => {
+		expect(() =>
+			translateOpenAIToAnthropic({
+				model: "x",
+				messages: [
+					{
+						role: "user",
+						content: [
+							{ type: "text", text: "what is this?" },
+							{ type: "image_url", image_url: { url: "https://example.com/cat.png" } },
+						],
+					},
+				],
+			}),
+		).toThrow(UnsupportedWireContentError);
+	});
+
+	it("names the offending field in the error message", () => {
+		try {
+			translateOpenAIToAnthropic({
+				model: "x",
+				messages: [{ role: "user", content: "hi" }],
+				tools: [{ type: "function", function: { name: "do_thing" } }],
+			});
+			throw new Error("expected translateOpenAIToAnthropic to throw");
+		} catch (err) {
+			expect(err).toBeInstanceOf(UnsupportedWireContentError);
+			expect((err as Error).message).toMatch(/tools/);
+		}
+	});
+
+	it("names the content block type in the error message", () => {
+		try {
+			translateOpenAIToAnthropic({
+				model: "x",
+				messages: [
+					{
+						role: "user",
+						content: [{ type: "input_audio", input_audio: { data: "b64", format: "wav" } }],
+					},
+				],
+			});
+			throw new Error("expected translateOpenAIToAnthropic to throw");
+		} catch (err) {
+			expect(err).toBeInstanceOf(UnsupportedWireContentError);
+			expect((err as Error).message).toMatch(/input_audio/);
+		}
+	});
+
+	it("still translates plain-text chat (system + structured text blocks) without throwing", () => {
+		const out = translateOpenAIToAnthropic({
+			model: "x",
+			messages: [
+				{ role: "system", content: "You are kosha." },
+				{ role: "user", content: [{ type: "text", text: "Hello " }, { type: "text", text: "world" }] },
+			],
+			temperature: 0.5,
+			top_p: 0.9,
+			max_tokens: 64,
+			stop: ["END"],
+		});
+		expect(out.system).toBe("You are kosha.");
+		expect(out.messages).toEqual([{ role: "user", content: "Hello world" }]);
+		expect(out.temperature).toBe(0.5);
+		expect(out.top_p).toBe(0.9);
+		expect(out.max_tokens).toBe(64);
+		expect(out.stop_sequences).toEqual(["END"]);
+	});
+
+	it("treats response_format text as a no-op (does not throw)", () => {
+		expect(() =>
+			translateOpenAIToAnthropic({
+				model: "x",
+				messages: [{ role: "user", content: "hi" }],
+				response_format: { type: "text" },
+			}),
+		).not.toThrow();
+	});
+});
+
 describe("translateAnthropicToOpenAI", () => {
 	it("joins text content blocks and reflects token usage", () => {
 		const out = translateAnthropicToOpenAI(
@@ -115,11 +240,13 @@ describe("translateAnthropicToOpenAI", () => {
 	});
 
 	it("maps Anthropic stop reasons onto the OpenAI vocabulary", () => {
+		// tool_use collapses to "stop" because we don't emit a populated
+		// tool_calls array — see the dedicated dangling-tool_calls test below.
 		const cases: Array<[string | null, string]> = [
 			["end_turn", "stop"],
 			["stop_sequence", "stop"],
 			["max_tokens", "length"],
-			["tool_use", "tool_calls"],
+			["tool_use", "stop"],
 			["weird_unknown", "stop"],
 			[null, "stop"],
 		];
@@ -130,6 +257,30 @@ describe("translateAnthropicToOpenAI", () => {
 			);
 			expect(out.choices[0].finish_reason).toBe(expected);
 		}
+	});
+
+	it("never emits a dangling tool_calls finish_reason when tool_use can't be translated", () => {
+		// Anthropic returned a tool_use block, but the translator doesn't
+		// build OpenAI tool_calls today. finish_reason must NOT be
+		// "tool_calls" with an empty/absent tool_calls array — agent SDKs
+		// loop or throw on that signal.
+		const out = translateAnthropicToOpenAI(
+			{
+				id: "msg_t",
+				model: "claude-sonnet-4-6",
+				role: "assistant",
+				content: [
+					{ type: "tool_use", id: "toolu_1", name: "do_thing", input: { x: 1 } },
+					{ type: "text", text: "done" },
+				],
+				stop_reason: "tool_use",
+				usage: { input_tokens: 3, output_tokens: 4 },
+			},
+			"claude-sonnet-4-6",
+		);
+		expect(out.choices[0].finish_reason).toBe("stop");
+		expect(out.choices[0].message).not.toHaveProperty("tool_calls");
+		expect(out.choices[0].message.content).toBe("done");
 	});
 });
 

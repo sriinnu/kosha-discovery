@@ -16,7 +16,7 @@ import { getProviderConfig, getProviderDescriptor, isLocalProvider, normalizePro
 import { registryDiscoverySnapshot } from "./registry-discovery.js";
 import type { DiscoveryDependencies, RegistryState } from "./registry-state.js";
 import { StaleCachePolicy } from "./resilience.js";
-import type { CredentialResult, DiscoveryOptions, Enricher, ProviderDiscoverer, ProviderInfo } from "./types.js";
+import type { CredentialResult, DiscoveryOptions, Enricher, ModelCard, ProviderDiscoverer, ProviderInfo } from "./types.js";
 import { applyPromoOverrides } from "./discovery/promo-overrides.js";
 import { assertCleanPayload } from "./security.js";
 
@@ -47,6 +47,11 @@ export async function registryDiscover(
 	if (!force) {
 		const loaded = await dependencies.loadFromCache(providers);
 		if (loaded) {
+			// Attribute pricing provenance on cache rehydration so entries
+			// persisted before pricingSource existed still get a trustworthy
+			// tag. No enrichment ran here, so every priced model is treated
+			// as discovery-origin.
+			attributePricingSources(state, capturePricedModelKeys(state));
 			dependencies.recordDiscoveryMutation(beforeSnapshot);
 			// Only refresh the canonical manifest for full-registry cache hits.
 			// Scoped provider rehydration can carry cache-derived state that should
@@ -83,6 +88,12 @@ export async function registryDiscover(
 		});
 	}
 
+	// Snapshot which models the discoverers already priced, BEFORE the
+	// litellm enrichment pass runs. Pricing present here is attributed to
+	// the discoverer's own origin (provider-live API vs static seed);
+	// pricing that only appears after enrichment is attributed to litellm.
+	const preEnrichmentPriced = capturePricedModelKeys(state);
+
 	if (options?.enrichWithPricing ?? true) {
 		await dependencies.enrichModels();
 	}
@@ -95,6 +106,10 @@ export async function registryDiscover(
 			models: applyPromoOverrides(providerInfo.models),
 		});
 	}
+
+	// Attribute pricing provenance at the enrich/merge boundary now that
+	// every pricing pass (API, seed, litellm enrichment, promo) has run.
+	attributePricingSources(state, preEnrichmentPriced);
 
 	dependencies.populateModelAliases();
 	state.discoveredAt = Date.now();
@@ -250,6 +265,10 @@ export async function registryEnrichOnly(state: RegistryState): Promise<EnrichOn
 
 	// Snapshot pricing before enrichment to count how many models get updates.
 	const before = countPricingFields(state);
+	// Snapshot which models were already priced before this enrichment-only
+	// pass, so provenance attribution can tell litellm-filled rates apart
+	// from rates the cache already carried.
+	const preEnrichmentPriced = capturePricedModelKeys(state);
 
 	await enrichRegistryModels(state);
 	for (const [providerId, providerInfo] of state.providerMap) {
@@ -258,6 +277,7 @@ export async function registryEnrichOnly(state: RegistryState): Promise<EnrichOn
 			models: applyPromoOverrides(providerInfo.models),
 		});
 	}
+	attributePricingSources(state, preEnrichmentPriced);
 	populateRegistryModelAliases(state);
 	await saveRegistryToCache(state);
 	await exportRegistryManifest(state);
@@ -282,6 +302,78 @@ function countPricingFields(state: RegistryState): { cachePricing: number; batch
 		}
 	}
 	return { cachePricing, batchPricing };
+}
+
+/**
+ * True when a model carries defined input AND output rates. Zero counts as
+ * defined (free-tier); `undefined` does not. Matches the predicate the
+ * cheapest-model query treats as "usable pricing" so attribution and routing
+ * agree on what "priced" means.
+ */
+function modelHasUsablePricing(model: ModelCard): boolean {
+	const pricing = model.pricing;
+	return (
+		!!pricing &&
+		pricing.inputPerMillion !== undefined &&
+		pricing.outputPerMillion !== undefined
+	);
+}
+
+/** Stable key for a (provider, model) pair used by provenance snapshots. */
+function modelPricingKey(providerId: string, model: ModelCard): string {
+	return `${providerId}:${model.id}`;
+}
+
+/**
+ * Snapshot the set of (provider, model) keys that already carry usable
+ * pricing, captured before the litellm enrichment pass so the attribution
+ * step can distinguish discovery-origin rates from enrichment-filled ones.
+ */
+function capturePricedModelKeys(state: RegistryState): Set<string> {
+	const keys = new Set<string>();
+	for (const [providerId, providerInfo] of state.providerMap) {
+		for (const model of providerInfo.models) {
+			if (modelHasUsablePricing(model)) {
+				keys.add(modelPricingKey(providerId, model));
+			}
+		}
+	}
+	return keys;
+}
+
+/**
+ * Attribute `pricingSource` provenance at the enrich/merge boundary.
+ *
+ * `preEnrichmentPriced` is the snapshot of models that were already priced
+ * before the litellm enrichment pass ran. The rules are conservative:
+ *
+ *  - Already priced before enrichment → discovery origin, split by the
+ *    model's `source` field: `"api"` means the serving API returned live
+ *    rates (`provider-live`); `"litellm"` / `"manual"` / `"local"` mean a
+ *    keyless seed or hand-curated entry supplied the rates (`static-seed`).
+ *  - Priced only after enrichment → `litellm`.
+ *  - Still unpriced after every pass → `missing`.
+ *
+ * Idempotent: a model that already carries a `pricingSource` (e.g. carried
+ * in from a cache written by a newer build, or re-attributed on a second
+ * pass) is left untouched.
+ */
+function attributePricingSources(state: RegistryState, preEnrichmentPriced: Set<string>): void {
+	for (const [providerId, providerInfo] of state.providerMap) {
+		for (const model of providerInfo.models) {
+			if (model.pricingSource) continue;
+			if (modelHasUsablePricing(model)) {
+				const fromDiscovery = preEnrichmentPriced.has(modelPricingKey(providerId, model));
+				model.pricingSource = fromDiscovery
+					? model.source === "api"
+						? "provider-live"
+						: "static-seed"
+					: "litellm";
+			} else {
+				model.pricingSource = "missing";
+			}
+		}
+	}
 }
 
 /**

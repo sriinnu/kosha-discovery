@@ -93,6 +93,23 @@ import type {
 export class ModelRegistry {
 	private readonly state: RegistryState;
 
+	/**
+	 * FIFO tail used to serialize in-process discovery passes.
+	 *
+	 * `registryDiscover` mutates shared state (providerMap, deltaHistory,
+	 * currentCursor, discoveryRevision, lastSnapshotCache) with no internal
+	 * lock. Without serialization, two concurrent `discover()` calls — a
+	 * POST /api/refresh racing boot, or two refreshes — both capture the same
+	 * stale beforeSnapshot, both push a delta, and both rewrite the cursor,
+	 * corrupting the v1 delta stream that daemon consumers sync on. Each
+	 * `discover()` chains onto this tail so passes run strictly one after
+	 * another; the stored tail always settles (it swallows rejection) so one
+	 * failed pass can never dead-end the chain, while each caller still
+	 * awaits its own promise and observes its own rejection. The cross-
+	 * process manifest file lock is unchanged.
+	 */
+	private discoverChain: Promise<void> = Promise.resolve();
+
 	constructor(config?: KoshaConfig) {
 		this.state = createRegistryState(config);
 		this.currentCursor = registryMakeCursor(this.state);
@@ -114,10 +131,26 @@ export class ModelRegistry {
 
 	/**
 	 * Run discovery across all or selected providers.
+	 *
+	 * Serialized per-instance: concurrent calls queue FIFO on
+	 * {@link discoverChain} so the v1 delta stream stays consistent. Each
+	 * caller awaits its own turn and observes its own result or rejection —
+	 * a failed pass never blocks the next one.
 	 */
 	async discover(options?: DiscoveryOptions): Promise<ProviderInfo[]> {
 		const credentialResolver = await getRegistryCredentialResolver();
-		return registryDiscover(this.state, this.dependencies(credentialResolver), options);
+		const dependencies = this.dependencies(credentialResolver);
+		// Chain this pass onto the in-flight tail so it runs only after the
+		// previous pass settles, preserving FIFO ordering of state mutations.
+		const run = this.discoverChain.then(() => registryDiscover(this.state, dependencies, options));
+		// The stored tail swallows rejection: a rejected discover() must not
+		// permanently block subsequent callers. `run` (returned to this
+		// caller) still propagates the rejection so the caller sees the error.
+		this.discoverChain = run.then(
+			() => undefined,
+			() => undefined,
+		);
+		return run;
 	}
 
 	/**
@@ -304,6 +337,46 @@ export class ModelRegistry {
 		this.healthTracker.resetAll();
 	}
 
+	/**
+	 * Feed a proxy request outcome back into routing health.
+	 *
+	 * The proxy layer calls this after every forwarded request so that
+	 * `kosha:reliable` / `fastest` / `balanced` ranking reflects real serving
+	 * traffic, not just discovery-ping latency. On success the provider's
+	 * circuit breaker is notified (closing a half-open probe); on failure the
+	 * breaker failure counter advances (opening after the configured
+	 * threshold) and the normalized error class is recorded. The latency
+	 * sample is appended to the same rolling observation store that discovery
+	 * writes into, so all strategies see one unified health signal.
+	 *
+	 * Additive only — discovery continues to record its own observations; this
+	 * just lets proxy traffic contribute to the same store.
+	 *
+	 * @param providerId - Serving-layer provider the request was forwarded to.
+	 * @param outcome    - Result of the proxied request.
+	 */
+	recordProxyOutcome(
+		providerId: string,
+		outcome: { ok: boolean; status?: number; latencyMs: number; errorType?: string },
+	): void {
+		const normalizedProviderId = normalizeProviderId(providerId) ?? providerId;
+		const breaker = this.healthTracker.breaker(normalizedProviderId);
+		if (outcome.ok) {
+			breaker.onSuccess();
+		} else {
+			// `onFailure` stores the message for diagnostics; pass the proxy's
+			// errorType through verbatim (undefined is fine — it only skips
+			// storing a diagnostic string).
+			breaker.onFailure(outcome.errorType);
+		}
+		// Record a latency + error observation in the same store discovery
+		// uses, so all four routing strategies fold in real proxy traffic.
+		registryRecordObservation(this.state, normalizedProviderId, {
+			latencyMs: outcome.latencyMs,
+			errorType: outcome.ok ? null : normalizeProxyErrorType(outcome.errorType),
+		});
+	}
+
 	/** Aggregate capability statistics across the current model set. */
 	capabilities(filter?: { provider?: string }): CapabilitySummary[] {
 		return registryCapabilities(this.state, filter);
@@ -431,4 +504,27 @@ export class ModelRegistry {
 
 function toLooseLookupKey(value: string): string {
 	return value.replace(/[._-]+/g, "");
+}
+
+/** Valid provider-observation error classes (mirrors ProviderObservation). */
+const PROXY_ERROR_TYPES: ReadonlySet<string> = new Set([
+	"auth_error",
+	"throttled",
+	"timeout",
+	"transport",
+	"unknown",
+]);
+
+/**
+ * Normalize a proxy-supplied `errorType` string into the observation enum.
+ *
+ * Proxy callers may pass either an already-normalized token (`"timeout"`,
+ * `"auth_error"`, …) or a free-form message. Known tokens pass through
+ * unchanged; anything else is classified by the same heuristic discovery
+ * uses so the rolling health summary stays consistent across both feeds.
+ */
+function normalizeProxyErrorType(raw: string | undefined): ProviderObservation["lastErrorType"] {
+	if (raw && PROXY_ERROR_TYPES.has(raw)) return raw as ProviderObservation["lastErrorType"];
+	if (!raw) return "unknown";
+	return registryClassifyError(raw);
 }

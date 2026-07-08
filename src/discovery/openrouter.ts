@@ -8,8 +8,11 @@
  * @module
  */
 
-import type { CredentialResult, ModelCard, ModelMode, ModelPricing } from "../types.js";
+import type { CredentialResult, ModelCard, ModelMode, ModelPricing, ModelStatus } from "../types.js";
 import { BaseDiscoverer } from "./base.js";
+// Route origin-provider derivation through the canonical normalizer so the
+// vendor→origin mapping lives in one place instead of being re-maintained here.
+import { extractOriginProvider as extractCanonicalOriginProvider } from "../normalize.js";
 
 /** Per-token pricing strings returned by OpenRouter (values are stringified floats). */
 interface OpenRouterPricing {
@@ -46,6 +49,13 @@ interface OpenRouterModel {
 	top_provider: OpenRouterTopProvider;
 	architecture: OpenRouterArchitecture;
 	per_request_limits?: Record<string, string> | null;
+	/**
+	 * Deprecation date for the model endpoint (`null` when not deprecated).
+	 * OpenRouter surfaces a single lifecycle signal — an ISO date string here
+	 * means the model is sunsetting on that date. Mapped onto
+	 * {@link ModelCard.deprecationDate} / {@link ModelCard.status}.
+	 */
+	expiration_date?: string | null;
 }
 
 /** Response shape from `GET /api/v1/models`. */
@@ -109,6 +119,7 @@ export class OpenRouterDiscoverer extends BaseDiscoverer {
 		const capabilities = this.inferCapabilities(model);
 		const pricing = this.parsePricing(model.pricing);
 		const originProvider = this.extractOriginProvider(model.id);
+		const lifecycle = this.inferLifecycleStatus(model.expiration_date);
 
 		return this.makeCard({
 			id: model.id,
@@ -120,6 +131,11 @@ export class OpenRouterDiscoverer extends BaseDiscoverer {
 			contextWindow: model.context_length ?? 0,
 			maxOutputTokens: model.top_provider?.max_completion_tokens ?? 0,
 			pricing,
+			// Lifecycle fields are populated only when OpenRouter signals a
+			// sunset; normal models stay undefined (treated as active by
+			// downstream consumers) so later enrichers can still upgrade them.
+			status: lifecycle.status,
+			deprecationDate: lifecycle.deprecationDate,
 		});
 	}
 
@@ -127,41 +143,68 @@ export class OpenRouterDiscoverer extends BaseDiscoverer {
 	 * Extract the canonical origin-provider slug from an OpenRouter compound
 	 * model ID of the form `{vendor}/{model-name}`.
 	 *
-	 * OpenRouter uses vendor-namespaced IDs (e.g. `anthropic/claude-opus-4-6`,
-	 * `meta-llama/llama-3-70b`).  We take the prefix before the first `/` and
-	 * normalise it to our canonical slug so that downstream consumers can group
-	 * models by original creator regardless of which gateway serves them.
+	 * Delegates to the shared normalizer (`extractOriginProvider` in
+	 * `src/normalize.ts`) so the vendor→origin mapping lives in one place
+	 * rather than being re-maintained per discoverer. OpenRouter IDs are
+	 * always vendor-namespaced; when the canonical helper doesn't recognise
+	 * the vendor we fall back to the raw prefix (e.g. `"stabilityai"`,
+	 * `"nvidia"`) rather than collapsing to the serving provider, because
+	 * the prefix still identifies the original creator.
 	 *
 	 * @param modelId - Raw OpenRouter model ID.
-	 * @returns Canonical provider slug (e.g. `"anthropic"`, `"meta"`, `"openai"`).
+	 * @returns Canonical provider slug (e.g. `"anthropic"`, `"meta"`, `"openai"`),
+	 *          or the raw vendor prefix when the creator is unknown.
 	 */
 	private extractOriginProvider(modelId: string): string {
+		const canonical = extractCanonicalOriginProvider(modelId);
+		if (canonical) return canonical;
+
 		const slashIndex = modelId.indexOf("/");
 		if (slashIndex === -1) {
 			// No vendor prefix — treat the whole ID as the slug
 			return modelId;
 		}
 
-		const prefix = modelId.slice(0, slashIndex);
+		// Unknown vendor namespace — return the raw prefix as-is so we still
+		// group by original creator instead of flattening to "openrouter".
+		return modelId.slice(0, slashIndex);
+	}
 
-		// Map well-known OpenRouter vendor prefixes to canonical slugs.
-		// Unknown prefixes fall through and are returned as-is.
-		const vendorMap: Record<string, string> = {
-			anthropic: "anthropic",
-			openai: "openai",
-			google: "google",
-			"meta-llama": "meta",
-			mistralai: "mistral",
-			cohere: "cohere",
-			deepseek: "deepseek",
-			qwen: "qwen",
+	/**
+	 * Derive lifecycle status and deprecation date from OpenRouter's
+	 * `expiration_date` signal.
+	 *
+	 * OpenRouter surfaces a single sunset signal per model: `expiration_date`
+	 * — an ISO date string (or `null`) describing when the endpoint goes away.
+	 * We map it conservatively, mirroring the convention used by the litellm
+	 * enricher's `inferStatus`:
+	 *  - date in the future → `"deprecated"` (still served, plan migration)
+	 *  - date in the past    → `"retired"` (sunset has passed)
+	 *  - `null` / absent     → no status (treated as active downstream)
+	 *
+	 * OpenRouter does not publish a successor model, so `replacedBy` is left
+	 * untouched here.
+	 *
+	 * @param expirationDate - Raw `expiration_date` from the OpenRouter payload.
+	 * @returns Partial lifecycle fields to merge into the {@link ModelCard};
+	 *          keys are omitted entirely when no signal is present.
+	 */
+	private inferLifecycleStatus(
+		expirationDate: string | null | undefined,
+	): { status?: ModelStatus; deprecationDate?: string } {
+		if (!expirationDate) return {};
+
+		const ts = Date.parse(expirationDate);
+		if (Number.isNaN(ts)) {
+			// Present but unparseable — record the raw date but leave status
+			// undefined so a downstream enricher can still upgrade it.
+			return { deprecationDate: expirationDate };
+		}
+
+		return {
+			deprecationDate: expirationDate,
+			status: ts <= Date.now() ? "retired" : "deprecated",
 		};
-
-		// `prefix` comes from the remote API model id, so guard the lookup with
-		// an own-property check before indexing: a bare `vendorMap[prefix]`
-		// would let a crafted id reach inherited members (`constructor`,
-		// `__proto__`) — the remote-property-injection class.
-		return Object.prototype.hasOwnProperty.call(vendorMap, prefix) ? vendorMap[prefix] : prefix;
 	}
 
 	/** Infer the primary {@link ModelMode} from modality and naming patterns. */

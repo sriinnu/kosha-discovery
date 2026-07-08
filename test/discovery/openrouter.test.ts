@@ -77,6 +77,30 @@ const imageModel = {
 	architecture: { modality: "image", tokenizer: "Other", instruct_type: null },
 };
 
+/** Mock model: sunsetting — future `expiration_date` should map to "deprecated". */
+const deprecatedModel = {
+	id: "openai/gpt-3.5-turbo-0613",
+	name: "OpenAI: GPT-3.5 Turbo (0613)",
+	description: "Legacy snapshot, sunsetting.",
+	pricing: { prompt: "0.0000015", completion: "0.000002" },
+	context_length: 4096,
+	top_provider: { max_completion_tokens: 4096, is_moderated: false },
+	architecture: { modality: "text->text", tokenizer: "GPT", instruct_type: null },
+	expiration_date: "2099-12-31T00:00:00.000Z",
+};
+
+/** Mock model: sunset already passed — past `expiration_date` → "retired". */
+const retiredModel = {
+	id: "openai/gpt-3.5-turbo-0301",
+	name: "OpenAI: GPT-3.5 Turbo (0301)",
+	description: "Retired snapshot.",
+	pricing: { prompt: "0.0000015", completion: "0.000002" },
+	context_length: 4096,
+	top_provider: { max_completion_tokens: 4096, is_moderated: false },
+	architecture: { modality: "text->text", tokenizer: "GPT", instruct_type: null },
+	expiration_date: "2020-01-01T00:00:00.000Z",
+};
+
 const mockModelsResponse = {
 	data: [gpt4o, claudeSonnet, embedding, delistedModel, imageModel],
 };
@@ -291,5 +315,127 @@ describe("OpenRouterDiscoverer", () => {
 		mockFetchTimeout();
 
 		await expect(discoverer.discover(noCredential, { timeout: 50 })).rejects.toThrow("timed out");
+	});
+
+	describe("lifecycle (deprecation signals)", () => {
+		it("should mark a model with a future expiration_date as deprecated", async () => {
+			mockFetch({
+				[API_URL]: { status: 200, body: { data: [deprecatedModel] } },
+			});
+
+			const cards = await discoverer.discover(noCredential);
+			const card = cards[0];
+
+			expect(card.status).toBe("deprecated");
+			expect(card.deprecationDate).toBe("2099-12-31T00:00:00.000Z");
+			// OpenRouter publishes no successor — replacedBy must stay unset.
+			expect(card.replacedBy).toBeUndefined();
+		});
+
+		it("should mark a model whose expiration_date has passed as retired", async () => {
+			mockFetch({
+				[API_URL]: { status: 200, body: { data: [retiredModel] } },
+			});
+
+			const cards = await discoverer.discover(noCredential);
+			const card = cards[0];
+
+			expect(card.status).toBe("retired");
+			expect(card.deprecationDate).toBe("2020-01-01T00:00:00.000Z");
+		});
+
+		it("should leave normal models active (no expiration_date)", async () => {
+			mockFetch({ [API_URL]: { status: 200, body: { data: [gpt4o, claudeSonnet] } } });
+
+			const cards = await discoverer.discover(noCredential);
+
+			for (const card of cards) {
+				// status undefined === active for downstream consumers; a null
+				// expiration_date must not invent a deprecationDate either.
+				expect(card.status).toBeUndefined();
+				expect(card.deprecationDate).toBeUndefined();
+				expect(card.replacedBy).toBeUndefined();
+			}
+		});
+
+		it("should not invent a deprecationDate when expiration_date is null", async () => {
+			const explicitlyNull = { ...claudeSonnet, expiration_date: null };
+			mockFetch({
+				[API_URL]: { status: 200, body: { data: [explicitlyNull] } },
+			});
+
+			const cards = await discoverer.discover(noCredential);
+			expect(cards[0].status).toBeUndefined();
+			expect(cards[0].deprecationDate).toBeUndefined();
+		});
+	});
+
+	describe("originProvider via canonical normalizer", () => {
+		it("should derive originProvider from the canonical prefix map", async () => {
+			const models = [
+				{ ...claudeSonnet, id: "anthropic/claude-sonnet-4-6" },
+				{ ...claudeSonnet, id: "openai/gpt-4o" },
+				{ ...claudeSonnet, id: "google/gemini-2.5-pro" },
+				{ ...claudeSonnet, id: "meta-llama/llama-3.3-70b-instruct" },
+				{ ...claudeSonnet, id: "mistralai/mistral-large" },
+				{ ...claudeSonnet, id: "deepseek/deepseek-v2" },
+				{ ...claudeSonnet, id: "qwen/qwen-2.5-72b" },
+				{ ...claudeSonnet, id: "cohere/command-r-plus" },
+			];
+
+			mockFetch({
+				[API_URL]: { status: 200, body: { data: models } },
+			});
+
+			const cards = await discoverer.discover(noCredential);
+			const byId = new Map(cards.map((c) => [c.id, c.originProvider]));
+
+			expect(byId.get("anthropic/claude-sonnet-4-6")).toBe("anthropic");
+			expect(byId.get("openai/gpt-4o")).toBe("openai");
+			expect(byId.get("google/gemini-2.5-pro")).toBe("google");
+			// meta-llama → canonical slug "meta" (proves the local map is gone)
+			expect(byId.get("meta-llama/llama-3.3-70b-instruct")).toBe("meta");
+			expect(byId.get("mistralai/mistral-large")).toBe("mistral");
+			expect(byId.get("deepseek/deepseek-v2")).toBe("deepseek");
+			expect(byId.get("qwen/qwen-2.5-72b")).toBe("qwen");
+			expect(byId.get("cohere/command-r-plus")).toBe("cohere");
+		});
+
+		it("should fall back to the raw vendor prefix for unknown namespaces", async () => {
+			const models = [
+				// Neither the `stabilityai` prefix nor the `sdxl` bare name are
+				// known to the canonical normalizer → raw prefix must survive.
+				{ ...claudeSonnet, id: "stabilityai/sdxl" },
+				// Same for `microsoft` / `phi-3` — no prefix or pattern match.
+				{ ...claudeSonnet, id: "microsoft/phi-3-mini" },
+			];
+
+			mockFetch({
+				[API_URL]: { status: 200, body: { data: models } },
+			});
+
+			const cards = await discoverer.discover(noCredential);
+			const byId = new Map(cards.map((c) => [c.id, c.originProvider]));
+
+			// Unknown vendors keep their raw prefix rather than collapsing to
+			// the serving provider ("openrouter").
+			expect(byId.get("stabilityai/sdxl")).toBe("stabilityai");
+			expect(byId.get("microsoft/phi-3-mini")).toBe("microsoft");
+		});
+
+		it("should resolve origin via canonical bare-name patterns (not just prefixes)", async () => {
+			// Routing through the canonical normalizer improves on the old local
+			// map: `nvidia` is not a known prefix, but the canonical helper's
+			// bare-name pattern `/^llama/i` correctly attributes the model to
+			// its true creator (meta) instead of the hosting vendor.
+			const models = [{ ...claudeSonnet, id: "nvidia/llama-3.1-nemotron-70b-instruct" }];
+
+			mockFetch({
+				[API_URL]: { status: 200, body: { data: models } },
+			});
+
+			const cards = await discoverer.discover(noCredential);
+			expect(cards[0].originProvider).toBe("meta");
+		});
 	});
 });
