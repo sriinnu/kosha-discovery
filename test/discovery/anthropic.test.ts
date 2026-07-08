@@ -24,6 +24,18 @@ const mockModelsResponse = {
 			type: "model",
 		},
 		{
+			id: "claude-opus-4-6",
+			display_name: "Claude Opus 4.6",
+			created_at: "2025-09-18T00:00:00Z",
+			type: "model",
+		},
+		{
+			id: "claude-haiku-4-5-20251001",
+			display_name: "Claude Haiku 4.5",
+			created_at: "2025-10-01T00:00:00Z",
+			type: "model",
+		},
+		{
 			id: "claude-3-5-haiku-20241022",
 			display_name: "Claude 3.5 Haiku",
 			created_at: "2024-10-22T00:00:00Z",
@@ -98,9 +110,9 @@ describe("AnthropicDiscoverer", () => {
 
 		const cards = await discoverer.discover(validCredential);
 
-		expect(cards).toHaveLength(3);
+		expect(cards).toHaveLength(5);
 
-		// Claude Sonnet 4 — modern model with vision
+		// Claude Sonnet 4 — modern family-first model with vision
 		const sonnet = cards.find((c) => c.id === "claude-sonnet-4-20250514");
 		expect(sonnet).toBeDefined();
 		expect(sonnet!.name).toBe("Claude Sonnet 4");
@@ -109,9 +121,20 @@ describe("AnthropicDiscoverer", () => {
 		expect(sonnet!.capabilities).toContain("chat");
 		expect(sonnet!.capabilities).toContain("code");
 		expect(sonnet!.capabilities).toContain("function_calling");
+		expect(sonnet!.capabilities).toContain("vision");
 		expect(sonnet!.source).toBe("api");
 
-		// Claude 3.5 Haiku — has vision
+		// Claude Opus 4.6 — family-first ID, must carry vision
+		const opus = cards.find((c) => c.id === "claude-opus-4-6");
+		expect(opus).toBeDefined();
+		expect(opus!.capabilities).toContain("vision");
+
+		// Claude Haiku 4.5 — family-first ID with date suffix, must carry vision
+		const haiku4 = cards.find((c) => c.id === "claude-haiku-4-5-20251001");
+		expect(haiku4).toBeDefined();
+		expect(haiku4!.capabilities).toContain("vision");
+
+		// Claude 3.5 Haiku — legacy version-first 3.x still matches
 		const haiku = cards.find((c) => c.id === "claude-3-5-haiku-20241022");
 		expect(haiku).toBeDefined();
 		expect(haiku!.name).toBe("Claude 3.5 Haiku");

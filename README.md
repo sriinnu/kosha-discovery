@@ -108,7 +108,7 @@ const routed = await client.chat.completions.create({
 
 The response always includes `x-kosha-model`, `x-kosha-provider`, and `x-kosha-requested` headers so the caller knows exactly what ran.
 
-Supported transports: `openai`, `openai-compatible-http`, `ollama`. Anthropic, Google, Bedrock, and Vertex require wire-format translation — not yet proxied.
+Supported transports: `openai`, `openai-compatible-http`, `ollama`, and `anthropic`. Anthropic is bridged through a built-in OpenAI ↔ Anthropic wire-format translator (non-streaming, text-only for now — streaming and tool-call requests fall back to a native OpenAI-compatible route). Google, Bedrock, and Vertex speak SDK-specific wire formats and are not yet proxied.
 
 ## Supported providers
 
@@ -145,6 +145,7 @@ Discovery layer talks to provider APIs and local catalogs. Enrichment layer fill
 | [Configuration](docs/configuration.md) | Aliases, routing, enrichment, programmatic config |
 | [Architecture](docs/architecture.md) | Discovery flow, module map, adding providers |
 | [Resilience](docs/resilience.md) | Circuit breakers, stale cache, health |
+| [Operations](docs/operations.md) | Deployment sizing, metrics, spend ledger, recovery recipes |
 | [Security](docs/security.md) | Threat catalogue, runtime scanning, pre-commit hook |
 | [Discovery Plane v1](docs/discovery-plane-v1.md) | Stable daemon contract (deltas, SSE watch, binding hints) |
 

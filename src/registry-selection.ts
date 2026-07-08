@@ -159,6 +159,11 @@ function modelMatchesDiscoveryQuery(
 	descriptor: ReturnType<typeof registryProviderDescriptor>,
 	query: DiscoveryBindingQuery,
 ): boolean {
+	// Retired models are no longer served — exclude them from the routable
+	// candidate pool entirely so cheapest/binding projections never suggest a
+	// dead route. Deprecated models stay selectable (consumers may surface a
+	// migration warning) and are only demoted at the routing-rank layer.
+	if (model.status === "retired") return false;
 	const capabilities = trustedCapabilitiesForModel(model, descriptor);
 	// I only trust normalized capabilities here so free-form discoverer tags do not leak into route semantics.
 	const capability = normalizeTrustedCapabilityToken(query.capability);

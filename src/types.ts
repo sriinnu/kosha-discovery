@@ -209,6 +209,18 @@ export type StructuredOutputMode =
 export type ModelStatus = "active" | "preview" | "deprecated" | "retired";
 
 /**
+ * Provenance of a model's pricing block, used to signal how trustworthy or
+ * fresh the rates are.
+ *
+ * - `provider-live` — priced by the serving provider's live API response.
+ * - `litellm` — filled by the LiteLLM community-catalogue enrichment pass.
+ * - `static-seed` — came from a keyless static seed (models.dev / litellm
+ *   seed) or a hand-curated (`manual`) entry.
+ * - `missing` — a routable model that ended up with no usable pricing.
+ */
+export type PricingSource = "provider-live" | "litellm" | "static-seed" | "missing";
+
+/**
  * Local-runtime metadata surfaced for first-class local providers.
  *
  * Values are optional because local runtimes vary widely in what they expose.
@@ -334,6 +346,16 @@ export interface ModelCard {
 	 * Defaults to `"active"` when unspecified.
 	 */
 	status?: ModelStatus;
+	/**
+	 * Provenance of the {@link pricing} block, when attributable.
+	 *
+	 * Set during the enrich/merge pass: `"provider-live"` when the serving
+	 * API returned rates, `"static-seed"` for keyless seed/manual entries,
+	 * `"litellm"` when the community-catalogue enrichment filled it, and
+	 * `"missing"` for a routable model that ended up unpriced. Consumers use
+	 * this to decide how much to trust a quoted rate.
+	 */
+	pricingSource?: PricingSource;
 	/**
 	 * ISO-8601 deprecation date (e.g. `"2026-06-03"`).
 	 *

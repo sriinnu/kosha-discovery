@@ -138,14 +138,25 @@ export class AnthropicDiscoverer extends BaseDiscoverer {
 	/**
 	 * Check whether a model ID indicates vision (multimodal) support.
 	 *
+	 * Every namespaced Claude family (opus/sonnet/haiku) has been multimodal
+	 * since Claude 3, so family-first IDs (e.g. `claude-opus-4-6`,
+	 * `claude-sonnet-4-5-20250929`, `claude-haiku-4-5-20251001`) are matched
+	 * directly. Legacy version-first IDs (`claude-3`, `claude-3-5-haiku`,
+	 * `claude-4-6`) are covered by the major-version pattern.
+	 *
 	 * @param id - Lowercased model ID.
-	 * @returns `true` for Claude 3, 3.5, 4, 4.5, 4.6, etc.
+	 * @returns `true` for Claude 3+ and all opus/sonnet/haiku family models.
 	 */
 	private hasVisionSupport(id: string): boolean {
-		// Matches "claude-3", "claude-4", "claude-4-6", etc.
-		// The regex captures a major version >= 3, covering all current and future multimodal Claude models.
-		const visionPattern = /claude-([3-9]|[1-9]\d)/;
-		return visionPattern.test(id);
+		// Family-first naming (Claude 4+): the family name follows "claude-"
+		// directly (e.g. claude-opus-4-6, claude-sonnet-4-5-20250929). None of
+		// these carry a legacy major-version token, so the pattern below would
+		// miss them without this check.
+		if (/^claude-(opus|sonnet|haiku)/.test(id)) return true;
+		// Legacy version-first naming: claude-3, claude-3-5-haiku, claude-4-6.
+		// Captures a major version >= 3, covering all current and future
+		// multimodal Claude models that still use the version-first shape.
+		return /claude-([3-9]|[1-9]\d)/.test(id);
 	}
 
 	/**

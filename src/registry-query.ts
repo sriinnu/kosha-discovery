@@ -233,7 +233,7 @@ export function registryCheapestModels(state: RegistryState, options?: CheapestM
 		provider: options?.provider,
 		originProvider: options?.originProvider,
 		mode: options?.mode,
-	}).filter((model) => (!capability || modelSupportsRole(model, capability)) && (!options?.role || modelSupportsRole(model, options.role)));
+	}).filter((model) => model.status !== "retired" && (!capability || modelSupportsRole(model, capability)) && (!options?.role || modelSupportsRole(model, options.role)));
 	const priceMetric = options?.priceMetric ?? defaultPricingMetric(options);
 	const ranked: CheapestModelMatch[] = [];
 	const unpriced: CheapestModelMatch[] = [];

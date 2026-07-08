@@ -2,7 +2,7 @@
  * Cost primitives (estimate + ledger + budget gate) and proxy wiring.
  */
 
-import { mkdtemp, readFile, rm, writeFile } from "fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -11,6 +11,7 @@ import {
 	estimateRequestCost,
 	readMonthlyBudgetUsd,
 	readSpendForMonth,
+	trimLedgerPartitions,
 } from "../src/cost.js";
 import type { ModelCard } from "../src/types.js";
 
@@ -67,10 +68,11 @@ describe("ledger", () => {
 		await rm(dir, { recursive: true, force: true });
 	});
 
-	it("creates the ledger on first append and reads back the row", async () => {
+	it("writes the entry to the current month's partition, not the legacy file", async () => {
+		const now = Date.now();
 		await appendLedgerEntry(
 			{
-				ts: Date.now(),
+				ts: now,
 				provider: "openai",
 				modelId: "gpt-4o-mini",
 				requested: "gpt-4o-mini",
@@ -82,10 +84,13 @@ describe("ledger", () => {
 			},
 			path,
 		);
-		const raw = await readFile(path, "utf-8");
+		// The row lands in ledger-YYYY-MM.jsonl, a sibling of the legacy path.
+		const raw = await readFile(partitionFile(dir, now), "utf-8");
 		const row = JSON.parse(raw.trim());
 		expect(row.modelId).toBe("gpt-4o-mini");
 		expect(row.estimatedUsd).toBeCloseTo(0.05);
+		// The legacy append-only file is NOT written by new appends.
+		await expect(readFile(path, "utf-8")).rejects.toThrow();
 	});
 
 	it("sums spend within the current calendar month, ignoring rows outside it", async () => {
@@ -108,6 +113,147 @@ describe("ledger", () => {
 	it("survives a corrupt line without crashing the rollup", async () => {
 		await writeFile(path, '{"not":"valid"\nBLOB\n', "utf-8"); // truncated JSON + garbage line
 		expect(await readSpendForMonth(Date.now(), null, path)).toBe(0);
+	});
+});
+
+describe("ledger partitioning", () => {
+	let dir: string;
+	let path: string;
+	beforeEach(async () => {
+		dir = await mkdtemp(join(tmpdir(), "kosha-part-"));
+		path = join(dir, "ledger.jsonl");
+	});
+	afterEach(async () => {
+		await rm(dir, { recursive: true, force: true });
+	});
+
+	it("readSpendForMonth reads only the queried month's partition", async () => {
+		// Hand-write two partition files: one for "now", one for last month.
+		// Each carries an entry in its own month with a different tenant so we
+		// can tell them apart. readSpendForMonth(now) must only see "now".
+		const now = Date.now();
+		const lastMonth = new Date(new Date(now).setMonth(new Date(now).getMonth() - 1)).getTime();
+		await writeFile(
+			partitionFile(dir, now),
+			`${JSON.stringify(makeEntry(now, "cur", 2))}\n`,
+			"utf-8",
+		);
+		await writeFile(
+			partitionFile(dir, lastMonth),
+			`${JSON.stringify(makeEntry(lastMonth, "cur", 40))}\n`,
+			"utf-8",
+		);
+
+		// Querying "now" must not scan last month's partition.
+		expect(await readSpendForMonth(now, "cur", path)).toBeCloseTo(2);
+		// And querying last month must not scan this month's partition.
+		expect(await readSpendForMonth(lastMonth, "cur", path)).toBeCloseTo(40);
+	});
+
+	it("counts legacy ledger.jsonl entries for backward compat", async () => {
+		// Simulate a pre-partitioning install: history lives in ledger.jsonl.
+		const now = Date.now();
+		await writeFile(path, `${JSON.stringify(makeEntry(now, "legacy", 3))}\n`, "utf-8");
+		expect(await readSpendForMonth(now, "legacy", path)).toBeCloseTo(3);
+	});
+
+	it("sums the month partition and the legacy file together", async () => {
+		// Same month present in BOTH the partition (new appends) and the legacy
+		// file (leftover history). Both must count — no double-counting risk
+		// because they're physically different files.
+		const now = Date.now();
+		await writeFile(partitionFile(dir, now), `${JSON.stringify(makeEntry(now, "t", 1))}\n`, "utf-8");
+		await writeFile(path, `${JSON.stringify(makeEntry(now, "t", 2))}\n`, "utf-8");
+		expect(await readSpendForMonth(now, "t", path)).toBeCloseTo(3);
+	});
+
+	it("ignores legacy entries that fall outside the queried month", async () => {
+		const now = Date.now();
+		const old = new Date(new Date(now).setMonth(new Date(now).getMonth() - 3)).getTime();
+		// Legacy file holds only an old-month entry.
+		await writeFile(path, `${JSON.stringify(makeEntry(old, "t", 7))}\n`, "utf-8");
+		expect(await readSpendForMonth(now, "t", path)).toBeCloseTo(0);
+	});
+});
+
+describe("ledger retention", () => {
+	let dir: string;
+	let path: string;
+	const priorEnv = process.env.KOSHA_LEDGER_RETENTION_MONTHS;
+
+	beforeEach(async () => {
+		dir = await mkdtemp(join(tmpdir(), "kosha-trim-"));
+		path = join(dir, "ledger.jsonl");
+	});
+	afterEach(async () => {
+		await rm(dir, { recursive: true, force: true });
+		if (priorEnv === undefined) delete process.env.KOSHA_LEDGER_RETENTION_MONTHS;
+		else process.env.KOSHA_LEDGER_RETENTION_MONTHS = priorEnv;
+	});
+
+	it("trimLedgerPartitions drops partitions older than the window, keeps the rest", async () => {
+		// Pin "now" to 2026-07 so the window is deterministic regardless of the
+		// real wall clock. With retention = 12 we keep [2025-08 .. 2026-07].
+		const now = Date.UTC(2026, 6, 15); // 2026-07-15
+		const keepMonth = Date.UTC(2026, 5, 1); // 2026-06 — inside the window
+		const dropMonth = Date.UTC(2024, 0, 1); // 2024-01 — outside the window
+		await writeFile(partitionFile(dir, keepMonth), `${JSON.stringify(makeEntry(keepMonth, "t", 1))}\n`, "utf-8");
+		await writeFile(partitionFile(dir, dropMonth), `${JSON.stringify(makeEntry(dropMonth, "t", 1))}\n`, "utf-8");
+
+		const removed = await trimLedgerPartitions(path, now, 12);
+		expect(removed).toBe(1);
+
+		const remaining = await readdir(dir);
+		expect(remaining).toContain(partitionName(keepMonth));
+		expect(remaining).not.toContain(partitionName(dropMonth));
+	});
+
+	it("never touches the legacy ledger.jsonl during trim", async () => {
+		const now = Date.UTC(2026, 6, 15);
+		// Legacy file with an old entry — must survive trim even though its
+		// entry is ancient. Only ledger-YYYY-MM.jsonl siblings are eligible.
+		await writeFile(path, `${JSON.stringify(makeEntry(Date.UTC(2020, 0, 1), "t", 1))}\n`, "utf-8");
+		await trimLedgerPartitions(path, now, 1);
+		const remaining = await readdir(dir);
+		expect(remaining).toContain("ledger.jsonl");
+	});
+
+	it("append opportunistically trims using KOSHA_LEDGER_RETENTION_MONTHS", async () => {
+		// Tight window so we can force a drop with synthetic timestamps.
+		process.env.KOSHA_LEDGER_RETENTION_MONTHS = "2";
+		const now = Date.UTC(2026, 6, 15); // current month 2026-07, keep [2026-06..2026-07]
+		const keepMonth = Date.UTC(2026, 5, 10); // 2026-06 — kept
+		const dropMonth = Date.UTC(2024, 0, 10); // 2024-01 — dropped
+		await writeFile(partitionFile(dir, keepMonth), `${JSON.stringify(makeEntry(keepMonth, "t", 1))}\n`, "utf-8");
+		await writeFile(partitionFile(dir, dropMonth), `${JSON.stringify(makeEntry(dropMonth, "t", 1))}\n`, "utf-8");
+
+		// Appending a current-month entry triggers the opportunistic sweep.
+		await appendLedgerEntry(makeEntry(now, "t", 0.1), path);
+
+		const remaining = await readdir(dir);
+		expect(remaining).toContain(partitionName(keepMonth));
+		expect(remaining).toContain(partitionName(now));
+		expect(remaining).not.toContain(partitionName(dropMonth));
+
+		// And the just-written partition is readable through the public API.
+		expect(await readSpendForMonth(now, "t", path)).toBeCloseTo(0.1);
+	});
+
+	it("retention default (unset env) keeps a 12-month window", async () => {
+		delete process.env.KOSHA_LEDGER_RETENTION_MONTHS;
+		const now = Date.UTC(2026, 6, 15); // current month 2026-07
+		// Default 12-month window keeps [2025-08 .. 2026-07].
+		const oldestKept = Date.UTC(2025, 7, 1); // 2025-08 — 11 months back
+		const firstDropped = Date.UTC(2025, 6, 1); // 2025-07 — exactly 12 months back
+		await writeFile(partitionFile(dir, oldestKept), `${JSON.stringify(makeEntry(oldestKept, "t", 1))}\n`, "utf-8");
+		await writeFile(partitionFile(dir, firstDropped), `${JSON.stringify(makeEntry(firstDropped, "t", 1))}\n`, "utf-8");
+
+		const removed = await trimLedgerPartitions(path, now);
+		expect(removed).toBe(1);
+
+		const remaining = await readdir(dir);
+		expect(remaining).toContain(partitionName(oldestKept));
+		expect(remaining).not.toContain(partitionName(firstDropped));
 	});
 });
 
@@ -146,4 +292,16 @@ function makeEntry(ts: number, tenant: string | null, usd: number) {
 		estimatedOutputTokens: 10,
 		upstreamStatus: 200,
 	};
+}
+
+/** ledger-YYYY-MM.jsonl name for the UTC month containing ts — mirrors the
+ *  production naming so tests independently assert the on-disk contract. */
+function partitionName(ts: number): string {
+	const d = new Date(ts);
+	const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+	return `ledger-${d.getUTCFullYear()}-${mm}.jsonl`;
+}
+
+function partitionFile(dir: string, ts: number): string {
+	return join(dir, partitionName(ts));
 }
