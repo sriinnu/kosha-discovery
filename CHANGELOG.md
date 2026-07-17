@@ -11,6 +11,32 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Tally export** (`src/tally.ts`) exposed via `src/index.ts` and
+  `package.json` conditional export `"./tally"`. Pure, zero-dependency
+  token-usage normalization + USD cost aggregation for browser/edge
+  consumers.
+- **Moonshot aliases** — `kimi` and `kimi-k3` resolve to `kimi-k3`.
+
+### Changed
+
+- **Updated default Anthropic aliases** (`src/aliases.ts`) to current model IDs:
+  - `opus` / `opus-4` / `opus-4.8` → `claude-opus-4-8`
+  - `sonnet` / `sonnet-5` → `claude-sonnet-5`
+  - `fable` / `fable-5` → `claude-fable-5`
+  - `sonnet-4` preserved as a backward-compat alias for `claude-sonnet-4-6`.
+- **Updated Anthropic static fallback catalog** (`src/discovery/static-direct.ts`)
+  to include `claude-opus-4-8`, `claude-sonnet-5`, `claude-fable-5`, while
+  keeping `claude-sonnet-4-6` for the legacy `sonnet-4` alias.
+
+### Fixed
+
+- `normalizeTokenUsage()` no longer rejects cache-write-only or
+  reasoning-only usage records when input and output tokens are both zero.
+
 ## [1.3.0] — 2026-06-25
 
 A broad release that hardens the proxy/runtime, expands routing intelligence,

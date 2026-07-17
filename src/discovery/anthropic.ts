@@ -139,8 +139,8 @@ export class AnthropicDiscoverer extends BaseDiscoverer {
 	 * Check whether a model ID indicates vision (multimodal) support.
 	 *
 	 * Every namespaced Claude family (opus/sonnet/haiku) has been multimodal
-	 * since Claude 3, so family-first IDs (e.g. `claude-opus-4-6`,
-	 * `claude-sonnet-4-5-20250929`, `claude-haiku-4-5-20251001`) are matched
+	 * since Claude 3, so family-first IDs (e.g. `claude-opus-4-8`,
+	 * `claude-sonnet-5`, `claude-haiku-4-5-20251001`) are matched
 	 * directly. Legacy version-first IDs (`claude-3`, `claude-3-5-haiku`,
 	 * `claude-4-6`) are covered by the major-version pattern.
 	 *
@@ -149,7 +149,7 @@ export class AnthropicDiscoverer extends BaseDiscoverer {
 	 */
 	private hasVisionSupport(id: string): boolean {
 		// Family-first naming (Claude 4+): the family name follows "claude-"
-		// directly (e.g. claude-opus-4-6, claude-sonnet-4-5-20250929). None of
+		// directly (e.g. claude-opus-4-8, claude-sonnet-5). None of
 		// these carry a legacy major-version token, so the pattern below would
 		// miss them without this check.
 		if (/^claude-(opus|sonnet|haiku)/.test(id)) return true;

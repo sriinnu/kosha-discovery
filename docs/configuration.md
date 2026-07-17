@@ -12,7 +12,7 @@ const registry = new ModelRegistry({
     openrouter: { enabled: false },
   },
   aliases: {
-    "my-model": "claude-sonnet-4-20250514",
+    "my-model": "claude-sonnet-5",
   },
 });
 ```
@@ -21,19 +21,25 @@ const registry = new ModelRegistry({
 
 Built-in aliases for common models:
 
-| Alias | Resolves To |
-|-------|-------------|
-| `sonnet` | `claude-sonnet-4-6` |
-| `opus` | `claude-opus-4-6` |
-| `haiku` | `claude-haiku-4-5-20251001` |
-| `gpt4o` | `gpt-4o` |
-| `o3` | `o3` |
-| `gemini-pro` | `gemini-2.5-pro-preview-05-06` |
-| `nemotron-ultra` | `nvidia/llama-3.1-nemotron-ultra-253b-v1` |
-| `mistral-large` | `mistral-large-latest` |
-| `groq-llama` | `llama-3.3-70b-versatile` |
-| `embed-small` | `text-embedding-3-small` |
-| `nomic` | `nomic-embed-text` |
+| Alias | Resolves To | Notes |
+|-------|-------------|-------|
+| `fable` | `claude-fable-5` | Latest Anthropic Fable |
+| `sonnet` | `claude-sonnet-5` | Latest Anthropic Sonnet |
+| `sonnet-5` | `claude-sonnet-5` | Sonnet 5 family |
+| `sonnet-4` | `claude-sonnet-4-6` | Legacy Sonnet 4 family |
+| `opus` | `claude-opus-4-8` | Latest Anthropic Opus |
+| `opus-4` | `claude-opus-4-8` | Opus 4 family |
+| `opus-4.8` | `claude-opus-4-8` | Specific Opus 4.8 |
+| `haiku` | `claude-haiku-4-5-20251001` | Latest Anthropic Haiku |
+| `kimi` | `kimi-k3` | Latest Moonshot Kimi |
+| `gpt4o` | `gpt-4o` | OpenAI GPT-4o |
+| `o3` | `o3` | OpenAI reasoning |
+| `gemini-pro` | `gemini-2.5-pro-preview-05-06` | Google Gemini 2.5 Pro |
+| `nemotron-ultra` | `nvidia/llama-3.1-nemotron-ultra-253b-v1` | NVIDIA Nemotron |
+| `mistral-large` | `mistral-large-latest` | Mistral Large |
+| `groq-llama` | `llama-3.3-70b-versatile` | Groq-hosted Llama |
+| `embed-small` | `text-embedding-3-small` | OpenAI embedding |
+| `nomic` | `nomic-embed-text` | Nomic embedding |
 
 Custom aliases:
 

@@ -123,7 +123,7 @@ curl http://localhost:3000/api/models/sonnet
 
 ```json
 {
-  "id": "claude-sonnet-4-20250514",
+  "id": "claude-sonnet-5",
   "provider": "anthropic",
   "originProvider": "anthropic",
   "baseUrl": "https://api.anthropic.com",
@@ -227,7 +227,7 @@ curl http://localhost:3000/api/resolve/sonnet
 ```json
 {
   "alias": "sonnet",
-  "resolved": "claude-sonnet-4-20250514",
+  "resolved": "claude-sonnet-5",
   "isAlias": true
 }
 ```

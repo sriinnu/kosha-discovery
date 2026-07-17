@@ -128,7 +128,7 @@ See [configuration.md](./configuration.md) for the full config surface.
 Provider     Model                              Mode       Context    $/M in   $/M out
 ──────────── ────────────────────────────────── ────────── ────────── ──────── ────────
 anthropic    claude-opus-4-20250918             chat       200K       $15.00   $75.00
-anthropic    claude-sonnet-4-20250514           chat       200K       $3.00    $15.00
+anthropic    claude-sonnet-5           chat       200K       $3.00    $15.00
 anthropic    claude-haiku-4-5-20251001          chat       200K       $0.80    $4.00
 openai       gpt-4o                             chat       128K       $2.50    $10.00
 openai       text-embedding-3-small             embedding  8K         $0.02    —
@@ -141,7 +141,7 @@ ollama       qwen3:8b                           chat       —          free    
 ### `kosha model sonnet`
 
 ```
-Model: claude-sonnet-4-20250514
+Model: claude-sonnet-5
 Provider: Anthropic
 Mode: chat
 Aliases: sonnet, sonnet-4
@@ -211,7 +211,7 @@ audio                     2
 ```
 Provider     Model                              Mode       Context    $/M in   $/M out
 ──────────── ────────────────────────────────── ────────── ────────── ──────── ────────
-anthropic    claude-sonnet-4-20250514           chat       200K       $3.00    $15.00
+anthropic    claude-sonnet-5           chat       200K       $3.00    $15.00
 openai       gpt-4o                             chat       128K       $2.50    $10.00
 google       gemini-2.5-pro-preview-05-06       chat       1M         $1.25    $10.00
 ```

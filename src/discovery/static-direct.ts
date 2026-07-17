@@ -80,14 +80,26 @@ export const STATIC_OPENAI_MODELS: readonly StaticModelSeed[] = [
 /** Curated Anthropic models for unauthenticated/offline discovery mode. */
 export const STATIC_ANTHROPIC_MODELS: readonly StaticModelSeed[] = [
 	{
-		id: "claude-opus-4-6",
-		name: "Claude Opus 4.6",
+		id: "claude-opus-4-8",
+		name: "Claude Opus 4.8",
+		mode: "chat",
+		capabilities: ["chat", "vision", "function_calling", "code", "nlu"],
+	},
+	{
+		id: "claude-sonnet-5",
+		name: "Claude Sonnet 5",
 		mode: "chat",
 		capabilities: ["chat", "vision", "function_calling", "code", "nlu"],
 	},
 	{
 		id: "claude-sonnet-4-6",
 		name: "Claude Sonnet 4.6",
+		mode: "chat",
+		capabilities: ["chat", "vision", "function_calling", "code", "nlu"],
+	},
+	{
+		id: "claude-fable-5",
+		name: "Claude Fable 5",
 		mode: "chat",
 		capabilities: ["chat", "vision", "function_calling", "code", "nlu"],
 	},

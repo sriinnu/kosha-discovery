@@ -57,6 +57,10 @@
 		"./mcp-server": {
 			"types": "./dist/mcp-server.d.ts",
 			"import": "./dist/mcp-server.js"
+		},
+		"./tally": {
+			"types": "./dist/tally.d.ts",
+			"import": "./dist/tally.js"
 		}
 	},
 	"scripts": {

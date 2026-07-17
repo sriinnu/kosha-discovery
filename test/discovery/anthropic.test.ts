@@ -95,7 +95,9 @@ describe("AnthropicDiscoverer", () => {
 		mockFetchError(new Error("network unreachable"));
 		const result = await discoverer.discover(noCredential);
 		expect(result.length).toBeGreaterThan(0);
-		expect(result.some((m) => m.id === "claude-sonnet-4-6")).toBe(true);
+		expect(result.some((m) => m.id === "claude-sonnet-5")).toBe(true);
+		expect(result.some((m) => m.id === "claude-opus-4-8")).toBe(true);
+		expect(result.some((m) => m.id === "claude-fable-5")).toBe(true);
 		expect(result.every((m) => m.provider === "anthropic")).toBe(true);
 		expect(result.every((m) => m.source === "manual")).toBe(true);
 	});

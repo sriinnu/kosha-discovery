@@ -96,7 +96,7 @@ ${c(BOLD, "EXAMPLES")}
   ${c(DIM, "$")} kosha capable vision
   ${c(DIM, "$")} kosha capable embeddings --limit 5
   ${c(DIM, "$")} kosha cheapest --role image --limit 3
-  ${c(DIM, "$")} kosha routes claude-opus-4-6
+  ${c(DIM, "$")} kosha routes claude-opus-4-8
   ${c(DIM, "$")} kosha routes gpt-4o --json
   ${c(DIM, "$")} kosha providers
   ${c(DIM, "$")} kosha latest

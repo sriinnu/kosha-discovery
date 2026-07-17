@@ -255,7 +255,7 @@ export interface LocalRuntimeMetadata {
  * model creator (e.g. "anthropic", "openai", "google").
  */
 export interface ModelCard {
-	/** Provider's canonical model ID (e.g. "claude-opus-4-6"). */
+	/** Provider's canonical model ID (e.g. "claude-opus-4-8"). */
 	id: string;
 	/** Human-readable display name (e.g. "Claude Opus 4"). */
 	name: string;
