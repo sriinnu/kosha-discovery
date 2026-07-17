@@ -10,13 +10,17 @@
  * Curated default aliases mapping short names to canonical model IDs.
  *
  * These are production-ready and cover the most commonly referenced
- * models across major providers. Updated February 2026.
+ * models across major providers. Updated July 2026.
  */
 export const DEFAULT_ALIASES: Readonly<Record<string, string>> = {
-	// ── Anthropic — Claude 4.6 family (latest as of Feb 2026) ──
-	"opus": "claude-opus-4-6",
-	"opus-4": "claude-opus-4-6",
-	"sonnet": "claude-sonnet-4-6",
+	// ── Anthropic — Claude 5 family + Opus 4.8 (latest as of Jul 2026) ──
+	"fable": "claude-fable-5",
+	"fable-5": "claude-fable-5",
+	"opus": "claude-opus-4-8",
+	"opus-4": "claude-opus-4-8",
+	"opus-4.8": "claude-opus-4-8",
+	"sonnet": "claude-sonnet-5",
+	"sonnet-5": "claude-sonnet-5",
 	"sonnet-4": "claude-sonnet-4-6",
 	"haiku": "claude-haiku-4-5-20251001",
 	"haiku-4.5": "claude-haiku-4-5-20251001",
@@ -33,6 +37,10 @@ export const DEFAULT_ALIASES: Readonly<Record<string, string>> = {
 	"gemini-pro": "gemini-2.5-pro-preview-05-06",
 	"gemini-flash": "gemini-2.5-flash-preview-04-17",
 	"gemini-flash-lite": "gemini-2.0-flash-lite",
+
+	// ── Moonshot — Kimi family ──
+	"kimi": "kimi-k3",
+	"kimi-k3": "kimi-k3",
 
 	// ── Local — latest popular open-weight models for Ollama ──
 	"qwen": "qwen3:8b",

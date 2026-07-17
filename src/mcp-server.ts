@@ -87,7 +87,7 @@ const TOOLS = [
 			properties: {
 				model: {
 					type: "string",
-					description: "Model ID or alias (e.g. sonnet, claude-sonnet-4-6, gpt-4o, deepseek-v3)",
+					description: "Model ID or alias (e.g. sonnet, claude-sonnet-5, gpt-4o, deepseek-v3)",
 				},
 			},
 			required: ["model"],

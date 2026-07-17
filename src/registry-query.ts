@@ -266,7 +266,7 @@ export function registryCheapestModels(state: RegistryState, options?: CheapestM
  */
 export function registryModelRoutes(state: RegistryState, modelId: string): ModelCard[] {
 	// I match on the looser form so providers that format the same model
-	// with dots vs dashes (e.g. `claude-sonnet-4.6` vs `claude-sonnet-4-6`)
+	// with dots vs dashes (e.g. `claude-sonnet-5.0` vs `claude-sonnet-5`)
 	// still cluster together as a single logical model.
 	const targetNorm = matchableModelId(modelId).toLowerCase();
 	const routes = registryModels(state).filter((model) => matchableModelId(model.id).toLowerCase() === targetNorm);

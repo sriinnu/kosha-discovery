@@ -238,7 +238,7 @@ export class LiteLLMEnricher implements Enricher {
 	 * Look up a model in the litellm pricing catalogue using a tiered set of
 	 * key strategies. Later strategies use `originProvider` to handle models
 	 * whose IDs are namespaced differently by the serving layer (e.g. a Bedrock
-	 * model whose `id` is `"anthropic.claude-opus-4-6-…"` but whose
+	 * model whose `id` is `"anthropic.claude-opus-4-8-…"` but whose
 	 * `originProvider` is `"anthropic"`).
 	 *
 	 * Lookup order:
@@ -270,8 +270,8 @@ export class LiteLLMEnricher implements Enricher {
 		}
 
 		// 4. originProvider/normalizedId — strips date suffixes and provider
-		//    namespace segments so "anthropic.claude-opus-4-6-20250514-v1:0"
-		//    resolves to "anthropic/claude-opus-4-6".
+		//    namespace segments so "anthropic.claude-opus-4-8-20250514-v1:0"
+		//    resolves to "anthropic/claude-opus-4-8".
 		const normalizedId = normalizeModelId(id);
 		if (originProvider) {
 			const originNormPrefixed = `${originProvider}/${normalizedId}`;

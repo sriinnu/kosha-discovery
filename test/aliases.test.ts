@@ -6,10 +6,14 @@ describe("AliasResolver", () => {
 		const resolver = new AliasResolver();
 
 		it("resolves Anthropic aliases", () => {
-			expect(resolver.resolve("sonnet")).toBe("claude-sonnet-4-6");
+			expect(resolver.resolve("fable")).toBe("claude-fable-5");
+			expect(resolver.resolve("fable-5")).toBe("claude-fable-5");
+			expect(resolver.resolve("sonnet")).toBe("claude-sonnet-5");
+			expect(resolver.resolve("sonnet-5")).toBe("claude-sonnet-5");
 			expect(resolver.resolve("sonnet-4")).toBe("claude-sonnet-4-6");
-			expect(resolver.resolve("opus")).toBe("claude-opus-4-6");
-			expect(resolver.resolve("opus-4")).toBe("claude-opus-4-6");
+			expect(resolver.resolve("opus")).toBe("claude-opus-4-8");
+			expect(resolver.resolve("opus-4")).toBe("claude-opus-4-8");
+			expect(resolver.resolve("opus-4.8")).toBe("claude-opus-4-8");
 			expect(resolver.resolve("haiku")).toBe("claude-haiku-4-5-20251001");
 			expect(resolver.resolve("haiku-4.5")).toBe("claude-haiku-4-5-20251001");
 		});
@@ -33,6 +37,11 @@ describe("AliasResolver", () => {
 			expect(resolver.resolve("llama")).toBe("llama3.3:latest");
 			expect(resolver.resolve("codestral")).toBe("codestral:latest");
 			expect(resolver.resolve("deepseek")).toBe("deepseek-r1:latest");
+		});
+
+		it("resolves Moonshot aliases", () => {
+			expect(resolver.resolve("kimi")).toBe("kimi-k3");
+			expect(resolver.resolve("kimi-k3")).toBe("kimi-k3");
 		});
 
 		it("resolves embedding aliases", () => {
@@ -68,7 +77,7 @@ describe("AliasResolver", () => {
 			});
 			expect(resolver.resolve("my-alias")).toBe("my-model-id");
 			// Default still works
-			expect(resolver.resolve("opus")).toBe("claude-opus-4-6");
+			expect(resolver.resolve("opus")).toBe("claude-opus-4-8");
 		});
 	});
 
@@ -76,9 +85,9 @@ describe("AliasResolver", () => {
 		const resolver = new AliasResolver();
 
 		it("finds all aliases for a given model ID", () => {
-			const aliases = resolver.reverseAliases("claude-sonnet-4-6");
+			const aliases = resolver.reverseAliases("claude-sonnet-5");
 			expect(aliases).toContain("sonnet");
-			expect(aliases).toContain("sonnet-4");
+			expect(aliases).toContain("sonnet-5");
 			expect(aliases).toHaveLength(2);
 		});
 
@@ -88,9 +97,10 @@ describe("AliasResolver", () => {
 		});
 
 		it("finds aliases for models with many aliases", () => {
-			const aliases = resolver.reverseAliases("claude-opus-4-6");
+			const aliases = resolver.reverseAliases("claude-opus-4-8");
 			expect(aliases).toContain("opus");
 			expect(aliases).toContain("opus-4");
+			expect(aliases).toContain("opus-4.8");
 		});
 	});
 
@@ -134,7 +144,7 @@ describe("AliasResolver", () => {
 			const resolver = new AliasResolver({ "custom": "custom-model" });
 			const all = resolver.all();
 			expect(all["custom"]).toBe("custom-model");
-			expect(all["sonnet"]).toBe("claude-sonnet-4-6");
+			expect(all["sonnet"]).toBe("claude-sonnet-5");
 		});
 	});
 });

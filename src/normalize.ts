@@ -9,7 +9,7 @@
 
 /**
  * Maps slash-separated namespace prefixes found in compound model IDs
- * (e.g. "anthropic/claude-opus-4-6") to canonical origin-provider slugs.
+ * (e.g. "anthropic/claude-opus-4-8") to canonical origin-provider slugs.
  *
  * Providers that use their own namespace directly keep that name; those
  * with unusual namespaces (e.g. "meta-llama") are mapped to a shorter slug.
@@ -54,7 +54,7 @@ const PATTERN_TO_ORIGIN: Array<[RegExp, string]> = [
  * Extract the origin provider (model creator) from a model ID.
  *
  * The function first attempts to resolve a slash-separated namespace prefix
- * (e.g. `"anthropic/claude-opus-4-6"` → `"anthropic"`).  When no prefix is
+ * (e.g. `"anthropic/claude-opus-4-8"` → `"anthropic"`).  When no prefix is
  * present it falls back to a set of well-known ID patterns.
  *
  * @param modelId - Raw model identifier as returned by a provider API.
@@ -62,11 +62,11 @@ const PATTERN_TO_ORIGIN: Array<[RegExp, string]> = [
  *          cannot be determined.
  *
  * @example
- * extractOriginProvider("anthropic/claude-opus-4-6") // "anthropic"
+ * extractOriginProvider("anthropic/claude-opus-4-8") // "anthropic"
  * extractOriginProvider("openai/gpt-4o")             // "openai"
  * extractOriginProvider("google/gemini-2.5-pro")     // "google"
  * extractOriginProvider("meta-llama/llama-3.3-70b")  // "meta"
- * extractOriginProvider("claude-opus-4-6")           // "anthropic"
+ * extractOriginProvider("claude-opus-4-8")           // "anthropic"
  * extractOriginProvider("gpt-4o")                    // "openai"
  * extractOriginProvider("gemini-2.5-pro")            // "google"
  * extractOriginProvider("unknown-model")             // undefined
@@ -109,10 +109,10 @@ export function extractOriginProvider(modelId: string): string | undefined {
  * @returns Cleaned base model ID ready for deduplication comparisons.
  *
  * @example
- * normalizeModelId("anthropic/claude-opus-4-6")          // "claude-opus-4-6"
+ * normalizeModelId("anthropic/claude-opus-4-8")          // "claude-opus-4-8"
  * normalizeModelId("openai/gpt-4o-2024-11-20")           // "gpt-4o"
  * normalizeModelId("meta-llama/llama-3.3-70b-instruct")  // "llama-3.3-70b-instruct"
- * normalizeModelId("claude-opus-4-6")                    // "claude-opus-4-6"
+ * normalizeModelId("claude-opus-4-8")                    // "claude-opus-4-8"
  * normalizeModelId("llama3.3:latest")                    // "llama3.3"
  */
 export function normalizeModelId(modelId: string): string {
@@ -142,11 +142,11 @@ export function normalizeModelId(modelId: string): string {
  *
  * Different providers format the same Claude / GPT / Gemini version
  * differently — OpenRouter uses dots (`claude-sonnet-4.6`), aliases and
- * litellm use dashes (`claude-sonnet-4-6`), some services use underscores.
+ * litellm use dashes (`claude-sonnet-5`), some services use underscores.
  * `normalizeModelId` is intentionally non-destructive and preserves the
  * original separators because callers serialize its output. This helper
  * is for *matching* only: collapse every `<digit><sep><digit>` to a dash
- * so that `modelRoutes("claude-sonnet-4-6")` finds the OpenRouter entry
+ * so that `modelRoutes("claude-sonnet-5")` finds the OpenRouter entry
  * `anthropic/claude-sonnet-4.6`.
  */
 export function matchableModelId(modelId: string): string {

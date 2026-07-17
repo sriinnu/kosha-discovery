@@ -1,19 +1,10 @@
 <p align="center">
-  <img src="logo.png" alt="Kosha — AI Model Discovery" width="140" />
+  <img src="logo.svg" alt="Kosha — AI Model Discovery" width="140" />
 </p>
 
-<h1 align="center">kosha-discovery — कोश</h1>
+# kosha-discovery
 
-<p align="center"><strong>AI Model & Provider Discovery Registry</strong></p>
-
-<p align="center">
-  <a href="https://www.npmjs.com/package/@sriinnu/kosha-discovery"><img src="https://img.shields.io/npm/v/%40sriinnu%2Fkosha-discovery?color=7C3AED&label=npm" alt="npm version" /></a>
-  <a href="https://www.npmjs.com/package/@sriinnu/kosha-discovery"><img src="https://img.shields.io/npm/dm/%40sriinnu%2Fkosha-discovery?color=0EA5E9&label=downloads" alt="npm downloads" /></a>
-  <a href="https://github.com/sriinnu/kosha-discovery/blob/main/LICENSE"><img src="https://img.shields.io/github/license/sriinnu/kosha-discovery?color=F59E0B" alt="license" /></a>
-  <a href="https://www.npmjs.com/package/@sriinnu/kosha-discovery"><img src="https://img.shields.io/node/v/%40sriinnu%2Fkosha-discovery?color=5B21B6" alt="node version" /></a>
-</p>
-
-Kosha (कोश — *treasury*) discovers AI models across providers, resolves credentials, enriches with pricing, and exposes the catalog through a library, CLI, HTTP API, and a built-in OpenAI-compatible proxy. One source of truth for model identity, pricing, and routing — so your app doesn't break when providers ship new SKUs or change rates.
+AI model and provider discovery registry. Discovers models across providers, resolves credentials, enriches with pricing, and exposes the catalog through a library, CLI, HTTP API, and an OpenAI-compatible proxy.
 
 ## Install
 
@@ -21,6 +12,8 @@ Kosha (कोश — *treasury*) discovers AI models across providers, resolves 
 npm install @sriinnu/kosha-discovery       # library / server
 npm install -g @sriinnu/kosha-discovery    # global `kosha` CLI
 ```
+
+Requires Node.js 22+.
 
 ## Quick start
 
@@ -31,9 +24,9 @@ import { createKosha } from "@sriinnu/kosha-discovery";
 
 const kosha = await createKosha();
 
-const models    = kosha.models();                          // all
-const cheapest  = kosha.cheapestModels({ role: "image" }); // ranked
-const sonnet    = kosha.model("sonnet");                   // alias resolves
+const models   = kosha.models();                          // all discovered models
+const cheapest = kosha.cheapestModels({ role: "image" }); // ranked by price
+const sonnet   = kosha.model("sonnet");                   // alias resolves to canonical ID
 console.log(sonnet.pricing); // { inputPerMillion: 3, outputPerMillion: 15, ... }
 ```
 
@@ -48,7 +41,7 @@ kosha update                         # force a fresh fetch
 kosha serve --port 3000              # HTTP API
 ```
 
-After each discovery, a stable v1 manifest lands at `~/.kosha/registry.json` — any tool that reads JSON can consume it:
+After each discovery, a stable v1 manifest lands at `~/.kosha/registry.json`:
 
 ```bash
 jq '.models[] | select(.pricing.inputPerMillion < 0.1) | .modelId' ~/.kosha/registry.json
@@ -129,11 +122,47 @@ Full credential setup: [docs/credentials.md](docs/credentials.md).
 
 ## Architecture
 
-<p align="center">
-  <img src="architecture.svg" alt="Kosha Architecture" width="720" />
-</p>
+Discovery layer talks to provider APIs and local catalogs. Enrichment layer fills pricing and context windows from the LiteLLM catalog and models.dev. Resilience layer (circuit breaker + stale-cache fallback + health tracker) keeps a flaky provider a degraded read, never a crash. Manifest layer writes a v1-stable JSON snapshot so downstream consumers read prices from one source instead of inventing their own. Proxy layer exposes an OpenAI-compatible endpoint that resolves `kosha:cheapest[…]` hints at request time, injects credentials, and forwards to the winning provider.
 
-Discovery layer talks to provider APIs and local catalogs. Enrichment layer fills pricing and context windows from the LiteLLM catalog and models.dev. Resilience layer (circuit breaker + stale-cache fallback + health tracker) keeps a flaky provider a degraded read, never a crash. Manifest layer writes a v1-stable JSON snapshot so downstream consumers — `tokmeter`, `chitragupta`, `ayuh` — read prices from one source instead of inventing their own. Proxy layer exposes an OpenAI-compatible endpoint that resolves `kosha:cheapest[…]` hints at request time, injects credentials, and forwards to the winning provider.
+## Development
+
+```bash
+pnpm install
+pnpm run build        # compile to dist/
+pnpm run typecheck    # tsc --noEmit
+pnpm run lint         # biome lint
+pnpm test             # vitest run
+pnpm run check        # lint + build + test
+```
+
+### Project layout
+
+```
+src/
+  cli.ts                 # CLI entry point
+  cli-commands.ts        # command implementations
+  registry.ts            # ModelRegistry public API
+  registry-runtime.ts    # discovery, enrichment, cache, manifest export
+  registry-query.ts      # model/role/capability queries
+  registry-selection.ts  # cheapest candidates, binding hints
+  registry-routing.ts    # route ranking strategies
+  discovery/             # provider discoverers
+  enrichment/            # LiteLLM pricing enrichment
+  credentials/           # credential resolution
+  proxy.ts               # OpenAI-compatible proxy
+  server.ts              # HTTP API server
+  mcp-server.ts          # MCP server
+  tally.ts               # zero-dependency token usage + cost tally
+  cost.ts                # ledger I/O, budget gates
+  types.ts               # shared types
+```
+
+### Adding a provider
+
+1. Create `src/discovery/<provider>.ts` implementing `ProviderDiscoverer`.
+2. Register it in `src/discovery/index.ts` `DISCOVERER_REGISTRY`.
+3. Add credential env vars to `src/provider-catalog.ts`.
+4. Add tests in `test/discovery/<provider>.test.ts`.
 
 ## Docs
 
@@ -159,10 +188,6 @@ git tag -s vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
 ```
 
 The workflow checks tag ↔ package.json match, builds, tests, publishes to npm, and creates the GitHub Release. Requires the `NPM_TOKEN` secret.
-
-## Credits
-
-[litellm](https://github.com/BerriAI/litellm) (pricing data) · [openrouter](https://openrouter.ai) · [ollama](https://ollama.ai) · [chitragupta](https://github.com/sriinnu/chitragupta) (registry patterns) · [takumi](https://github.com/sriinnu/takumi) (routing needs that drove kosha's creation).
 
 ## License
 

@@ -267,7 +267,7 @@ function resolveProxyCandidates(registry: ModelRegistry, requested: string): Mod
 
 	// For a specific model ID or alias, prefer the canonical card but fall back
 	// to any forwardable route if the primary provider isn't proxiable (e.g.
-	// "claude-sonnet-4-6" resolves to Anthropic by default, but if the caller
+	// "claude-sonnet-5" resolves to Anthropic by default, but if the caller
 	// only has an OpenRouter key, we should route through OpenRouter instead).
 	const primary = registry.model(requested);
 	const routes = registry.modelRoutes(requested);

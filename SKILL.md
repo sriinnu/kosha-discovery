@@ -44,7 +44,7 @@ Use this skill when you need to: find available models, pick the cheapest model 
   - `~/.aws/credentials` — `[default]` profile `aws_access_key_id`
   - `~/.aws/config` — SSO (`sso_start_url`), IAM role (`role_arn`)
 - **Named profile**: `AWS_PROFILE` env var
-- **Model ID format**: `{vendor}.{model-name}-v{n}:{variant}` (e.g. `anthropic.claude-opus-4-6-v1:0`)
+- **Model ID format**: `{vendor}.{model-name}-v{n}:{variant}` (e.g. `anthropic.claude-opus-4-8-v1:0`)
 
 ### Vertex AI (Google Cloud)
 - **Discovery**: Vertex AI API + gcloud
@@ -95,8 +95,8 @@ kosha.missingCredentialPrompts()                   // Which providers need keys
 kosha.normalizeRoleToken("tools")                  // → "function_calling"
 kosha.modelSupportsRole(model, "vision")           // Capability check
 kosha.modelRoles(model)                            // All roles for a model
-kosha.modelRoutes("claude-opus-4-6")               // Cross-provider routes
-kosha.modelRouteInfo("claude-opus-4-6")            // Routes with preferred/direct flags
+kosha.modelRoutes("claude-opus-4-8")               // Cross-provider routes
+kosha.modelRouteInfo("claude-opus-4-8")            // Routes with preferred/direct flags
 
 // --- WRITE operations ---
 kosha.alias("fast", "claude-haiku-4-5-20251001")   // Add custom alias
@@ -173,7 +173,7 @@ WRITE endpoints:
 
 ```typescript
 ModelCard {
-  id: string;                    // "claude-sonnet-4-20250514"
+  id: string;                    // "claude-sonnet-5"
   name: string;                  // "Claude Sonnet 4"
   provider: string;              // "anthropic" (serving layer)
   originProvider?: string;       // "anthropic" (model creator — differs for bedrock/openrouter)
@@ -278,7 +278,7 @@ if (!provider?.authenticated) {
 
 ### "Route this model through the cheapest provider"
 ```typescript
-const routes = kosha.modelRouteInfo("claude-opus-4-6");
+const routes = kosha.modelRouteInfo("claude-opus-4-8");
 const preferred = routes.find(r => r.isPreferred);
 // preferred.provider → "anthropic" (direct), preferred.baseUrl → "https://api.anthropic.com"
 ```

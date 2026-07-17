@@ -44,6 +44,15 @@ export {
 	readSpendForMonth,
 } from "./cost.js";
 export type { CostEstimate, LedgerEntry } from "./cost.js";
+export { estimateUsdCost, normalizeTokenUsage, tallyCosts } from "./tally.js";
+export type {
+	NormalizedTokenUsage,
+	TallyCall,
+	TallyModelSubtotal,
+	TallyResult,
+	TokenUsage,
+	UsdCostBreakdown,
+} from "./tally.js";
 export {
 	translateAnthropicToOpenAI,
 	translateOpenAIToAnthropic,

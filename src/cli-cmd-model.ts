@@ -131,10 +131,10 @@ export async function cmdResolve(registry: ModelRegistry, alias: string, flags: 
 	// Downstream tools that pipe `kosha resolve --json` were missing all of
 	// this and had to follow up with `kosha model`. Now one call is enough.
 	//
-	// Fallback: aliases like `sonnet → claude-sonnet-4-6` may resolve to
+	// Fallback: aliases like `sonnet → claude-sonnet-5` may resolve to
 	// canonical IDs that no provider serves directly (e.g. when Anthropic
 	// API discovery is unauthenticated and OpenRouter exposes the same
-	// model as `anthropic/claude-sonnet-4.6`). In that case I lean on
+	// model as `anthropic/claude-sonnet-5`). In that case I lean on
 	// modelRoutes(), which normalizes IDs and returns every provider route
 	// — picking the first as the representative for pricing display.
 	let model = registry.model(resolved);
