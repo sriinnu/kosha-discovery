@@ -15,15 +15,26 @@
  *   <N>k           minimum context window in tokens
  *   provider:<id>  pin to a specific serving-layer provider
  *
- * Supported transports: openai, openai-compatible-http, ollama.
- * Anthropic is proxied via OpenAI/Anthropic wire-format translation
- * (non-streaming, text-only for now). Google, Bedrock, and Vertex speak
- * cloud-SDK / non-OpenAI wire formats and are not yet proxied.
+ * Supported transports: openai, openai-compatible-http, ollama, anthropic.
+ * Anthropic is proxied through the OpenAI ↔ Anthropic wire translator
+ * (`wire-anthropic.ts`): streaming, tools / tool calls, image_url parts,
+ * response_format, and reasoning_effort are carried; audio input and
+ * non-function tools fail over to a native OpenAI-compatible route. Google,
+ * Bedrock, and Vertex speak cloud-SDK wire formats and are not yet proxied.
+ *
+ * Spend accounting: every successful forward writes a ledger row with the
+ * pre-flight estimate AND, when the upstream returned a `usage` block (JSON
+ * or SSE), the reconciled actual cost. Budget enforcement prefers the actual.
  *
  * Response headers added by the proxy:
- *   x-kosha-model      — resolved model ID
- *   x-kosha-provider   — resolved provider
- *   x-kosha-requested  — original model string from the caller
+ *   x-kosha-model               — resolved model ID
+ *   x-kosha-provider            — resolved provider
+ *   x-kosha-requested           — original model string from the caller
+ *   x-kosha-attempt-chain       — provider:status for each attempt
+ *   x-kosha-estimated-cost-usd  — pre-flight estimate
+ *   x-kosha-actual-cost-usd     — reconciled from upstream usage (non-streaming)
+ *   x-kosha-usage-source        — upstream | estimate (non-streaming)
+ *   x-kosha-wire-notes          — Anthropic translator notes (dropped / degraded fields)
  * @module
  */
 
@@ -34,6 +45,8 @@ import { getProviderDescriptor, listProviderDescriptors, providerExecutionCreden
 import { fallbackRegistryCredential, getRegistryCredentialResolver } from "./registry-runtime.js";
 import { parseRouteStrategy, type RouteStrategy } from "./registry-routing.js";
 import {
+	type ActualUsageCost,
+	actualCostFromUsage,
 	appendLedgerEntry,
 	estimateRequestCost,
 	readMonthlyBudgetUsd,
@@ -42,9 +55,11 @@ import {
 import {
 	UnsupportedWireContentError,
 	coerceOpenAIChatRequest,
+	translateAnthropicStreamToOpenAI,
 	translateAnthropicToOpenAI,
-	translateOpenAIToAnthropic,
+	translateOpenAIToAnthropicWithNotes,
 	type AnthropicMessagesResponse,
+	type WireTranslation,
 } from "./wire-anthropic.js";
 
 // ---------------------------------------------------------------------------
@@ -354,6 +369,64 @@ function buildUpstreamUrl(model: ModelCard, registry: ModelRegistry): string {
 	return `${base}/chat/completions`;
 }
 
+/** Strip CR/LF/NUL and bound length before reflecting caller- or upstream-derived text into a header. */
+function headerSafe(value: string, max = 400): string {
+	return value.replace(/[\r\n\0]/g, "").slice(0, max);
+}
+
+/**
+ * Pass an OpenAI-compatible SSE stream through byte-for-byte while watching
+ * for a `usage` object in the events (providers emit it on the final chunk
+ * when the caller set `stream_options.include_usage`). Resolves with the last
+ * usage seen, or null when the stream never carried one.
+ */
+function observeOpenAIStreamUsage(upstream: ReadableStream<Uint8Array>): {
+	stream: ReadableStream<Uint8Array>;
+	usage: Promise<unknown | null>;
+} {
+	const decoder = new TextDecoder();
+	let buffer = "";
+	let lastUsage: unknown | null = null;
+	let resolve!: (value: unknown | null) => void;
+	const usage = new Promise<unknown | null>((r) => {
+		resolve = r;
+	});
+	const scan = (flushAll: boolean): void => {
+		const parts = buffer.split(/\r?\n\r?\n/);
+		buffer = flushAll ? "" : (parts.pop() ?? "");
+		// Never let a stream without blank-line separators grow the buffer unbounded.
+		if (buffer.length > 65_536) buffer = buffer.slice(-65_536);
+		for (const part of parts) {
+			for (const line of part.split(/\r?\n/)) {
+				if (!line.startsWith("data:")) continue;
+				const data = line.slice(5).trim();
+				if (!data || data === "[DONE]") continue;
+				try {
+					const evt = JSON.parse(data) as { usage?: unknown };
+					if (evt && typeof evt === "object" && evt.usage && typeof evt.usage === "object") lastUsage = evt.usage;
+				} catch {
+					// partial / non-JSON line — ignore
+				}
+			}
+		}
+	};
+	const stream = upstream.pipeThrough(
+		new TransformStream<Uint8Array, Uint8Array>({
+			transform(chunk, controller) {
+				controller.enqueue(chunk);
+				buffer += decoder.decode(chunk, { stream: true });
+				scan(false);
+			},
+			flush() {
+				buffer += decoder.decode();
+				scan(true);
+				resolve(lastUsage);
+			},
+		}),
+	);
+	return { stream, usage };
+}
+
 // ---------------------------------------------------------------------------
 // Route registration
 // ---------------------------------------------------------------------------
@@ -467,10 +540,13 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 		// the caller or hold a connection open past shutdown.
 		const UPSTREAM_TIMEOUT_MS = 30_000;
 		const attemptChain: string[] = [];
-		let streamingRejectedOn: { resolvedModel: string; resolvedProvider: string } | null = null;
 		let fetchAttempts = 0;
 		let lastNoCred: { provider: string; envHint: string | undefined } | null = null;
 		let sawCredentialedRoute = false;
+		let lastUnsupportedWire: string | null = null;
+		const wantsStream = body.stream === true;
+		const includeUsage =
+			wantsStream && (body.stream_options as { include_usage?: unknown } | undefined)?.include_usage === true;
 
 		for (const model of candidates) {
 			const credential = resolver
@@ -488,7 +564,6 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			}
 			sawCredentialedRoute = true;
 			if (fetchAttempts >= MAX_FETCHES) break;
-			fetchAttempts += 1;
 
 			const upstreamUrl = buildUpstreamUrl(model, registry);
 			// The proxy never forwards to a host outside the in-process catalog
@@ -505,37 +580,30 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			const upstreamHeaders: Record<string, string> = { "content-type": "application/json" };
 			let upstreamBody: string;
 			let upstreamUrlString: string;
+			let wireNotes: string[] = [];
 			if (usesAnthropicWire) {
 				// Anthropic /v1/messages: auth via x-api-key + anthropic-version,
 				// body translated from OpenAI chat-completions on the way in,
-				// response translated back on the way out. Streaming is not yet
-				// supported through the translator — fall through cleanly with a
-				// 422 so the caller switches to a non-translated route.
-				if (body.stream === true) {
-					// Don't hard-return: a later candidate may route the same model
-					// through a native-OpenAI provider (OpenRouter, etc.) that
-					// streams natively. Remember why we skipped and try the next
-					// route; only surface the 422 if nothing else worked.
-					streamingRejectedOn = { resolvedModel: model.id, resolvedProvider: model.provider };
-					continue;
-				}
+				// response (JSON or SSE) translated back on the way out. The
+				// translator is fail-safe: content it cannot carry throws
+				// UnsupportedWireContentError rather than being silently mangled;
+				// we then fail over to a native-OpenAI route for the same model
+				// (OpenRouter, etc.) and only 422 if none exists.
 				upstreamHeaders["x-api-key"] = bearerToken ?? "";
 				upstreamHeaders["anthropic-version"] = "2023-06-01";
-				// The translator is fail-safe: tools / vision / structured-output
-				// requests throw UnsupportedWireContentError rather than being
-				// silently mangled. Catch it and fail over to a native-OpenAI
-				// route for the same model (OpenRouter, etc.); only 422 if none.
-				let translatedBody: ReturnType<typeof translateOpenAIToAnthropic>;
+				let translation: WireTranslation;
 				try {
-					translatedBody = translateOpenAIToAnthropic({ ...coerceOpenAIChatRequest(body), model: model.id });
+					translation = translateOpenAIToAnthropicWithNotes({ ...coerceOpenAIChatRequest(body), model: model.id });
 				} catch (err) {
 					if (err instanceof UnsupportedWireContentError) {
 						attemptChain.push(`${model.provider}:unsupported-wire-content`);
+						lastUnsupportedWire = err.message;
 						continue;
 					}
 					throw err;
 				}
-				upstreamBody = JSON.stringify(translatedBody);
+				wireNotes = translation.notes;
+				upstreamBody = JSON.stringify(translation.request);
 				// Rebuild the URL via the WHATWG URL API rather than a string
 				// `replace`, so the pathname swap can't be tripped by a fragment
 				// or query-string that happens to contain `/chat/completions`.
@@ -549,6 +617,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 				upstreamBody = JSON.stringify({ ...body, model: model.id });
 				upstreamUrlString = safeUrl.toString();
 			}
+			fetchAttempts += 1;
 
 			const attemptStart = Date.now();
 			let upstream: Response;
@@ -612,70 +681,140 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 				bumpProxyMetric(model.provider, false, attemptLatencyMs);
 			}
 
-			// Pre-flight cost estimate. We compute (input tokens × inputRate +
-			// expected_output × outputRate) and reflect it on the response so the
-			// caller can audit before paying. The same number is appended to the
-			// ledger so kosha spend can roll it up. We do NOT block on cost here
-			// — the budget gate above already short-circuited if applicable.
+			// Pre-flight cost estimate: (input tokens × inputRate + expected
+			// output × outputRate), reflected on the response so the caller can
+			// audit before paying. When the upstream returns a usage block we
+			// also reconcile the actual cost and record both on the ledger.
 			const estimate = estimateRequestCost(model, body);
 			const responseHeaders = new Headers({
 				"x-kosha-model": model.id,
 				"x-kosha-provider": model.provider,
 				"x-kosha-requested": safeRequested,
-				"x-kosha-attempt-chain": attemptChain.join(",").replace(/[\r\n\0]/g, "").slice(0, 400),
+				"x-kosha-attempt-chain": headerSafe(attemptChain.join(",")),
 			});
-			if (estimate) {
-				responseHeaders.set("x-kosha-estimated-cost-usd", estimate.estimatedUsd.toFixed(6));
-				// Only charge the ledger on a successful upstream response. A 4xx
-				// is the caller's fault (malformed request, bad key) and costs
-				// nothing upstream — charging it would let malformed traffic
-				// exhaust a tenant's monthly budget. Append failures are
-				// observability losses, never a reason to fail the request.
-				if (upstream.ok) {
-					appendLedgerEntry({
-						ts: Date.now(),
-						provider: model.provider,
-						modelId: model.id,
-						requested: safeRequested,
-						tenant,
-						estimatedUsd: estimate.estimatedUsd,
-						estimatedInputTokens: estimate.inputTokens,
-						estimatedOutputTokens: estimate.expectedOutputTokens,
-						upstreamStatus: upstream.status,
-					}).catch(() => {});
+			if (wireNotes.length > 0) responseHeaders.set("x-kosha-wire-notes", headerSafe(wireNotes.join("; ")));
+			if (estimate) responseHeaders.set("x-kosha-estimated-cost-usd", estimate.estimatedUsd.toFixed(6));
+
+			const upstreamStatus = upstream.status;
+			const upstreamOk = upstream.ok;
+			// Only charge the ledger on a successful upstream response. A 4xx
+			// is the caller's fault (malformed request, bad key) and costs
+			// nothing upstream — charging it would let malformed traffic
+			// exhaust a tenant's monthly budget. Append failures are
+			// observability losses, never a reason to fail the request.
+			const recordSpend = (actual: ActualUsageCost | null): void => {
+				if (!estimate || !upstreamOk) return;
+				appendLedgerEntry({
+					ts: Date.now(),
+					provider: model.provider,
+					modelId: model.id,
+					requested: safeRequested,
+					tenant,
+					estimatedUsd: estimate.estimatedUsd,
+					estimatedInputTokens: estimate.inputTokens,
+					estimatedOutputTokens: estimate.expectedOutputTokens,
+					upstreamStatus,
+					...(actual
+						? {
+								actualUsd: actual.usd,
+								actualInputTokens: actual.inputTokens,
+								actualOutputTokens: actual.outputTokens,
+								cacheReadTokens: actual.cacheReadTokens,
+								cacheWriteTokens: actual.cacheWriteTokens,
+								usageSource: "upstream" as const,
+							}
+						: { usageSource: "estimate" as const }),
+				}).catch(() => {});
+			};
+			const reflectActual = (actual: ActualUsageCost | null): void => {
+				if (actual) {
+					responseHeaders.set("x-kosha-actual-cost-usd", actual.usd.toFixed(6));
+					responseHeaders.set("x-kosha-usage-source", "upstream");
+				} else {
+					responseHeaders.set("x-kosha-usage-source", "estimate");
 				}
-			}
+			};
+
 			if (usesAnthropicWire) {
-				// Anthropic /v1/messages: translate the body to/from OpenAI
-				// chat-completions shape so the caller's SDK is unaware of the
-				// wire swap. Error bodies are re-shaped into the OpenAI error
-				// envelope ({ error: { message, type, code } }) so a client using
-				// the OpenAI SDK reads a structured error instead of an Anthropic
-				// blob it can't parse.
-				let raw: unknown;
-				try {
-					raw = await upstream.json();
-				} catch {
-					responseHeaders.set("content-type", "application/json");
-					return new Response(
-						JSON.stringify({ error: { message: "anthropic upstream returned unparseable JSON", type: "upstream_error" } }),
-						{ status: 502, headers: responseHeaders },
-					);
-				}
+				// Error bodies are re-shaped into the OpenAI error envelope
+				// ({ error: { message, type, code } }) so a client using the
+				// OpenAI SDK reads a structured error instead of an Anthropic
+				// blob it can't parse. Anthropic returns JSON errors even for
+				// stream requests, so this branch runs before the SSE one.
+				responseHeaders.set("content-type", "application/json");
 				if (!upstream.ok) {
+					let raw: unknown;
+					try {
+						raw = await upstream.json();
+					} catch {
+						raw = null;
+					}
 					const aErr = extractAnthropicError(raw);
-					responseHeaders.set("content-type", "application/json");
 					return new Response(
 						JSON.stringify({ error: { ...aErr, code: String(upstream.status) } }),
 						{ status: upstream.status, headers: responseHeaders },
 					);
 				}
-				const translated = translateAnthropicToOpenAI(raw as AnthropicMessagesResponse, model.id);
-				responseHeaders.set("content-type", "application/json");
+				if (wantsStream) {
+					if (!upstream.body) {
+						return new Response(
+							JSON.stringify({ error: { message: "anthropic upstream returned no stream body", type: "upstream_error" } }),
+							{ status: 502, headers: responseHeaders },
+						);
+					}
+					const { stream, usage } = translateAnthropicStreamToOpenAI(upstream.body, model.id, { includeUsage });
+					usage
+						.then((u) => recordSpend(actualCostFromUsage(model, u, "anthropic")))
+						.catch(() => recordSpend(null));
+					responseHeaders.set("content-type", "text/event-stream; charset=utf-8");
+					responseHeaders.set("cache-control", "no-cache");
+					return new Response(stream, { status: 200, headers: responseHeaders });
+				}
+				let raw: unknown;
+				try {
+					raw = await upstream.json();
+				} catch {
+					return new Response(
+						JSON.stringify({ error: { message: "anthropic upstream returned unparseable JSON", type: "upstream_error" } }),
+						{ status: 502, headers: responseHeaders },
+					);
+				}
+				const anthropicResponse = raw as AnthropicMessagesResponse;
+				const actual = actualCostFromUsage(model, anthropicResponse.usage, "anthropic");
+				reflectActual(actual);
+				recordSpend(actual);
+				const translated = translateAnthropicToOpenAI(anthropicResponse, model.id);
 				return new Response(JSON.stringify(translated), { status: upstream.status, headers: responseHeaders });
 			}
-			const ct = upstream.headers.get("content-type");
-			if (ct) responseHeaders.set("content-type", ct);
+
+			// ── Native OpenAI-compatible passthrough ───────────────────────
+			const contentType = upstream.headers.get("content-type") ?? "";
+			if (contentType) responseHeaders.set("content-type", contentType);
+			if (!upstream.ok || !upstream.body) {
+				return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
+			}
+			if (contentType.includes("text/event-stream")) {
+				// Bytes pass through untouched; we only watch for a trailing
+				// usage chunk (present when the caller asked for include_usage).
+				const { stream, usage } = observeOpenAIStreamUsage(upstream.body);
+				usage.then((u) => recordSpend(actualCostFromUsage(model, u, "openai"))).catch(() => recordSpend(null));
+				return new Response(stream, { status: upstream.status, headers: responseHeaders });
+			}
+			if (contentType.includes("application/json")) {
+				const text = await upstream.text();
+				let usageRaw: unknown = null;
+				try {
+					usageRaw = (JSON.parse(text) as { usage?: unknown }).usage ?? null;
+				} catch {
+					// Not JSON after all — forward as-is with the estimate only.
+				}
+				const actual = actualCostFromUsage(model, usageRaw, "openai");
+				reflectActual(actual);
+				recordSpend(actual);
+				return new Response(text, { status: upstream.status, headers: responseHeaders });
+			}
+			reflectActual(null);
+			recordSpend(null);
 			return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
 		}
 
@@ -691,12 +830,10 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 				401,
 			);
 		}
-		if (streamingRejectedOn) {
+		if (lastUnsupportedWire) {
 			return ctx.json(
 				{
-					error:
-						"anthropic streaming through the OpenAI-compatible proxy is not yet supported; no native-streaming route was available",
-					...streamingRejectedOn,
+					error: `request uses content the Anthropic wire translator cannot carry and no native OpenAI-compatible route was available: ${lastUnsupportedWire}`,
 					attemptChain,
 				},
 				422,

@@ -37,13 +37,15 @@ export {
 } from "./registry-routing.js";
 export type { RankedRoute, RouteHealth, RouteStrategy } from "./registry-routing.js";
 export {
+	actualCostFromUsage,
 	appendLedgerEntry,
 	DEFAULT_LEDGER_PATH,
 	estimateRequestCost,
+	ledgerRowUsd,
 	readMonthlyBudgetUsd,
 	readSpendForMonth,
 } from "./cost.js";
-export type { CostEstimate, LedgerEntry } from "./cost.js";
+export type { ActualUsageCost, CostEstimate, LedgerEntry, UsageShape } from "./cost.js";
 export { estimateUsdCost, normalizeTokenUsage, tallyCosts } from "./tally.js";
 export type {
 	NormalizedTokenUsage,
@@ -54,14 +56,29 @@ export type {
 	UsdCostBreakdown,
 } from "./tally.js";
 export {
+	claudeSamplingSupport,
+	claudeSupportsForcedToolChoice,
+	claudeSupportsNativeJsonSchema,
+	coerceOpenAIChatRequest,
+	toOpenAIUsage,
+	translateAnthropicStreamToOpenAI,
 	translateAnthropicToOpenAI,
 	translateOpenAIToAnthropic,
+	translateOpenAIToAnthropicWithNotes,
+	UnsupportedWireContentError,
 } from "./wire-anthropic.js";
 export type {
+	AnthropicContentBlock,
 	AnthropicMessagesRequest,
 	AnthropicMessagesResponse,
+	AnthropicStreamTranslation,
+	AnthropicUsage,
 	OpenAIChatRequest,
 	OpenAIChatResponse,
+	OpenAIToolCall,
+	OpenAIUsage,
+	SamplingSupport,
+	WireTranslation,
 } from "./wire-anthropic.js";
 export { extractModelVersion, extractOriginProvider, normalizeModelId } from "./normalize.js";
 export { inferTokenizerFamily } from "./tokenizer-family.js";

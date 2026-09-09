@@ -19,6 +19,7 @@ import { appendFile, mkdir, readFile, readdir, rename, unlink, writeFile } from 
 import { randomBytes } from "crypto";
 import { homedir } from "os";
 import { dirname, join } from "path";
+import { normalizeTokenUsage } from "./tally.js";
 import type { ModelCard } from "./types.js";
 
 /** A single completion record written to the ledger. */
@@ -35,6 +36,76 @@ export interface LedgerEntry {
 	/** Output tokens the caller asked for (or our fallback). */
 	estimatedOutputTokens: number;
 	upstreamStatus: number;
+	/** Reconciled cost from the provider's `usage` block, when it returned one. */
+	actualUsd?: number;
+	/** Uncached input tokens the provider billed. */
+	actualInputTokens?: number;
+	/** Output tokens the provider billed. */
+	actualOutputTokens?: number;
+	/** Cache-read (hit) input tokens the provider reported. */
+	cacheReadTokens?: number;
+	/** Cache-write (creation) input tokens the provider reported. */
+	cacheWriteTokens?: number;
+	/** `upstream` when the actual* fields came from the provider; `estimate` when only the pre-flight numbers exist. */
+	usageSource?: "upstream" | "estimate";
+}
+
+/**
+ * The USD figure a ledger row should count for: the reconciled upstream cost
+ * when the row has one, the pre-flight estimate otherwise. Every reader
+ * (budget gate, `kosha spend`, /metrics) goes through this so they agree.
+ */
+export function ledgerRowUsd(row: Pick<LedgerEntry, "estimatedUsd" | "actualUsd">): number {
+	if (typeof row.actualUsd === "number" && Number.isFinite(row.actualUsd)) return row.actualUsd;
+	return typeof row.estimatedUsd === "number" && Number.isFinite(row.estimatedUsd) ? row.estimatedUsd : 0;
+}
+
+/** Reconciled cost derived from a provider's `usage` block. */
+export interface ActualUsageCost {
+	usd: number;
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens: number;
+	cacheWriteTokens: number;
+}
+
+/**
+ * Which accounting convention the usage block follows:
+ *   - `openai`    — `prompt_tokens` already includes cached tokens
+ *                   (`prompt_tokens_details.cached_tokens` is a subset).
+ *   - `anthropic` — `input_tokens` excludes cache reads / writes, which are
+ *                   reported separately and billed at their own rates.
+ */
+export type UsageShape = "openai" | "anthropic";
+
+/**
+ * Turn a provider `usage` block into a reconciled USD cost against the
+ * model's pricing. Returns null when the model has no usable pricing or the
+ * block carries no token counts. Cache rates fall back to the provider's
+ * published ratios (Anthropic: reads 0.1×, writes 1.25× input; OpenAI: reads
+ * 0.5× input) when the catalog entry lacks explicit cache pricing, so a
+ * cached request is never priced as if it were fully uncached.
+ */
+export function actualCostFromUsage(model: ModelCard, rawUsage: unknown, shape: UsageShape): ActualUsageCost | null {
+	const pricing = model.pricing;
+	if (!pricing || typeof pricing.inputPerMillion !== "number" || typeof pricing.outputPerMillion !== "number") return null;
+	if (!rawUsage || typeof rawUsage !== "object") return null;
+	const usage = normalizeTokenUsage(rawUsage as Record<string, unknown>);
+	if (!usage) return null;
+
+	const cacheRead = usage.cachedInputTokens ?? 0;
+	const cacheWrite = usage.cacheWriteTokens ?? 0;
+	const uncachedInput = shape === "openai" ? Math.max(0, usage.inputTokens - cacheRead) : usage.inputTokens;
+	const readRate = pricing.cacheReadPerMillion ?? pricing.inputPerMillion * (shape === "anthropic" ? 0.1 : 0.5);
+	const writeRate = pricing.cacheWritePerMillion ?? (shape === "anthropic" ? pricing.inputPerMillion * 1.25 : 0);
+
+	const usd =
+		tokensTimesRate(uncachedInput, pricing.inputPerMillion) +
+		tokensTimesRate(usage.outputTokens, pricing.outputPerMillion) +
+		tokensTimesRate(cacheRead, readRate) +
+		tokensTimesRate(cacheWrite, writeRate);
+
+	return { usd, inputTokens: uncachedInput, outputTokens: usage.outputTokens, cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite };
 }
 
 export const DEFAULT_LEDGER_PATH: string = join(homedir(), ".kosha", "ledger.jsonl");
@@ -80,10 +151,14 @@ export function estimateRequestCost(model: ModelCard, requestBody: Record<string
 	if (typeof pricing.inputPerMillion !== "number" || typeof pricing.outputPerMillion !== "number") return null;
 
 	const inputTokens = approximateInputTokens(requestBody);
-	const expectedOutputTokens =
-		typeof requestBody.max_tokens === "number" && requestBody.max_tokens > 0
-			? Math.floor(requestBody.max_tokens)
-			: DEFAULT_EXPECTED_OUTPUT_TOKENS;
+	// `max_completion_tokens` is OpenAI's current spelling; `max_tokens` the legacy one.
+	const requestedOutput =
+		typeof requestBody.max_completion_tokens === "number" && requestBody.max_completion_tokens > 0
+			? requestBody.max_completion_tokens
+			: typeof requestBody.max_tokens === "number" && requestBody.max_tokens > 0
+				? requestBody.max_tokens
+				: undefined;
+	const expectedOutputTokens = requestedOutput !== undefined ? Math.floor(requestedOutput) : DEFAULT_EXPECTED_OUTPUT_TOKENS;
 
 	const estimatedUsd =
 		tokensTimesRate(inputTokens, pricing.inputPerMillion) +
@@ -170,7 +245,7 @@ export async function readSpendForMonth(nowMs: number, tenant?: string | null, l
 			}
 			if (row.ts < cutoffStart || row.ts >= cutoffEnd) continue;
 			if (tenant && row.tenant !== tenant) continue;
-			if (typeof row.estimatedUsd === "number") total += row.estimatedUsd;
+			total += ledgerRowUsd(row);
 		}
 	}
 	return total;
@@ -198,6 +273,12 @@ function sanitizeEntry(entry: LedgerEntry): LedgerEntry {
 		estimatedInputTokens: entry.estimatedInputTokens,
 		estimatedOutputTokens: entry.estimatedOutputTokens,
 		upstreamStatus: entry.upstreamStatus,
+		...(entry.actualUsd !== undefined ? { actualUsd: entry.actualUsd } : {}),
+		...(entry.actualInputTokens !== undefined ? { actualInputTokens: entry.actualInputTokens } : {}),
+		...(entry.actualOutputTokens !== undefined ? { actualOutputTokens: entry.actualOutputTokens } : {}),
+		...(entry.cacheReadTokens !== undefined ? { cacheReadTokens: entry.cacheReadTokens } : {}),
+		...(entry.cacheWriteTokens !== undefined ? { cacheWriteTokens: entry.cacheWriteTokens } : {}),
+		...(entry.usageSource !== undefined ? { usageSource: entry.usageSource } : {}),
 	};
 }
 
