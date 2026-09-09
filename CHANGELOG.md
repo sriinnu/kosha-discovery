@@ -15,6 +15,99 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ### Added
 
+- **Proxy: full Anthropic bridging** (`src/wire-anthropic.ts`). The OpenAI ↔
+  Anthropic translator now carries streaming (Anthropic SSE →
+  `chat.completion.chunk` SSE, `[DONE]`, optional usage chunk via
+  `stream_options.include_usage`), `tools` / `tool_choice` /
+  `parallel_tool_calls`, assistant `tool_calls` → `tool_use`, `tool` role →
+  `tool_result`, `image_url` parts (URL and base64 data URLs), `response_format`
+  (`json_schema` → `output_config.format` on Claude 4.5+, `json_object` → system
+  instruction), `reasoning_effort` → `output_config.effort` (clamped to the
+  target generation's ladder), and `max_completion_tokens`. Responses translate
+  `tool_use` blocks into OpenAI `tool_calls`, `refusal` into `content_filter`,
+  and cache read / write tokens into `prompt_tokens` +
+  `prompt_tokens_details.cached_tokens`.
+- **Proxy: usage reconciliation.** Ledger rows now record the upstream `usage`
+  block when the provider returns one (Anthropic JSON and SSE, OpenAI-compatible
+  JSON and SSE with `include_usage`) as `actualUsd` / `actualInputTokens` /
+  `actualOutputTokens` / cache token counts, tagged `usageSource: "upstream"`;
+  the pre-flight estimate is kept alongside. Budget enforcement and
+  `kosha spend` prefer the actual figure. New headers
+  `x-kosha-actual-cost-usd`, `x-kosha-usage-source`, `x-kosha-wire-notes`.
+- **Operator token for the proxy.** `KOSHA_PROXY_TOKEN` gates every `/proxy/*`
+  route and `POST /api/refresh` (`Authorization: Bearer <token>` or
+  `x-kosha-token`), constant-time compared. `x-kosha-tenant` header as the
+  tenant-tag carrier so `Authorization` is free for the token.
+- **`kosha serve --host <address>`** and `KOSHA_HOST`; the server logs a warning
+  when bound to a non-loopback address without a proxy token.
+- **Anthropic discoverer reads live Models API metadata** — `max_input_tokens`,
+  `max_tokens`, and the nested `capabilities` tree now populate context window,
+  output cap, and capability tags directly instead of waiting for LiteLLM
+  enrichment (`capabilityTagsFromAnthropicApi`).
+- **MCP:** `kosha_ranked_routes` tool (cheapest / fastest / reliable /
+  balanced, same filters as `kosha_cheapest_model`); `ping` handler; protocol
+  negotiation across `2025-06-18`, `2025-03-26`, `2024-11-05`;
+  `serverInfo.version` read from `package.json`; tool failures returned as
+  `isError` results per spec; JSON-RPC handler exported and unit-tested; stdio
+  loop only starts when the file is the process entry point (symlink-safe).
+- **Docs:** `docs/mcp.md`; `docs/api.md` now covers `/api/capabilities`,
+  `/api/discovery-errors`, `/metrics`, and the proxy routes.
+- **CI:** Node 22 + 24 matrix.
+
+### Changed
+
+- **Default aliases track the current Claude generation:** `fable` →
+  `claude-fable-5-1`, `opus` → `claude-opus-5`, `haiku` → `claude-haiku-4-5`
+  (bare ID, not the dated snapshot). New pins `fable-5.1`, `mythos`, `opus-5`,
+  `opus-4.7`, `sonnet-4.6`; `fable-5`, `opus-4`, `opus-4.8`, `sonnet-4` keep
+  their previous targets. `gpt5` / `gpt5-mini` / `gpt5-nano` / `gpt5-pro` /
+  `gpt4.1` added; `gemini-pro` / `gemini-flash` / `gemini-flash-lite` moved from
+  retired 2025 preview IDs to the `gemini-2.5-*` GA IDs.
+- **Static Anthropic fallback catalog** gains `claude-fable-5-1` and
+  `claude-opus-5`, uses bare IDs, and carries context / output limits plus
+  `reasoning`, `structured_output`, `prompt_caching` capability tags.
+- **`inferStructuredOutputModes` for Anthropic:** Claude 4.5+ report
+  `json-schema` (native `output_config.format`); Fable / Mythos 5.1 drop
+  `tool-choice` because forced tool use returns a 400 on them.
+- **`kosha serve` binds `127.0.0.1` by default** (was every interface). Pass
+  `--host 0.0.0.0` to restore the old behaviour — and set `KOSHA_PROXY_TOKEN`.
+- **`/metrics` token comparison is constant-time.**
+- **Toolchain:** TypeScript 7, Vitest 5, Biome 2.5.12, `@types/node` 26.5;
+  `hono` 4.13.7 and `@hono/node-server` 2.1.1; GitHub Actions moved to
+  `checkout@v7`, `setup-node@v7`, `upload-artifact@v7`, `pnpm/action-setup@v6`,
+  `codeql-action@v4`, `action-gh-release@v3` (Node 20 runner deprecation).
+- **npm tarball drops `logo.png`** (3.3 MB of a 3.6 MB package); `logo.svg`
+  stays. Package size 3.6 MB → 0.3 MB.
+
+### Fixed
+
+- **Snapshot workflow never ran.** `update-kosha-snapshot.yml` referenced
+  `runner.temp` in a job-level `env`, which GitHub rejects at parse time, so
+  every run (the Monday cron included) failed in 0 s and `data/kosha-latest.json`
+  froze at 2026-07-17. Paths are now resolved in a step; provider API keys are
+  passed from repository secrets so the commit guard can pass.
+- **Anthropic translator sent `temperature` / `top_p` to models that reject
+  them** (Opus 4.7+, Sonnet 5, Fable, Mythos → 400). Sampling params are now
+  dropped per generation (and reduced to one on Opus / Sonnet 4.6).
+- **Anthropic translator synthesized an empty user message** for system-only or
+  assistant-first conversations, which Anthropic rejects; a non-empty
+  placeholder is used. Trailing whitespace on a final assistant turn is trimmed.
+- **Cost estimate ignored `max_completion_tokens`.**
+
+### Security
+
+- `hono` 4.12.28 → 4.13.7: ReDoS in CORS middleware, `memo()` cross-request
+  SSR leak, language-middleware complexity DoS, proxy-helper `Connection`
+  header handling. `@hono/node-server` 2.0.8 → 2.1.1: unauthenticated
+  memory-leak DoS via aborted WebSocket handshake. Transitive `postcss`
+  8.5.x path-traversal advisories cleared via Vite 8.2.2. `pnpm audit` clean.
+
+---
+
+## [1.4.0] — 2026-07-17
+
+### Added
+
 - **Tally export** (`src/tally.ts`) exposed via `src/index.ts` and
   `package.json` conditional export `"./tally"`. Pure, zero-dependency
   token-usage normalization + USD cost aggregation for browser/edge
@@ -36,6 +129,29 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 - `normalizeTokenUsage()` no longer rejects cache-write-only or
   reasoning-only usage records when input and output tokens are both zero.
+
+---
+
+## [1.3.1] — 2026-07-08
+
+Architecture-review hardening pass (PR #36), tiers 1–6.
+
+### Changed
+
+- Proxy: fail-safe wire translation (unsupported content throws and fails over
+  instead of being silently dropped), streaming failover across candidates,
+  circuit-breaker wiring fed by real proxy outcomes.
+- Registry: serialized `discover()`, lifecycle gating, pricing provenance
+  attribution.
+- Server: `/metrics` bearer-token gate and new gauges, boot-time degraded mode
+  when discovery fails, graceful shutdown that aborts in-flight upstream
+  fetches.
+- Ledger: monthly partition rotation with retention trimming.
+- CLI: `kosha doctor --ci`.
+- Dependencies to latest; Vite 8 clears GHSA-fx2h-pf6j-xcff and
+  GHSA-v6wh-96g9-6wx3.
+
+---
 
 ## [1.3.0] — 2026-06-25
 

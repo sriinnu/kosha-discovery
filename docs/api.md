@@ -254,6 +254,76 @@ curl http://localhost:3000/health
 }
 ```
 
+### `GET /api/capabilities`
+
+Aggregate view of every capability tag across the catalog, with the models that carry each.
+
+Query: `?provider=<id>` scopes the summary to one serving-layer provider.
+
+```json
+{
+  "capabilities": [{ "capability": "vision", "count": 212, "providers": ["anthropic", "openai", "..."] }],
+  "count": 18,
+  "missingCredentials": []
+}
+```
+
+### `GET /api/discovery-errors`
+
+Errors captured during the most recent discovery pass, one row per failing provider.
+
+```json
+{ "errors": [{ "providerId": "groq", "providerName": "Groq", "error": "…", "timestamp": 1784284454132 }], "count": 1, "hasErrors": true }
+```
+
+### `GET /metrics`
+
+Prometheus text exposition (`text/plain; version=0.0.4`). Gauges for catalog size, discovery degradation, per-provider reliability / p95 latency / breaker state, proxy request and error counters, month-to-date spend and budget headroom, and pricing-provenance coverage. All metrics live under the `kosha_` prefix.
+
+Set `KOSHA_METRICS_TOKEN` to require `Authorization: Bearer <token>`; unset leaves the endpoint open. See [operations.md](operations.md) for alert thresholds.
+
+## OpenAI-compatible proxy
+
+Point any OpenAI SDK at `http://127.0.0.1:3000/proxy/v1`. When `KOSHA_PROXY_TOKEN` is set, every proxy route requires it as `Authorization: Bearer <token>` or `x-kosha-token: <token>`.
+
+### `GET /proxy/v1/models`
+
+OpenAI-shaped model list containing every chat model the proxy can forward. SDKs call this before their first completion.
+
+### `POST /proxy/v1/chat/completions`
+
+Accepts a standard OpenAI chat-completions body. `model` is one of:
+
+| Form | Example | Meaning |
+|------|---------|---------|
+| canonical ID or alias | `claude-sonnet-5`, `sonnet`, `gpt-4o-mini` | resolve, pick the best credentialed route, forward |
+| `kosha:<strategy>` | `kosha:cheapest`, `kosha:fastest`, `kosha:reliable`, `kosha:balanced` | pick a route by strategy |
+| `kosha:<strategy>[filters]` | `kosha:cheapest[tool_use,128k,provider:groq]` | strategy plus capability / min-context / provider filters |
+
+Behaviour:
+
+- **Failover.** Up to three ranked candidates are tried; a 5xx or network error rolls to the next, a 4xx is returned as-is. `x-kosha-attempt-chain` lists `provider:status` for every attempt.
+- **Anthropic bridging.** Anthropic routes are translated to and from `/v1/messages` — streaming, tools / tool calls, `image_url` parts, `response_format` (json_schema on Claude 4.5+), and `reasoning_effort` are all carried. Sampling parameters are dropped on Claude generations that reject them; any lossy mapping is reported in `x-kosha-wire-notes`. Audio / file parts and non-function tools fall over to a native OpenAI-compatible route (OpenRouter, Vercel, …) when one is credentialed, otherwise `422`.
+- **Budget gate.** With `KOSHA_MONTHLY_BUDGET_USD` set, requests over budget return `429` with `x-kosha-budget-remaining-usd` / `x-kosha-budget-usd`. An unreadable ledger fails closed with `503`.
+- **Tenant bucketing.** `x-kosha-tenant: <name>` (or the legacy `Authorization: Bearer kosha-tenant-<name>` when no operator token is set) tags ledger rows and scopes the budget. It is a label, not authentication.
+
+Response headers:
+
+| Header | Meaning |
+|--------|---------|
+| `x-kosha-model` / `x-kosha-provider` | what actually ran |
+| `x-kosha-requested` | the caller's original `model` string |
+| `x-kosha-attempt-chain` | `provider:status,…` failover trail |
+| `x-kosha-estimated-cost-usd` | pre-flight estimate from request size and pricing |
+| `x-kosha-actual-cost-usd` / `x-kosha-usage-source` | reconciled cost from the upstream `usage` block when available (non-streaming) |
+| `x-kosha-wire-notes` | Anthropic translator notes (dropped or degraded fields) |
+
+Error responses on the Anthropic path use the OpenAI error envelope (`{ "error": { "message", "type", "code" } }`) so SDK clients parse them.
+
+## MCP server
+
+`kosha-mcp` (or `node dist/mcp-server.js`) exposes the registry over the Model Context Protocol on stdio. See [mcp.md](mcp.md).
+
 ## Discovery Plane v1
 
 For the additive daemon-oriented contract (stable schema, deltas, live watch, execution-binding hints), see [discovery-plane-v1.md](discovery-plane-v1.md).
