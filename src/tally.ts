@@ -41,6 +41,8 @@ const FIELD_ALIASES: Record<keyof TokenUsage, readonly string[]> = {
 		"cachedTokens",
 		"cache_read_input_tokens",
 		"cacheReadInputTokens",
+		// OpenAI nests the cache hit count under prompt_tokens_details.
+		"prompt_tokens_details.cached_tokens",
 	],
 	cacheWriteTokens: ["cacheWriteTokens", "cache_creation_input_tokens", "cacheCreationInputTokens"],
 	reasoningTokens: ["reasoningTokens", "reasoning_tokens", "completion_tokens_details.reasoning_tokens"],

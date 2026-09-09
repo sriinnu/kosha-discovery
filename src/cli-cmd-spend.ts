@@ -10,7 +10,7 @@
 import { readFile, readdir } from "fs/promises";
 import { basename, dirname, join } from "node:path";
 import { c, CYAN, DIM, GREEN } from "./cli-format.js";
-import { DEFAULT_LEDGER_PATH, type LedgerEntry } from "./cost.js";
+import { DEFAULT_LEDGER_PATH, type LedgerEntry, ledgerRowUsd } from "./cost.js";
 
 interface SpendFlags {
 	since?: string | boolean;
@@ -41,7 +41,8 @@ export async function cmdSpend(_unused: unknown, flags: Record<string, string | 
 		(tenantFilter === null || r.tenant === tenantFilter),
 	);
 
-	const total = inWindow.reduce((sum, r) => sum + (r.estimatedUsd ?? 0), 0);
+	const total = inWindow.reduce((sum, r) => sum + ledgerRowUsd(r), 0);
+	const reconciled = inWindow.filter((r) => r.usageSource === "upstream").length;
 	const byProvider = bucketBy(inWindow, (r) => r.provider);
 	const byModel = bucketBy(inWindow, (r) => `${r.provider}/${r.modelId}`);
 	const byTenant = bucketBy(inWindow, (r) => r.tenant ?? "(no tenant)");
@@ -50,6 +51,7 @@ export async function cmdSpend(_unused: unknown, flags: Record<string, string | 
 		process.stdout.write(`${JSON.stringify({
 			ledgerPath,
 			rows: inWindow.length,
+			reconciledRows: reconciled,
 			totalUsd: total,
 			byProvider: Object.fromEntries(byProvider),
 			byModel: Object.fromEntries(byModel),
@@ -59,7 +61,12 @@ export async function cmdSpend(_unused: unknown, flags: Record<string, string | 
 	}
 
 	process.stdout.write(`${c(CYAN, "Spend summary")}  ${c(DIM, `(${inWindow.length} rows from ${ledgerPath})`)}\n`);
-	process.stdout.write(`  ${c(GREEN, `$${total.toFixed(4)}`)}  ${c(DIM, "total estimated")}\n\n`);
+	const label = reconciled === inWindow.length && reconciled > 0
+		? "total (all rows reconciled with upstream usage)"
+		: reconciled > 0
+			? `total (${reconciled}/${inWindow.length} rows reconciled with upstream usage, rest estimated)`
+			: "total estimated";
+	process.stdout.write(`  ${c(GREEN, `$${total.toFixed(4)}`)}  ${c(DIM, label)}\n\n`);
 	renderBucket("By provider", byProvider);
 	renderBucket("By model", byModel);
 	renderBucket("By tenant", byTenant);
@@ -113,9 +120,9 @@ function bucketBy(rows: LedgerEntry[], keyFn: (row: LedgerEntry) => string): Map
 			totalOutputTokens: 0,
 		};
 		cur.count += 1;
-		cur.totalUsd += row.estimatedUsd ?? 0;
-		cur.totalInputTokens += row.estimatedInputTokens ?? 0;
-		cur.totalOutputTokens += row.estimatedOutputTokens ?? 0;
+		cur.totalUsd += ledgerRowUsd(row);
+		cur.totalInputTokens += row.actualInputTokens ?? row.estimatedInputTokens ?? 0;
+		cur.totalOutputTokens += row.actualOutputTokens ?? row.estimatedOutputTokens ?? 0;
 		out.set(key, cur);
 	}
 	return new Map(Array.from(out.entries()).sort((a, b) => b[1].totalUsd - a[1].totalUsd));
