@@ -74,6 +74,15 @@ jobs:
       - name: Test
         run: pnpm test
 
+      # npm trusted publishing (OIDC) needs npm >= 11.5; Node 22 bundles 10.x.
+      # With a trusted publisher configured on npmjs.com for this repo +
+      # workflow file, `npm publish` authenticates via the job's id-token and
+      # NPM_TOKEN is not needed at all. A still-valid NPM_TOKEN keeps working
+      # as before; an expired one is ignored when unset.
+      - name: Upgrade npm for trusted publishing
+        if: ${{ github.event.inputs.publish_npm == 'true' }}
+        run: npm install -g npm@latest && npm --version
+
       - name: Publish to npm
         if: ${{ github.event.inputs.publish_npm == 'true' }}
         env:
