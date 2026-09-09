@@ -101,7 +101,19 @@ const routed = await client.chat.completions.create({
 
 The response always includes `x-kosha-model`, `x-kosha-provider`, and `x-kosha-requested` headers so the caller knows exactly what ran.
 
-Supported transports: `openai`, `openai-compatible-http`, `ollama`, and `anthropic`. Anthropic is bridged through a built-in OpenAI ↔ Anthropic wire-format translator (non-streaming, text-only for now — streaming and tool-call requests fall back to a native OpenAI-compatible route). Google, Bedrock, and Vertex speak SDK-specific wire formats and are not yet proxied.
+Supported transports: `openai`, `openai-compatible-http`, `ollama`, and `anthropic`. Anthropic is bridged through a built-in OpenAI ↔ Anthropic wire-format translator that carries streaming, tools and tool calls, `image_url` parts, `response_format`, and `reasoning_effort`; anything it can't map faithfully (audio input, non-function tools) fails over to a native OpenAI-compatible route. Google, Bedrock, and Vertex speak SDK-specific wire formats and are not yet proxied.
+
+The server binds `127.0.0.1` by default. To expose it, run `kosha serve --host 0.0.0.0` **with** `KOSHA_PROXY_TOKEN` set; the proxy then requires `Authorization: Bearer <token>` (or `x-kosha-token`). Full reference: [docs/api.md](docs/api.md#openai-compatible-proxy).
+
+### MCP server
+
+`kosha-mcp` exposes the registry to AI agents over the Model Context Protocol on stdio: model lookup, cheapest / strategy-ranked routes, provider health, and context-management advice.
+
+```bash
+claude mcp add kosha -- kosha-mcp
+```
+
+Tools and protocol details: [docs/mcp.md](docs/mcp.md).
 
 ## Supported providers
 
@@ -171,6 +183,7 @@ src/
 | [Credentials](docs/credentials.md) | Env vars, CLI tools, and config files for every provider |
 | [CLI](docs/cli.md) | Commands, flags, examples |
 | [HTTP API](docs/api.md) | Endpoints, parameters, response schemas |
+| [MCP server](docs/mcp.md) | Tools, protocol negotiation, client setup |
 | [Configuration](docs/configuration.md) | Aliases, routing, enrichment, programmatic config |
 | [Architecture](docs/architecture.md) | Discovery flow, module map, adding providers |
 | [Resilience](docs/resilience.md) | Circuit breakers, stale cache, health |
