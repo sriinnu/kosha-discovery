@@ -219,7 +219,7 @@ Instead of env vars, you can create `~/.kosharc.json` (global) or `kosha.config.
     "openrouter": { "enabled": false }
   },
   "aliases": {
-    "fast": "claude-haiku-4-5-20251001"
+    "fast": "claude-haiku-4-5"
   },
   "cacheTtlMs": 3600000
 }

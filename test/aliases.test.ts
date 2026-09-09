@@ -5,20 +5,40 @@ describe("AliasResolver", () => {
 	describe("default alias resolution", () => {
 		const resolver = new AliasResolver();
 
-		it("resolves Anthropic aliases", () => {
-			expect(resolver.resolve("fable")).toBe("claude-fable-5");
-			expect(resolver.resolve("fable-5")).toBe("claude-fable-5");
+		it("resolves Anthropic aliases to the current generation", () => {
+			expect(resolver.resolve("fable")).toBe("claude-fable-5-1");
+			expect(resolver.resolve("fable-5.1")).toBe("claude-fable-5-1");
+			expect(resolver.resolve("mythos")).toBe("claude-mythos-5-1");
+			expect(resolver.resolve("opus")).toBe("claude-opus-5");
+			expect(resolver.resolve("opus-5")).toBe("claude-opus-5");
 			expect(resolver.resolve("sonnet")).toBe("claude-sonnet-5");
 			expect(resolver.resolve("sonnet-5")).toBe("claude-sonnet-5");
-			expect(resolver.resolve("sonnet-4")).toBe("claude-sonnet-4-6");
-			expect(resolver.resolve("opus")).toBe("claude-opus-4-8");
+			expect(resolver.resolve("haiku")).toBe("claude-haiku-4-5");
+			expect(resolver.resolve("haiku-4.5")).toBe("claude-haiku-4-5");
+		});
+
+		it("keeps generation-pinned Anthropic aliases for backward compatibility", () => {
+			expect(resolver.resolve("fable-5")).toBe("claude-fable-5");
 			expect(resolver.resolve("opus-4")).toBe("claude-opus-4-8");
 			expect(resolver.resolve("opus-4.8")).toBe("claude-opus-4-8");
-			expect(resolver.resolve("haiku")).toBe("claude-haiku-4-5-20251001");
-			expect(resolver.resolve("haiku-4.5")).toBe("claude-haiku-4-5-20251001");
+			expect(resolver.resolve("opus-4.7")).toBe("claude-opus-4-7");
+			expect(resolver.resolve("sonnet-4")).toBe("claude-sonnet-4-6");
+			expect(resolver.resolve("sonnet-4.6")).toBe("claude-sonnet-4-6");
+		});
+
+		it("never points a bare Anthropic alias at a date-suffixed snapshot ID", () => {
+			for (const [alias, target] of Object.entries(DEFAULT_ALIASES)) {
+				if (!target.startsWith("claude-")) continue;
+				expect(target, `${alias} → ${target}`).not.toMatch(/-\d{8}$/);
+			}
 		});
 
 		it("resolves OpenAI aliases", () => {
+			expect(resolver.resolve("gpt5")).toBe("gpt-5");
+			expect(resolver.resolve("gpt5-mini")).toBe("gpt-5-mini");
+			expect(resolver.resolve("gpt5-nano")).toBe("gpt-5-nano");
+			expect(resolver.resolve("gpt5-pro")).toBe("gpt-5-pro");
+			expect(resolver.resolve("gpt4.1")).toBe("gpt-4.1");
 			expect(resolver.resolve("gpt4o")).toBe("gpt-4o");
 			expect(resolver.resolve("gpt4o-mini")).toBe("gpt-4o-mini");
 			expect(resolver.resolve("o3")).toBe("o3");
@@ -27,9 +47,16 @@ describe("AliasResolver", () => {
 		});
 
 		it("resolves Google aliases", () => {
-			expect(resolver.resolve("gemini-pro")).toBe("gemini-2.5-pro-preview-05-06");
-			expect(resolver.resolve("gemini-flash")).toBe("gemini-2.5-flash-preview-04-17");
-			expect(resolver.resolve("gemini-flash-lite")).toBe("gemini-2.0-flash-lite");
+			expect(resolver.resolve("gemini-pro")).toBe("gemini-2.5-pro");
+			expect(resolver.resolve("gemini-flash")).toBe("gemini-2.5-flash");
+			expect(resolver.resolve("gemini-flash-lite")).toBe("gemini-2.5-flash-lite");
+		});
+
+		it("never points a Google alias at a dated preview ID", () => {
+			for (const [alias, target] of Object.entries(DEFAULT_ALIASES)) {
+				if (!target.startsWith("gemini-")) continue;
+				expect(target, `${alias} → ${target}`).not.toMatch(/preview/);
+			}
 		});
 
 		it("resolves local model aliases", () => {
@@ -77,7 +104,7 @@ describe("AliasResolver", () => {
 			});
 			expect(resolver.resolve("my-alias")).toBe("my-model-id");
 			// Default still works
-			expect(resolver.resolve("opus")).toBe("claude-opus-4-8");
+			expect(resolver.resolve("opus")).toBe("claude-opus-5");
 		});
 	});
 
@@ -98,7 +125,7 @@ describe("AliasResolver", () => {
 
 		it("finds aliases for models with many aliases", () => {
 			const aliases = resolver.reverseAliases("claude-opus-4-8");
-			expect(aliases).toContain("opus");
+			expect(aliases).not.toContain("opus");
 			expect(aliases).toContain("opus-4");
 			expect(aliases).toContain("opus-4.8");
 		});

@@ -10,22 +10,41 @@
  * Curated default aliases mapping short names to canonical model IDs.
  *
  * These are production-ready and cover the most commonly referenced
- * models across major providers. Updated July 2026.
+ * models across major providers. Updated September 2026.
+ *
+ * Convention: a bare family name (`opus`, `sonnet`, `gemini-pro`) always
+ * tracks the newest generally-available model in that family; a suffixed
+ * form (`opus-4.8`, `sonnet-4`) pins a generation and is kept for
+ * backward compatibility when the bare alias moves on.
  */
 export const DEFAULT_ALIASES: Readonly<Record<string, string>> = {
-	// ── Anthropic — Claude 5 family + Opus 4.8 (latest as of Jul 2026) ──
-	"fable": "claude-fable-5",
+	// ── Anthropic — Claude 5 family (latest as of Sep 2026) ──
+	// Bare IDs, never date-suffixed: `claude-haiku-4-5` is the canonical
+	// form; the dated `claude-haiku-4-5-20251001` snapshot still resolves via
+	// normalizeModelId() for callers that pinned it.
+	"fable": "claude-fable-5-1",
+	"fable-5.1": "claude-fable-5-1",
 	"fable-5": "claude-fable-5",
-	"opus": "claude-opus-4-8",
+	"mythos": "claude-mythos-5-1",
+	"mythos-5.1": "claude-mythos-5-1",
+	"opus": "claude-opus-5",
+	"opus-5": "claude-opus-5",
 	"opus-4": "claude-opus-4-8",
 	"opus-4.8": "claude-opus-4-8",
+	"opus-4.7": "claude-opus-4-7",
 	"sonnet": "claude-sonnet-5",
 	"sonnet-5": "claude-sonnet-5",
 	"sonnet-4": "claude-sonnet-4-6",
-	"haiku": "claude-haiku-4-5-20251001",
-	"haiku-4.5": "claude-haiku-4-5-20251001",
+	"sonnet-4.6": "claude-sonnet-4-6",
+	"haiku": "claude-haiku-4-5",
+	"haiku-4.5": "claude-haiku-4-5",
 
-	// ── OpenAI — latest reasoning and chat models ──
+	// ── OpenAI — GPT-5 family, GPT-4o, and o-series reasoning ──
+	"gpt5": "gpt-5",
+	"gpt5-mini": "gpt-5-mini",
+	"gpt5-nano": "gpt-5-nano",
+	"gpt5-pro": "gpt-5-pro",
+	"gpt4.1": "gpt-4.1",
 	"gpt4o": "gpt-4o",
 	"gpt4o-mini": "gpt-4o-mini",
 	"o1": "o1",
@@ -33,10 +52,10 @@ export const DEFAULT_ALIASES: Readonly<Record<string, string>> = {
 	"o3-mini": "o3-mini",
 	"o4-mini": "o4-mini",
 
-	// ── Google — Gemini 2.5 series ──
-	"gemini-pro": "gemini-2.5-pro-preview-05-06",
-	"gemini-flash": "gemini-2.5-flash-preview-04-17",
-	"gemini-flash-lite": "gemini-2.0-flash-lite",
+	// ── Google — Gemini 2.5 GA IDs (the dated -preview- IDs are retired) ──
+	"gemini-pro": "gemini-2.5-pro",
+	"gemini-flash": "gemini-2.5-flash",
+	"gemini-flash-lite": "gemini-2.5-flash-lite",
 
 	// ── Moonshot — Kimi family ──
 	"kimi": "kimi-k3",

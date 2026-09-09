@@ -14,6 +14,46 @@
 import type { StructuredOutputMode, ToolDialect } from "./types.js";
 
 /**
+ * Parse the generation out of a family-first Claude ID such as
+ * `claude-opus-4-8`, `claude-sonnet-5`, `claude-fable-5-1`, or a dated
+ * `claude-haiku-4-5-20251001`. Returns `undefined` for legacy version-first
+ * IDs (`claude-3-5-sonnet-…`, `claude-2.1`) and non-Claude IDs.
+ */
+function parseClaudeGeneration(id: string): { family: string; major: number; minor: number } | undefined {
+	// Minor is 1-2 digits so an 8-digit date suffix (`-20250514`) is never
+	// mistaken for a minor version.
+	const m = /^claude-(opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?$/.exec(id);
+	if (!m) return undefined;
+	return { family: m[1], major: Number(m[2]), minor: m[3] !== undefined ? Number(m[3]) : 0 };
+}
+
+/**
+ * Whether a Claude model accepts `output_config.format` (native JSON-schema
+ * structured outputs). Shipped for the 4.5 generation (Sonnet 4.5, Haiku 4.5,
+ * Opus 4.1) and every model since; older generations fall back to the
+ * tool-choice coercion trick.
+ */
+function claudeSupportsNativeJsonSchema(id: string): boolean {
+	const gen = parseClaudeGeneration(id);
+	if (!gen) return false;
+	if (gen.major >= 5) return true;
+	if (gen.major === 4 && gen.minor >= 5) return true;
+	return gen.family === "opus" && gen.major === 4 && gen.minor === 1;
+}
+
+/**
+ * Whether a Claude model still honours forced `tool_choice` (`any` / `tool`).
+ * Claude Fable 5.1 and Claude Mythos 5.1 return a 400 for both, so the
+ * tool-choice structured-output coercion is not available on them.
+ */
+function claudeSupportsForcedToolChoice(id: string): boolean {
+	const gen = parseClaudeGeneration(id);
+	if (!gen) return true;
+	if (gen.family !== "fable" && gen.family !== "mythos") return true;
+	return !(gen.major === 5 && gen.minor >= 1) && gen.major < 6;
+}
+
+/**
  * Infer the tool-calling dialect a model natively speaks.
  *
  * The return value describes the wire format a consumer must emit to
@@ -169,10 +209,16 @@ export function inferStructuredOutputModes(
 		return modes;
 	}
 
-	// Anthropic — no native JSON-schema enforcement yet; tool-choice coercion + XML guidance.
+	// Anthropic — native `output_config.format` JSON schema on Claude 4.5+;
+	// tool-choice coercion where forced tool_choice is still accepted; XML
+	// prompt guidance everywhere. Fable / Mythos 5.1 reject forced tool_choice.
 	if (origin === "anthropic" || /claude/.test(id)) {
 		if (/claude-(instant|1|2\.0)/.test(id)) return ["xml"];
-		return ["tool-choice", "xml"];
+		const modes: StructuredOutputMode[] = [];
+		if (claudeSupportsNativeJsonSchema(id)) modes.push("json-schema");
+		if (claudeSupportsForcedToolChoice(id)) modes.push("tool-choice");
+		modes.push("xml");
+		return modes;
 	}
 
 	// Google Gemini — response_schema is available on Gemini 1.5+ and all 2.x variants.

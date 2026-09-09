@@ -11,12 +11,83 @@ import { BaseDiscoverer, MAX_MODELS_PER_PROVIDER } from "./base.js";
 import { getPublicSeed } from "./public-seed.js";
 import { STATIC_ANTHROPIC_MODELS } from "./static-direct.js";
 
-/** Shape of a single model object returned by the Anthropic API. */
+/**
+ * Shape of a single model object returned by the Anthropic API.
+ *
+ * Since March 2026 the Models API also publishes the context window
+ * (`max_input_tokens`), the output cap (`max_tokens`), and a nested
+ * `capabilities` tree with a `supported: boolean` leaf under each feature
+ * (e.g. `capabilities.thinking.types.adaptive.supported`). These are the
+ * authoritative values and take precedence over any seed / LiteLLM guess.
+ */
 interface AnthropicModel {
 	id: string;
 	display_name: string;
 	created_at: string;
 	type: string;
+	max_input_tokens?: number;
+	max_tokens?: number;
+	capabilities?: Record<string, unknown>;
+}
+
+/**
+ * Map Anthropic capability-tree keys onto kosha's normalized capability
+ * vocabulary. Keys not listed here are carried through verbatim (lowercased,
+ * snake_case) so a newly published feature shows up in `rawCapabilities`
+ * without a kosha release.
+ */
+const ANTHROPIC_CAPABILITY_TAGS: Readonly<Record<string, string>> = {
+	thinking: "reasoning",
+	extended_thinking: "reasoning",
+	vision: "vision",
+	image: "vision",
+	images: "vision",
+	tools: "function_calling",
+	tool_use: "function_calling",
+	function_calling: "function_calling",
+	structured_outputs: "structured_output",
+	structured_output: "structured_output",
+	prompt_caching: "prompt_caching",
+	caching: "prompt_caching",
+	pdf: "document",
+	documents: "document",
+	citations: "citations",
+	batch: "batch",
+	batches: "batch",
+	effort: "effort",
+};
+
+/**
+ * Walk a capability subtree and report whether any `supported: true` leaf
+ * exists. The API returns the full tree for every model with `supported`
+ * booleans at the leaves, so a feature counts as present when at least one
+ * variant of it is supported.
+ */
+function subtreeSupported(node: unknown, depth = 0): boolean {
+	if (depth > 6 || node === null || typeof node !== "object") return false;
+	const obj = node as Record<string, unknown>;
+	if (obj.supported === true) return true;
+	if (obj.supported === false && Object.keys(obj).length === 1) return false;
+	for (const value of Object.values(obj)) {
+		if (value && typeof value === "object" && subtreeSupported(value, depth + 1)) return true;
+	}
+	return false;
+}
+
+/**
+ * Derive normalized capability tags from the Models API `capabilities` tree.
+ * Returns an empty array when the tree is absent so callers can fall back to
+ * ID-based inference.
+ */
+export function capabilityTagsFromAnthropicApi(capabilities: Record<string, unknown> | undefined): string[] {
+	if (!capabilities || typeof capabilities !== "object") return [];
+	const tags = new Set<string>();
+	for (const [rawKey, subtree] of Object.entries(capabilities)) {
+		if (!subtreeSupported(subtree)) continue;
+		const key = rawKey.toLowerCase().replace(/[^a-z0-9]+/g, "_");
+		tags.add(ANTHROPIC_CAPABILITY_TAGS[key] ?? key);
+	}
+	return Array.from(tags);
 }
 
 /** Paginated list response from `GET /v1/models`. */
@@ -95,18 +166,34 @@ export class AnthropicDiscoverer extends BaseDiscoverer {
 
 	/**
 	 * Convert an Anthropic API model object into a normalized {@link ModelCard}.
+	 *
+	 * Capabilities are the union of ID-based inference (so pre-March-2026 API
+	 * responses without a `capabilities` tree keep working) and whatever the
+	 * live tree reports. Context window and output cap come straight from the
+	 * API when present; `makeCard` leaves them at 0 otherwise so the
+	 * enrichment pass can fill them.
 	 */
 	private toModelCard(model: AnthropicModel): ModelCard {
-		const capabilities = this.inferCapabilities(model.id);
+		const inferred = this.inferCapabilities(model.id);
+		const live = capabilityTagsFromAnthropicApi(model.capabilities);
+		const capabilities = Array.from(new Set([...inferred, ...live]));
 		const mode = model.id.toLowerCase().includes("embed") ? ("embedding" as const) : ("chat" as const);
 
-		return this.makeCard({
+		const card = this.makeCard({
 			id: model.id,
 			name: model.display_name || model.id,
 			provider: this.providerId,
 			mode,
 			capabilities,
+			rawCapabilities: live.length > 0 ? [...inferred, ...live] : undefined,
 		});
+		if (typeof model.max_input_tokens === "number" && model.max_input_tokens > 0) {
+			card.contextWindow = model.max_input_tokens;
+		}
+		if (typeof model.max_tokens === "number" && model.max_tokens > 0) {
+			card.maxOutputTokens = model.max_tokens;
+		}
+		return card;
 	}
 
 	/**
@@ -138,21 +225,21 @@ export class AnthropicDiscoverer extends BaseDiscoverer {
 	/**
 	 * Check whether a model ID indicates vision (multimodal) support.
 	 *
-	 * Every namespaced Claude family (opus/sonnet/haiku) has been multimodal
-	 * since Claude 3, so family-first IDs (e.g. `claude-opus-4-8`,
-	 * `claude-sonnet-5`, `claude-haiku-4-5-20251001`) are matched
+	 * Every namespaced Claude family (opus/sonnet/haiku/fable/mythos) has been
+	 * multimodal since Claude 3, so family-first IDs (e.g. `claude-opus-5`,
+	 * `claude-sonnet-5`, `claude-fable-5-1`, `claude-haiku-4-5`) are matched
 	 * directly. Legacy version-first IDs (`claude-3`, `claude-3-5-haiku`,
 	 * `claude-4-6`) are covered by the major-version pattern.
 	 *
 	 * @param id - Lowercased model ID.
-	 * @returns `true` for Claude 3+ and all opus/sonnet/haiku family models.
+	 * @returns `true` for Claude 3+ and all family-first Claude models.
 	 */
 	private hasVisionSupport(id: string): boolean {
 		// Family-first naming (Claude 4+): the family name follows "claude-"
-		// directly (e.g. claude-opus-4-8, claude-sonnet-5). None of
-		// these carry a legacy major-version token, so the pattern below would
-		// miss them without this check.
-		if (/^claude-(opus|sonnet|haiku)/.test(id)) return true;
+		// directly (e.g. claude-opus-5, claude-fable-5-1). None of these carry
+		// a legacy major-version token, so the pattern below would miss them
+		// without this check.
+		if (/^claude-(opus|sonnet|haiku|fable|mythos)/.test(id)) return true;
 		// Legacy version-first naming: claude-3, claude-3-5-haiku, claude-4-6.
 		// Captures a major version >= 3, covering all current and future
 		// multimodal Claude models that still use the version-first shape.

@@ -59,6 +59,12 @@ describe("inferToolDialect — Anthropic", () => {
 		expect(inferToolDialect("anthropic", "claude-3-5-sonnet-20241022")).toBe("anthropic-tools");
 	});
 
+	it("returns anthropic-tools for the Claude 5 families, Fable and Mythos included", () => {
+		expect(inferToolDialect("anthropic", "claude-opus-5")).toBe("anthropic-tools");
+		expect(inferToolDialect("anthropic", "claude-fable-5-1")).toBe("anthropic-tools");
+		expect(inferToolDialect("anthropic", "claude-mythos-5-1")).toBe("anthropic-tools");
+	});
+
 	it("returns none for legacy Claude 1 / 2 / instant models", () => {
 		expect(inferToolDialect("anthropic", "claude-instant-1.2")).toBe("none");
 		expect(inferToolDialect("anthropic", "claude-2.0")).toBe("none");
@@ -154,11 +160,31 @@ describe("inferStructuredOutputModes — OpenAI", () => {
 });
 
 describe("inferStructuredOutputModes — Anthropic", () => {
-	it("returns tool-choice + xml for Claude 3+", () => {
-		expect(inferStructuredOutputModes("anthropic", "claude-opus-4-6")).toEqual([
-			"tool-choice",
-			"xml",
-		]);
+	it("returns json-schema + tool-choice + xml for Claude 4.5+ (native output_config.format)", () => {
+		for (const id of [
+			"claude-opus-4-6",
+			"claude-opus-4-8",
+			"claude-opus-5",
+			"claude-sonnet-4-5",
+			"claude-sonnet-5",
+			"claude-haiku-4-5",
+			"claude-haiku-4-5-20251001",
+			"claude-fable-5",
+			"claude-opus-4-1",
+		]) {
+			expect(inferStructuredOutputModes("anthropic", id), id).toEqual(["json-schema", "tool-choice", "xml"]);
+		}
+	});
+
+	it("drops tool-choice for Fable / Mythos 5.1 (forced tool_choice returns 400)", () => {
+		expect(inferStructuredOutputModes("anthropic", "claude-fable-5-1")).toEqual(["json-schema", "xml"]);
+		expect(inferStructuredOutputModes("anthropic", "claude-mythos-5-1")).toEqual(["json-schema", "xml"]);
+	});
+
+	it("returns tool-choice + xml for Claude 3.x / 4.0 (no native JSON schema)", () => {
+		expect(inferStructuredOutputModes("anthropic", "claude-3-5-sonnet-20241022")).toEqual(["tool-choice", "xml"]);
+		expect(inferStructuredOutputModes("anthropic", "claude-sonnet-4-20250514")).toEqual(["tool-choice", "xml"]);
+		expect(inferStructuredOutputModes("anthropic", "claude-opus-4")).toEqual(["tool-choice", "xml"]);
 	});
 
 	it("returns only xml for legacy Claude 1/2", () => {

@@ -99,7 +99,7 @@ kosha.modelRoutes("claude-opus-4-8")               // Cross-provider routes
 kosha.modelRouteInfo("claude-opus-4-8")            // Routes with preferred/direct flags
 
 // --- WRITE operations ---
-kosha.alias("fast", "claude-haiku-4-5-20251001")   // Add custom alias
+kosha.alias("fast", "claude-haiku-4-5")   // Add custom alias
 await kosha.refresh()                               // Re-discover all
 await kosha.refresh("anthropic")                    // Re-discover one provider
 
