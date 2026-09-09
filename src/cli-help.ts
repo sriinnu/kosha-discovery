@@ -65,7 +65,8 @@ ${c(BOLD, "COMMANDS")}
     --provider <name>             Scope latest fetch to one provider
   ${c(CYAN, "refresh")} ${c(DIM, "(update)")}              Force re-discover all providers (bypass cache)
     --provider <name>             Refresh only one provider
-  ${c(CYAN, "serve")} [--port 3000]           Start HTTP API server
+  ${c(CYAN, "serve")} [--port 3000]           Start HTTP API server (binds 127.0.0.1)
+    --host <address>              Bind address; set KOSHA_PROXY_TOKEN before exposing
 
 ${c(BOLD, "CACHING & OUTPUT")}
   Results are cached at ${c(CYAN, "~/.kosha/cache")} for 24h by default.
@@ -104,6 +105,7 @@ ${c(BOLD, "EXAMPLES")}
   ${c(DIM, "$")} kosha resolve haiku
   ${c(DIM, "$")} kosha refresh --provider anthropic
   ${c(DIM, "$")} kosha serve --port 8080
+  ${c(DIM, "$")} KOSHA_PROXY_TOKEN=s3cret kosha serve --host 0.0.0.0
 `.trim());
 }
 

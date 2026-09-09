@@ -402,7 +402,10 @@ export async function cmdRefresh(registry: ModelRegistry, flags: Record<string, 
  * The server module is loaded via dynamic import to avoid pulling in Hono
  * for purely CLI-based usage.
  *
- * @param flags  CLI flags (supports `--port <number>`, default `3000`).
+ * @param flags  CLI flags: `--port <number>` (default `3000`) and
+ *               `--host <address>` (default `127.0.0.1`, or `KOSHA_HOST`).
+ *               Use `--host 0.0.0.0` to expose the server on the network —
+ *               set `KOSHA_PROXY_TOKEN` first, the proxy spends your keys.
  */
 export async function cmdServe(flags: Record<string, string | boolean>): Promise<void> {
 	const port = typeof flags.port === "string" ? parseInt(flags.port, 10) : 3000;
@@ -412,9 +415,15 @@ export async function cmdServe(flags: Record<string, string | boolean>): Promise
 		process.exit(1);
 	}
 
+	if (flags.host !== undefined && typeof flags.host !== "string") {
+		console.error(c(RED, "--host requires a value (e.g. --host 0.0.0.0)"));
+		process.exit(1);
+	}
+	const host = typeof flags.host === "string" ? flags.host : undefined;
+
 	// Dynamic import keeps Hono out of the critical path for non-serve commands
 	const { startServer } = await import("./server.js");
-	await startServer(port);
+	await startServer(port, host);
 }
 
 // ---------------------------------------------------------------------------

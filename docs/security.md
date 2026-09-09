@@ -28,6 +28,29 @@ The scanner is applied at 5 chokepoints covering all external data:
 4. **`bedrock.ts`** -- AWS CLI model list output
 5. **`cache.ts`** -- cached data from disk (poisoned files are logged and auto-invalidated)
 
+## Server Exposure Defaults
+
+`kosha serve` fronts an OpenAI-compatible proxy that forwards requests using **your**
+provider API keys. Two defaults keep that from becoming a free LLM endpoint for
+whoever shares your network:
+
+| Control | Default | Override |
+|---------|---------|----------|
+| Bind address | `127.0.0.1` (loopback only) | `kosha serve --host 0.0.0.0` or `KOSHA_HOST=0.0.0.0` |
+| Operator token | unset (open, safe only on loopback) | `KOSHA_PROXY_TOKEN=<secret>` |
+
+When `KOSHA_PROXY_TOKEN` is set, every `/proxy/*` route and `POST /api/refresh` require
+the token as `Authorization: Bearer <token>` or in an `x-kosha-token` header. Comparison
+is constant-time. Read-only catalog routes (`/api/models`, `/health`, ...) stay open;
+`/metrics` has its own `KOSHA_METRICS_TOKEN`.
+
+Binding a non-loopback address with no token set prints a warning at startup but does
+not refuse to start -- some deployments terminate auth at a reverse proxy.
+
+Tenant bucketing (per-tenant ledger rows and budgets) uses the `x-kosha-tenant: <name>`
+header. The legacy `Authorization: Bearer kosha-tenant-<name>` form still works when
+no operator token is configured. Neither is authentication.
+
 ## Pre-Commit Hook
 
 A git pre-commit hook (`hooks/pre-commit`) provides 3-layer commit-time defense:

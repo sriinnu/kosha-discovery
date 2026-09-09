@@ -279,14 +279,26 @@ function resolveProxyCandidates(registry: ModelRegistry, requested: string): Mod
 	return dedupeModels(ordered);
 }
 
+/** Allowed shape of a tenant tag: short, filesystem/log-safe identifier. */
+const TENANT_TAG_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
+
 /**
- * Extract a tenant tag from an `Authorization: Bearer kosha-tenant-<name>`
- * header. We use it as a bucketing label only (per-tenant ledger rows + budget),
- * never as actual authentication — the bearer is consumed and replaced with
- * the resolved upstream credential before forwarding. Returns null for any
- * non-conforming header so downstream code doesn't have to guard for empties.
+ * Extract a tenant tag from the request. Two carriers are accepted:
+ *
+ *   - `x-kosha-tenant: <name>` — preferred, and the only option when
+ *     `KOSHA_PROXY_TOKEN` is set (the Authorization header then carries the
+ *     operator token instead).
+ *   - `Authorization: Bearer kosha-tenant-<name>` — legacy carrier, kept for
+ *     callers that can only set a bearer token.
+ *
+ * The tag is a bucketing label only (per-tenant ledger rows + budget), never
+ * authentication — the bearer is consumed and replaced with the resolved
+ * upstream credential before forwarding. Returns null for any non-conforming
+ * value so downstream code doesn't have to guard for empties.
  */
-function parseTenantTag(authHeader: string | undefined): string | null {
+export function parseTenantTag(authHeader: string | undefined, tenantHeader?: string | undefined): string | null {
+	const explicit = tenantHeader?.trim();
+	if (explicit && TENANT_TAG_PATTERN.test(explicit)) return explicit;
 	if (!authHeader) return null;
 	const match = /^\s*Bearer\s+kosha-tenant-([A-Za-z0-9_.-]{1,64})\s*$/i.exec(authHeader);
 	return match ? match[1] : null;
@@ -417,7 +429,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 		// We don't trust the value as authentication — it just buckets ledger
 		// rows and per-tenant budgets. The proxy still resolves real upstream
 		// credentials from env / CLI files as usual.
-		const tenant = parseTenantTag(ctx.req.header("authorization"));
+		const tenant = parseTenantTag(ctx.req.header("authorization"), ctx.req.header("x-kosha-tenant"));
 
 		// ── Budget gate ────────────────────────────────────────────────
 		// When a budget is configured we MUST fail closed: if the ledger is
