@@ -13,6 +13,17 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
+Nothing yet.
+
+---
+
+## [1.5.0] — 2026-09-09
+
+Security defaults for the proxy, a current-generation Anthropic model layer,
+full Anthropic bridging through the OpenAI-compatible proxy (streaming, tools,
+images, structured output) with ledger usage reconciliation, MCP parity, and a
+toolchain refresh. 929 tests; `pnpm audit` clean.
+
 ### Added
 
 - **Proxy: full Anthropic bridging** (`src/wire-anthropic.ts`). The OpenAI ↔
