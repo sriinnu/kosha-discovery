@@ -23,18 +23,24 @@ Built-in aliases for common models:
 
 | Alias | Resolves To | Notes |
 |-------|-------------|-------|
-| `fable` | `claude-fable-5` | Latest Anthropic Fable |
+| `fable` | `claude-fable-5-1` | Latest Anthropic Fable (most capable tier) |
+| `fable-5` | `claude-fable-5` | Pinned Fable 5 |
+| `mythos` | `claude-mythos-5-1` | Project Glasswing counterpart of Fable 5.1 |
+| `opus` | `claude-opus-5` | Latest Anthropic Opus |
+| `opus-5` | `claude-opus-5` | Pinned Opus 5 |
+| `opus-4` / `opus-4.8` | `claude-opus-4-8` | Pinned Opus 4.8 |
+| `opus-4.7` | `claude-opus-4-7` | Pinned Opus 4.7 |
 | `sonnet` | `claude-sonnet-5` | Latest Anthropic Sonnet |
-| `sonnet-5` | `claude-sonnet-5` | Sonnet 5 family |
-| `sonnet-4` | `claude-sonnet-4-6` | Legacy Sonnet 4 family |
-| `opus` | `claude-opus-4-8` | Latest Anthropic Opus |
-| `opus-4` | `claude-opus-4-8` | Opus 4 family |
-| `opus-4.8` | `claude-opus-4-8` | Specific Opus 4.8 |
-| `haiku` | `claude-haiku-4-5-20251001` | Latest Anthropic Haiku |
+| `sonnet-5` | `claude-sonnet-5` | Pinned Sonnet 5 |
+| `sonnet-4` / `sonnet-4.6` | `claude-sonnet-4-6` | Pinned Sonnet 4.6 |
+| `haiku` / `haiku-4.5` | `claude-haiku-4-5` | Latest Anthropic Haiku (bare ID, not date-suffixed) |
 | `kimi` | `kimi-k3` | Latest Moonshot Kimi |
+| `gpt5` | `gpt-5` | OpenAI GPT-5 (`gpt5-mini`, `gpt5-nano`, `gpt5-pro` also) |
+| `gpt4.1` | `gpt-4.1` | OpenAI GPT-4.1 |
 | `gpt4o` | `gpt-4o` | OpenAI GPT-4o |
 | `o3` | `o3` | OpenAI reasoning |
-| `gemini-pro` | `gemini-2.5-pro-preview-05-06` | Google Gemini 2.5 Pro |
+| `gemini-pro` | `gemini-2.5-pro` | Google Gemini 2.5 Pro (GA ID) |
+| `gemini-flash` | `gemini-2.5-flash` | Google Gemini 2.5 Flash (GA ID) |
 | `nemotron-ultra` | `nvidia/llama-3.1-nemotron-ultra-253b-v1` | NVIDIA Nemotron |
 | `mistral-large` | `mistral-large-latest` | Mistral Large |
 | `groq-llama` | `llama-3.3-70b-versatile` | Groq-hosted Llama |
@@ -45,7 +51,7 @@ Custom aliases:
 
 ```typescript
 import { ModelRegistry } from "kosha-discovery";
-const registry = new ModelRegistry({ aliases: { "fast": "claude-haiku-4-5-20251001" } });
+const registry = new ModelRegistry({ aliases: { "fast": "claude-haiku-4-5" } });
 ```
 
 ## Provider vs Origin

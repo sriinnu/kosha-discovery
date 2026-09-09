@@ -77,37 +77,87 @@ export const STATIC_OPENAI_MODELS: readonly StaticModelSeed[] = [
 	},
 ];
 
-/** Curated Anthropic models for unauthenticated/offline discovery mode. */
+/**
+ * Capability tags shared by every current-generation Claude chat model
+ * (4.5 and later): multimodal input, tool use, adaptive thinking, native
+ * JSON-schema structured outputs, and prompt caching.
+ */
+const CLAUDE_CURRENT_CAPABILITIES: readonly string[] = [
+	"chat",
+	"vision",
+	"function_calling",
+	"reasoning",
+	"structured_output",
+	"prompt_caching",
+	"code",
+	"nlu",
+];
+
+/**
+ * Curated Anthropic models for unauthenticated/offline discovery mode.
+ *
+ * Context / output limits are the documented Anthropic first-party values
+ * (Sep 2026): 1M context and 128K output across the Claude 5 and Opus /
+ * Sonnet 4.6+ tiers, 200K / 64K for Haiku 4.5. Pricing is left to the
+ * public-seed / LiteLLM enrichment pass so a price change never requires a
+ * code release.
+ */
 export const STATIC_ANTHROPIC_MODELS: readonly StaticModelSeed[] = [
 	{
-		id: "claude-opus-4-8",
-		name: "Claude Opus 4.8",
+		id: "claude-fable-5-1",
+		name: "Claude Fable 5.1",
 		mode: "chat",
-		capabilities: ["chat", "vision", "function_calling", "code", "nlu"],
-	},
-	{
-		id: "claude-sonnet-5",
-		name: "Claude Sonnet 5",
-		mode: "chat",
-		capabilities: ["chat", "vision", "function_calling", "code", "nlu"],
-	},
-	{
-		id: "claude-sonnet-4-6",
-		name: "Claude Sonnet 4.6",
-		mode: "chat",
-		capabilities: ["chat", "vision", "function_calling", "code", "nlu"],
+		capabilities: [...CLAUDE_CURRENT_CAPABILITIES],
+		contextWindow: 1_000_000,
+		maxOutputTokens: 128_000,
 	},
 	{
 		id: "claude-fable-5",
 		name: "Claude Fable 5",
 		mode: "chat",
-		capabilities: ["chat", "vision", "function_calling", "code", "nlu"],
+		capabilities: [...CLAUDE_CURRENT_CAPABILITIES],
+		contextWindow: 1_000_000,
+		maxOutputTokens: 128_000,
 	},
 	{
-		id: "claude-haiku-4-5-20251001",
+		id: "claude-opus-5",
+		name: "Claude Opus 5",
+		mode: "chat",
+		capabilities: [...CLAUDE_CURRENT_CAPABILITIES],
+		contextWindow: 1_000_000,
+		maxOutputTokens: 128_000,
+	},
+	{
+		id: "claude-opus-4-8",
+		name: "Claude Opus 4.8",
+		mode: "chat",
+		capabilities: [...CLAUDE_CURRENT_CAPABILITIES],
+		contextWindow: 1_000_000,
+		maxOutputTokens: 128_000,
+	},
+	{
+		id: "claude-sonnet-5",
+		name: "Claude Sonnet 5",
+		mode: "chat",
+		capabilities: [...CLAUDE_CURRENT_CAPABILITIES],
+		contextWindow: 1_000_000,
+		maxOutputTokens: 128_000,
+	},
+	{
+		id: "claude-sonnet-4-6",
+		name: "Claude Sonnet 4.6",
+		mode: "chat",
+		capabilities: [...CLAUDE_CURRENT_CAPABILITIES],
+		contextWindow: 1_000_000,
+		maxOutputTokens: 128_000,
+	},
+	{
+		id: "claude-haiku-4-5",
 		name: "Claude Haiku 4.5",
 		mode: "chat",
-		capabilities: ["chat", "vision", "function_calling", "code", "nlu"],
+		capabilities: [...CLAUDE_CURRENT_CAPABILITIES],
+		contextWindow: 200_000,
+		maxOutputTokens: 64_000,
 	},
 ];
 
