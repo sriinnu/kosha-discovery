@@ -38,7 +38,7 @@ kosha list --provider anthropic      # filter from local cache
 kosha model sonnet                   # details for one model (alias-aware)
 kosha cheapest --role embeddings     # rank cheapest for a role
 kosha update                         # force a fresh fetch
-kosha serve --port 3000              # HTTP API
+kosha serve --port 3000              # HTTP API (binds 127.0.0.1; --host 0.0.0.0 + KOSHA_PROXY_TOKEN to expose)
 ```
 
 After each discovery, a stable v1 manifest lands at `~/.kosha/registry.json`:

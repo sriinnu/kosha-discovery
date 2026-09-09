@@ -7,6 +7,7 @@
  *
  * Routes:
  *   GET  /api/models                     — List models (query: ?provider, ?originProvider, ?mode, ?capability)
+ *   GET  /api/capabilities               — Capability summary across the catalog (?provider)
  *   GET  /api/models/cheapest            — Cheapest eligible models for a role/capability
  *   GET  /api/models/:idOrAlias/routes   — All provider routes with preferred/direct metadata
  *   GET  /api/models/:idOrAlias          — Get a single model by ID or alias (+ baseUrl/version)
@@ -16,13 +17,28 @@
  *   POST /api/refresh                    — Trigger re-discovery (body: { provider?: string })
  *   GET  /api/resolve/:alias             — Resolve an alias to its canonical model ID
  *   GET  /api/discovery-errors            — Errors from last discovery pass
+ *   GET  /api/discovery                  — Stable v1 discovery snapshot (see discovery-routes.ts)
+ *   GET  /api/discovery/delta            — Changes since a cursor
+ *   GET  /api/discovery/watch            — SSE stream of discovery changes
+ *   GET  /api/discovery/cheapest         — Cheapest candidates (v1 contract)
+ *   GET  /api/discovery/binding          — Binding hints for a query (v1 contract)
  *   GET  /health                         — Health check
+ *   GET  /metrics                        — Prometheus exposition (optional KOSHA_METRICS_TOKEN gate)
  *   GET  /proxy/v1/models                — OpenAI-compatible model list (forwardable models)
  *   POST /proxy/v1/chat/completions      — OpenAI-compatible proxy with model routing
+ *
+ * Security defaults:
+ *   - The standalone server binds to 127.0.0.1 unless `--host` / `KOSHA_HOST`
+ *     says otherwise. The proxy spends the operator's provider credentials, so
+ *     it must never be reachable from the network by accident.
+ *   - When `KOSHA_PROXY_TOKEN` is set, every `/proxy/*` route and
+ *     `POST /api/refresh` require `Authorization: Bearer <token>` (or an
+ *     `x-kosha-token` header). Unset → open, which is only safe on loopback.
  * @module
  */
 
-import { Hono } from "hono";
+import { timingSafeEqual } from "node:crypto";
+import { Hono, type MiddlewareHandler } from "hono";
 import { serve } from "@hono/node-server";
 import type { CheapestModelOptions, ModelMode, RoleQueryOptions } from "./types.js";
 import { readMonthlyBudgetUsd, readSpendForMonth } from "./cost.js";
@@ -41,6 +57,62 @@ const PRICE_METRICS: readonly NonNullable<CheapestModelOptions["priceMetric"]>[]
  * is stale and a /api/refresh is needed.
  */
 let registryBootDegraded = false;
+
+/** Loopback addresses the standalone server treats as "safe without a token". */
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+
+/**
+ * Resolve the interface the standalone server binds to.
+ *
+ * Precedence: explicit argument → `KOSHA_HOST` env → `127.0.0.1`. The default
+ * is loopback on purpose: `kosha serve` fronts an unauthenticated (unless
+ * `KOSHA_PROXY_TOKEN` is set) proxy that forwards requests using the
+ * operator's own provider API keys. Binding every interface by default would
+ * let anyone on the same network spend those keys.
+ */
+export function resolveBindHost(explicit?: string): string {
+	const candidate = (explicit ?? process.env.KOSHA_HOST ?? "").trim();
+	return candidate.length > 0 ? candidate : "127.0.0.1";
+}
+
+/** True when `host` is a loopback-only bind. */
+export function isLoopbackHost(host: string): boolean {
+	return LOOPBACK_HOSTS.has(host.trim().toLowerCase());
+}
+
+/**
+ * Constant-time bearer/token comparison. Length mismatch is an early false,
+ * which leaks only the token length — acceptable for an operator-set secret
+ * and far better than a `===` that leaks the matching prefix length.
+ */
+function tokenMatches(provided: string | undefined, expected: string): boolean {
+	if (!provided) return false;
+	const a = Buffer.from(provided, "utf8");
+	const b = Buffer.from(expected, "utf8");
+	if (a.length !== b.length) return false;
+	return timingSafeEqual(a, b);
+}
+
+/** Extract the bearer credential from an `Authorization` header, if any. */
+function bearerFrom(authHeader: string | undefined): string | undefined {
+	if (!authHeader) return undefined;
+	return /^\s*Bearer\s+(.+?)\s*$/i.exec(authHeader)?.[1];
+}
+
+/**
+ * Check a request against the operator token in `KOSHA_PROXY_TOKEN`.
+ * Accepts the token either as `Authorization: Bearer <token>` or in an
+ * `x-kosha-token` header (the latter leaves `Authorization` free for the
+ * `kosha-tenant-<name>` bucketing tag). Returns true when no token is
+ * configured — the gate is opt-in.
+ */
+export function proxyRequestAuthorized(headers: { get(name: string): string | null | undefined }): boolean {
+	const expected = process.env.KOSHA_PROXY_TOKEN;
+	if (!expected) return true;
+	const viaHeader = headers.get("x-kosha-token") ?? undefined;
+	if (tokenMatches(viaHeader, expected)) return true;
+	return tokenMatches(bearerFrom(headers.get("authorization") ?? undefined), expected);
+}
 
 function parseMode(value: string | undefined): ModelMode | undefined {
 	if (!value) return undefined;
@@ -80,6 +152,30 @@ function parsePriceMetric(value: string | undefined): CheapestModelOptions["pric
  */
 export function createServer(registry: ModelRegistry, shutdownSignal?: AbortSignal): Hono {
 	const app = new Hono();
+
+	// ── Operator token gate (opt-in via KOSHA_PROXY_TOKEN) ──────────────
+	// Registered before the routes it protects so it runs first. Covers the
+	// two surfaces that spend money or trigger outbound work on the
+	// operator's behalf: the OpenAI-compatible proxy and manual re-discovery.
+	const requireOperatorToken: MiddlewareHandler = async (ctx, next) => {
+		if (!proxyRequestAuthorized({ get: (name) => ctx.req.header(name) })) {
+			return ctx.json(
+				{
+					error: {
+						message:
+							"kosha proxy requires a valid operator token (Authorization: Bearer <KOSHA_PROXY_TOKEN> or x-kosha-token header)",
+						type: "authentication_error",
+						code: "401",
+					},
+				},
+				401,
+			);
+		}
+		await next();
+	};
+	app.use("/proxy/*", requireOperatorToken);
+	app.use("/api/refresh", requireOperatorToken);
+
 	registerDiscoveryRoutes(app, registry);
 	registerProxyRoutes(app, registry, shutdownSignal);
 
@@ -402,9 +498,7 @@ export function createServer(registry: ModelRegistry, shutdownSignal?: AbortSign
 		// per-provider breaker state, reliability scores, and p95 latencies.
 		const metricsToken = process.env.KOSHA_METRICS_TOKEN;
 		if (metricsToken) {
-			const auth = ctx.req.header("authorization") ?? "";
-			const provided = /^Bearer\s+(.+)$/i.exec(auth)?.[1]?.trim();
-			if (!provided || provided !== metricsToken) {
+			if (!tokenMatches(bearerFrom(ctx.req.header("authorization")), metricsToken)) {
 				return ctx.text("metrics endpoint requires a valid bearer token\n", 403);
 			}
 		}
@@ -510,8 +604,20 @@ export function createServer(registry: ModelRegistry, shutdownSignal?: AbortSign
  *
  * Runs full discovery, then starts an HTTP listener on the given port.
  * @param port - TCP port to bind (default `3000`, overridable via `PORT` env var).
+ * @param host - Interface to bind (default `127.0.0.1`, overridable via
+ *               `KOSHA_HOST` or `kosha serve --host`). Binding a non-loopback
+ *               address without `KOSHA_PROXY_TOKEN` logs a loud warning: the
+ *               proxy would be spending your provider keys for anyone who can
+ *               reach the port.
  */
-export async function startServer(port = 3000): Promise<void> {
+export async function startServer(port = 3000, host?: string): Promise<void> {
+	const bindHost = resolveBindHost(host);
+	if (!isLoopbackHost(bindHost) && !process.env.KOSHA_PROXY_TOKEN) {
+		console.error(
+			`Warning: binding ${bindHost} with no KOSHA_PROXY_TOKEN set — the /proxy routes forward requests using ` +
+				"your provider API keys and are open to anyone who can reach this port. Set KOSHA_PROXY_TOKEN or bind 127.0.0.1.",
+		);
+	}
 	const registry = new ModelRegistry();
 
 	console.log("Discovering providers and models...");
@@ -541,21 +647,25 @@ export async function startServer(port = 3000): Promise<void> {
 	const shutdownController = new AbortController();
 	const app = createServer(registry, shutdownController.signal);
 
-	console.log(`\nKosha API server listening on http://localhost:${port}`);
-	console.log(`  GET  http://localhost:${port}/api/models`);
-	console.log(`  GET  http://localhost:${port}/api/models/cheapest`);
-	console.log(`  GET  http://localhost:${port}/api/models/:id/routes`);
-	console.log(`  GET  http://localhost:${port}/api/capabilities`);
-	console.log(`  GET  http://localhost:${port}/api/roles`);
-	console.log(`  GET  http://localhost:${port}/api/providers`);
-	console.log(`  GET  http://localhost:${port}/api/discovery`);
-	console.log(`  GET  http://localhost:${port}/api/discovery/delta`);
-	console.log(`  GET  http://localhost:${port}/api/discovery/watch`);
-	console.log(`  GET  http://localhost:${port}/health`);
-	console.log(`  GET  http://localhost:${port}/proxy/v1/models`);
-	console.log(`  POST http://localhost:${port}/proxy/v1/chat/completions`);
+	// IPv6 literals need brackets in a URL; everything else prints as-is.
+	const urlHost = bindHost.includes(":") && !bindHost.startsWith("[") ? `[${bindHost}]` : bindHost;
+	const base = `http://${urlHost}:${port}`;
+	console.log(`\nKosha API server listening on ${base}${process.env.KOSHA_PROXY_TOKEN ? " (proxy token required)" : ""}`);
+	console.log(`  GET  ${base}/api/models`);
+	console.log(`  GET  ${base}/api/models/cheapest`);
+	console.log(`  GET  ${base}/api/models/:id/routes`);
+	console.log(`  GET  ${base}/api/capabilities`);
+	console.log(`  GET  ${base}/api/roles`);
+	console.log(`  GET  ${base}/api/providers`);
+	console.log(`  GET  ${base}/api/discovery`);
+	console.log(`  GET  ${base}/api/discovery/delta`);
+	console.log(`  GET  ${base}/api/discovery/watch`);
+	console.log(`  GET  ${base}/health`);
+	console.log(`  GET  ${base}/metrics`);
+	console.log(`  GET  ${base}/proxy/v1/models`);
+	console.log(`  POST ${base}/proxy/v1/chat/completions`);
 
-	const server = serve({ fetch: app.fetch, port });
+	const server = serve({ fetch: app.fetch, port, hostname: bindHost });
 
 	// Graceful shutdown: stop accepting new connections, abort in-flight
 	// upstream fetches (so SSE streams drain / bill correctly), then exit.
@@ -577,5 +687,5 @@ export async function startServer(port = 3000): Promise<void> {
 const isEntryPoint = import.meta.url === `file://${process.argv[1]}`;
 if (isEntryPoint) {
 	const port = parseInt(process.env.PORT || "3000", 10);
-	startServer(port);
+	startServer(port, process.env.KOSHA_HOST);
 }

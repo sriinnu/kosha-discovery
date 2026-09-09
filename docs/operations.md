@@ -15,7 +15,7 @@ Kosha is a single Node.js process (`node >=22`) — a Hono app served by `@hono/
 Start it behind a reverse proxy that handles TLS and retries:
 
 ```bash
-PORT=3000 KOSHA_MONTHLY_BUDGET_USD=500 node dist/server.js
+PORT=3000 KOSHA_HOST=0.0.0.0 KOSHA_PROXY_TOKEN=<secret> KOSHA_MONTHLY_BUDGET_USD=500 node dist/server.js
 ```
 
 ## The spend ledger
