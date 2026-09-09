@@ -214,7 +214,7 @@ curl http://localhost:3000/api/providers/anthropic
 Trigger re-discovery of all providers, or a specific one.
 
 ```bash
-# Refresh all
+# Refresh all (add -H "x-kosha-token: $KOSHA_PROXY_TOKEN" when the operator token is set)
 curl -X POST http://localhost:3000/api/refresh
 
 # Refresh a specific provider
@@ -305,7 +305,7 @@ Behaviour:
 - **Failover.** Up to three ranked candidates are tried; a 5xx or network error rolls to the next, a 4xx is returned as-is. `x-kosha-attempt-chain` lists `provider:status` for every attempt.
 - **Anthropic bridging.** Anthropic routes are translated to and from `/v1/messages` — streaming, tools / tool calls, `image_url` parts, `response_format` (json_schema on Claude 4.5+), and `reasoning_effort` are all carried. Sampling parameters are dropped on Claude generations that reject them; any lossy mapping is reported in `x-kosha-wire-notes`. Audio / file parts and non-function tools fall over to a native OpenAI-compatible route (OpenRouter, Vercel, …) when one is credentialed, otherwise `422`.
 - **Budget gate.** With `KOSHA_MONTHLY_BUDGET_USD` set, requests over budget return `429` with `x-kosha-budget-remaining-usd` / `x-kosha-budget-usd`. An unreadable ledger fails closed with `503`.
-- **Tenant bucketing.** `x-kosha-tenant: <name>` (or the legacy `Authorization: Bearer kosha-tenant-<name>` when no operator token is set) tags ledger rows and scopes the budget. It is a label, not authentication.
+- **Tenant bucketing.** `x-kosha-tenant: <name>` (or the legacy `Authorization: Bearer kosha-tenant-<name>` when no operator token is set) tags ledger rows for `kosha spend --tenant` and the optional `KOSHA_TENANT_BUDGET_USD` cap. The global `KOSHA_MONTHLY_BUDGET_USD` cap is always enforced against total spend. The tag is a label, not authentication.
 
 Response headers:
 

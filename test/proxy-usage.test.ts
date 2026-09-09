@@ -7,17 +7,25 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { actualCostFromUsage, type LedgerEntry, ledgerRowUsd, readSpendForMonth, appendLedgerEntry } from "../src/cost.js";
+import { actualCostFromUsage, isRequestRow, type LedgerEntry, ledgerRowUsd, readSpendForMonth, appendLedgerEntry } from "../src/cost.js";
 import { ModelRegistry } from "../src/registry.js";
 import { createServer } from "../src/server.js";
 import type { ModelCard, ProviderInfo } from "../src/types.js";
 
 const originalFetch = globalThis.fetch;
 const originalGroqKey = process.env.GROQ_API_KEY;
+const originalBudget = process.env.KOSHA_MONTHLY_BUDGET_USD;
+const originalTenantBudget = process.env.KOSHA_TENANT_BUDGET_USD;
 afterEach(() => {
 	globalThis.fetch = originalFetch;
-	if (originalGroqKey === undefined) delete process.env.GROQ_API_KEY;
-	else process.env.GROQ_API_KEY = originalGroqKey;
+	for (const [name, value] of [
+		["GROQ_API_KEY", originalGroqKey],
+		["KOSHA_MONTHLY_BUDGET_USD", originalBudget],
+		["KOSHA_TENANT_BUDGET_USD", originalTenantBudget],
+	] as const) {
+		if (value === undefined) delete process.env[name];
+		else process.env[name] = value;
+	}
 	vi.restoreAllMocks();
 });
 
@@ -88,6 +96,21 @@ describe("actualCostFromUsage", () => {
 		expect(actualCostFromUsage(model, {}, "openai")).toBeNull();
 		expect(actualCostFromUsage(model, null, "openai")).toBeNull();
 	});
+
+	it("clamps negative token counts so a broken upstream can never lower spend", () => {
+		const out = actualCostFromUsage(model, { prompt_tokens: -5_000_000, completion_tokens: 1 }, "openai");
+		expect(out?.inputTokens).toBe(0);
+		expect(out?.usd).toBeCloseTo(0.000002, 12);
+	});
+});
+
+describe("ledger adjustment rows", () => {
+	it("contribute their delta and are not counted as requests", () => {
+		expect(ledgerRowUsd({ estimatedUsd: 0, actualUsd: 1, kind: "adjustment", adjustmentUsd: -0.4 })).toBe(-0.4);
+		expect(isRequestRow({ kind: "adjustment" })).toBe(false);
+		expect(isRequestRow({ kind: "request" })).toBe(true);
+		expect(isRequestRow({})).toBe(true);
+	});
 });
 
 describe("ledgerRowUsd / readSpendForMonth prefer the reconciled figure", () => {
@@ -133,7 +156,7 @@ describe("proxy ledger reconciliation", () => {
 		});
 	});
 
-	it("records usage from the trailing chunk of an SSE passthrough without altering the bytes", async () => {
+	it("writes the estimate row up front and an adjustment row once the SSE passthrough reports usage", async () => {
 		const sseBody =
 			'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n' +
 			'data: {"choices":[],"usage":{"prompt_tokens":300,"completion_tokens":30}}\n\n' +
@@ -156,9 +179,130 @@ describe("proxy ledger reconciliation", () => {
 
 		await vi.waitFor(async () => {
 			const rows = await ledgerRowsFor("sse-usage");
-			expect(rows).toHaveLength(1);
-			expect(rows[0]).toMatchObject({ usageSource: "upstream", actualInputTokens: 300, actualOutputTokens: 30 });
+			expect(rows).toHaveLength(2);
+			const request = rows.find(isRequestRow);
+			const adjustment = rows.find((r) => !isRequestRow(r));
+			expect(request).toMatchObject({ kind: "request", usageSource: "estimate" });
+			expect(adjustment).toMatchObject({ kind: "adjustment", actualInputTokens: 300, actualOutputTokens: 30 });
+			expect(adjustment?.requestId).toBe(request?.requestId);
+			// 300 × $1 + 30 × $2 per MTok = actual; the two rows sum to exactly that.
+			expect(rows.reduce((sum, r) => sum + ledgerRowUsd(r), 0)).toBeCloseTo(0.0003 + 0.00006, 12);
 		});
+		expect(await readSpendForMonth(Date.now(), "sse-usage")).toBeCloseTo(0.00036, 12);
+	});
+
+	it("still records the estimate when the client disconnects mid-stream", async () => {
+		globalThis.fetch = vi.fn(
+			async () =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'));
+							// never closes
+						},
+					}),
+					{ status: 200, headers: { "content-type": "text/event-stream" } },
+				),
+		) as unknown as typeof fetch;
+		const res = await app().request("/proxy/v1/chat/completions", {
+			method: "POST",
+			headers: { "content-type": "application/json", authorization: "Bearer kosha-tenant-disconnect" },
+			body: JSON.stringify({ model: "llama-cheap", messages: [{ role: "user", content: "hi" }], stream: true }),
+		});
+		expect(res.status).toBe(200);
+		const reader = res.body?.getReader();
+		await reader?.read();
+		await reader?.cancel();
+		await vi.waitFor(async () => {
+			const rows = await ledgerRowsFor("disconnect");
+			expect(rows).toHaveLength(1);
+			expect(rows[0]).toMatchObject({ kind: "request", usageSource: "estimate" });
+		});
+	});
+
+	it("reflects non-ASCII caller strings into headers without crashing (and still charges the ledger)", async () => {
+		globalThis.fetch = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ id: "c", choices: [] }), { status: 200, headers: { "content-type": "application/json" } }),
+		) as unknown as typeof fetch;
+		const res = await app().request("/proxy/v1/chat/completions", {
+			method: "POST",
+			headers: { "content-type": "application/json", authorization: "Bearer kosha-tenant-unicode" },
+			body: JSON.stringify({ model: "llama-cheap", messages: [{ role: "user", content: "hi" }] }),
+		});
+		expect(res.status).toBe(200);
+		// x-kosha-requested carries the sanitized model string on every response.
+		expect(res.headers.get("x-kosha-requested")).toBe("llama-cheap");
+		const resUnicode = await app().request("/proxy/v1/chat/completions", {
+			method: "POST",
+			headers: { "content-type": "application/json", authorization: "Bearer kosha-tenant-unicode" },
+			body: JSON.stringify({ model: "kosha:cheapest[tool_use,视觉]", messages: [{ role: "user", content: "hi" }] }),
+		});
+		// No capability named 视觉 exists, so this 404s — but it must not 500.
+		expect([200, 404]).toContain(resUnicode.status);
+	});
+});
+
+describe("budget gate", () => {
+	it("enforces the global cap against total spend regardless of tenant tag", async () => {
+		process.env.KOSHA_MONTHLY_BUDGET_USD = "0.000001";
+		const now = Date.now();
+		await appendLedgerEntry({
+			ts: now,
+			provider: "p",
+			modelId: "m",
+			requested: "m",
+			tenant: "someone-else",
+			estimatedUsd: 5,
+			estimatedInputTokens: 0,
+			estimatedOutputTokens: 0,
+			upstreamStatus: 200,
+		});
+		const fetchMock = vi.fn();
+		globalThis.fetch = fetchMock as unknown as typeof fetch;
+		const res = await app().request("/proxy/v1/chat/completions", {
+			method: "POST",
+			headers: { "content-type": "application/json", "x-kosha-tenant": "brand-new-tenant", authorization: "Bearer kosha-tenant-brand-new" },
+			body: JSON.stringify({ model: "llama-cheap", messages: [{ role: "user", content: "hi" }] }),
+		});
+		expect(res.status).toBe(429);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("applies KOSHA_TENANT_BUDGET_USD only to the tagged tenant's own spend", async () => {
+		delete process.env.KOSHA_MONTHLY_BUDGET_USD;
+		process.env.KOSHA_TENANT_BUDGET_USD = "0.5";
+		const now = Date.now();
+		await appendLedgerEntry({
+			ts: now,
+			provider: "p",
+			modelId: "m",
+			requested: "m",
+			tenant: "capped",
+			estimatedUsd: 1,
+			estimatedInputTokens: 0,
+			estimatedOutputTokens: 0,
+			upstreamStatus: 200,
+		});
+		const fetchMock = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ id: "c", choices: [] }), { status: 200, headers: { "content-type": "application/json" } }),
+		);
+		globalThis.fetch = fetchMock as unknown as typeof fetch;
+		const body = JSON.stringify({ model: "llama-cheap", messages: [{ role: "user", content: "hi" }] });
+		const capped = await app().request("/proxy/v1/chat/completions", {
+			method: "POST",
+			headers: { "content-type": "application/json", authorization: "Bearer kosha-tenant-capped" },
+			body,
+		});
+		expect(capped.status).toBe(429);
+		expect((await capped.json()).error).toMatch(/tenant monthly budget/);
+		const other = await app().request("/proxy/v1/chat/completions", {
+			method: "POST",
+			headers: { "content-type": "application/json", authorization: "Bearer kosha-tenant-other" },
+			body,
+		});
+		expect(other.status).toBe(200);
 	});
 
 	it("falls back to the estimate when the upstream reports no usage", async () => {

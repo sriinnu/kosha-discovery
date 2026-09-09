@@ -64,6 +64,7 @@ const ANTHROPIC_CAPABILITY_TAGS: Readonly<Record<string, string>> = {
  * variant of it is supported.
  */
 function subtreeSupported(node: unknown, depth = 0): boolean {
+	if (node === true) return true;
 	if (depth > 6 || node === null || typeof node !== "object") return false;
 	const obj = node as Record<string, unknown>;
 	if (obj.supported === true) return true;
@@ -85,7 +86,9 @@ export function capabilityTagsFromAnthropicApi(capabilities: Record<string, unkn
 	for (const [rawKey, subtree] of Object.entries(capabilities)) {
 		if (!subtreeSupported(subtree)) continue;
 		const key = rawKey.toLowerCase().replace(/[^a-z0-9]+/g, "_");
-		tags.add(ANTHROPIC_CAPABILITY_TAGS[key] ?? key);
+		// Own-property lookup: a hostile key like "constructor" must map to
+		// itself, never to something inherited from Object.prototype.
+		tags.add(Object.hasOwn(ANTHROPIC_CAPABILITY_TAGS, key) ? ANTHROPIC_CAPABILITY_TAGS[key] : key);
 	}
 	return Array.from(tags);
 }
@@ -185,7 +188,7 @@ export class AnthropicDiscoverer extends BaseDiscoverer {
 			provider: this.providerId,
 			mode,
 			capabilities,
-			rawCapabilities: live.length > 0 ? [...inferred, ...live] : undefined,
+			rawCapabilities: capabilities,
 		});
 		if (typeof model.max_input_tokens === "number" && model.max_input_tokens > 0) {
 			card.contextWindow = model.max_input_tokens;

@@ -28,7 +28,7 @@ Costs are **estimates** — there is no tokenizer in the hot path. kosha approxi
 
 ### Monthly budget gate
 
-Set `KOSHA_MONTHLY_BUDGET_USD` and the proxy enforces it per request. Spend is summed over the **current UTC calendar month** (`readSpendForMonth` reads only that month's partition plus any legacy rows), optionally scoped by tenant. When the cap is hit the proxy returns `429` with two headers:
+Set `KOSHA_MONTHLY_BUDGET_USD` and the proxy enforces it per request. Spend is summed over the **current UTC calendar month** (`readSpendForMonth` reads only that month's partition plus any legacy rows). The cap is **global** — always compared against total spend, never a tenant's slice, so a caller cannot escape it by sending a fresh tenant tag. Set `KOSHA_TENANT_BUDGET_USD` for an additional per-tenant cap on tagged requests. When either cap is hit the proxy returns `429` with two headers:
 
 ```
 x-kosha-budget-remaining-usd: 0.0000
@@ -37,7 +37,9 @@ x-kosha-budget-usd: 500.00
 
 If the ledger is unreadable (permissions, partial mount), the proxy **fails closed** with `503 budget enforcement unavailable` — it will not treat an unreadable ledger as "spent $0".
 
-Tenants are opt-in: send `Authorization: Bearer kosha-tenant-<name>` on a proxied request and that caller's spend is bucketed under the tag, with its own budget counted against the same monthly cap.
+Tenants are opt-in: send `x-kosha-tenant: <name>` on a proxied request (or, when no `KOSHA_PROXY_TOKEN` is set, the legacy `Authorization: Bearer kosha-tenant-<name>`) and that caller's spend is bucketed under the tag. `kosha spend --tenant <name>` reports it; `KOSHA_TENANT_BUDGET_USD` caps it.
+
+Streaming responses write their row **before** the body is relayed, carrying the pre-flight estimate; when the stream ends with a usage block, a second `kind: "adjustment"` row records the delta to the actual cost. Summing every row's contribution (`ledgerRowUsd`) therefore yields actual spend, and a client that disconnects mid-stream is still charged its estimate.
 
 ### Rotation and retention
 
@@ -82,6 +84,8 @@ Per-request observability rides on **response headers** rather than a counters e
 | `x-kosha-requested` | The model string the caller sent (alias or `kosha:cheapest[…]` hint). |
 | `x-kosha-attempt-chain` | The failover sequence tried, e.g. `anthropic:200` or `groq:503,openai:200`. |
 | `x-kosha-estimated-cost-usd` | Pre-flight cost estimate for this request. |
+| `x-kosha-actual-cost-usd` / `x-kosha-usage-source` | Cost reconciled from the upstream `usage` block, and whether it came from `upstream` or is the `estimate` (non-streaming responses). |
+| `x-kosha-wire-notes` | Anthropic translator notes: fields dropped, clamped, or degraded to fit the target model. |
 | `x-kosha-budget-remaining-usd` / `x-kosha-budget-usd` | Budget state (present on the `429` budget-exceeded response). |
 
 Monthly spend and budget-remaining are also queryable any time from the ledger:
@@ -127,7 +131,7 @@ A successful refresh records a success and closes the breaker. There is no HTTP 
 
 ### Hung upstream
 
-Each proxied upstream fetch is capped at 30 seconds (`AbortSignal.timeout`). On top of that, the proxy aborts in-flight upstream requests when kosha itself is shutting down, so a wedged provider cannot block a clean restart. Within a request, the proxy fails over across up to three ranked candidate routes — a 5xx or network error rolls to the next provider rather than returning the error. If one provider is consistently slow, its breaker opens after three consecutive failures and traffic routes around it automatically. `x-kosha-attempt-chain` on the response shows exactly which providers were tried.
+Each proxied upstream fetch must return headers (and, for non-streaming calls, its body) within 30 seconds; once a streamed body starts relaying, only the client hanging up or a kosha shutdown ends it, so long Claude / GPT streams are never cut by the proxy. On top of that, the proxy aborts in-flight upstream requests when kosha itself is shutting down, so a wedged provider cannot block a clean restart. Within a request, the proxy fails over across up to three ranked candidate routes — a 5xx or network error rolls to the next provider rather than returning the error. If one provider is consistently slow, its breaker opens after three consecutive failures and traffic routes around it automatically. `x-kosha-attempt-chain` on the response shows exactly which providers were tried.
 
 ### Clear a quarantined price
 
