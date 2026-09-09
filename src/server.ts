@@ -45,6 +45,7 @@ import { readMonthlyBudgetUsd, readSpendForMonth } from "./cost.js";
 import { registerDiscoveryRoutes } from "./discovery-routes.js";
 import { registerProxyRoutes, snapshotProxyMetrics } from "./proxy.js";
 import { ModelRegistry } from "./registry.js";
+import { isMainModule } from "./entry.js";
 import { extractModelVersion, normalizeModelId } from "./normalize.js";
 
 const MODEL_MODES: readonly ModelMode[] = ["chat", "embedding", "image", "video", "audio", "moderation", "rerank"];
@@ -93,10 +94,19 @@ function tokenMatches(provided: string | undefined, expected: string): boolean {
 	return timingSafeEqual(a, b);
 }
 
-/** Extract the bearer credential from an `Authorization` header, if any. */
+/**
+ * Extract the bearer credential from an `Authorization` header, if any.
+ * Deliberately regex-free: this runs on every unauthenticated request to a
+ * gated route, and a lazy-quantifier regex here was measurably quadratic on
+ * a 16 KB header.
+ */
 function bearerFrom(authHeader: string | undefined): string | undefined {
 	if (!authHeader) return undefined;
-	return /^\s*Bearer\s+(.+?)\s*$/i.exec(authHeader)?.[1];
+	const trimmed = authHeader.trim();
+	if (trimmed.length < 7 || trimmed.slice(0, 6).toLowerCase() !== "bearer") return undefined;
+	if (trimmed[6] !== " " && trimmed[6] !== "\t") return undefined;
+	const token = trimmed.slice(7).trim();
+	return token.length > 0 ? token : undefined;
 }
 
 /**
@@ -684,8 +694,7 @@ export async function startServer(port = 3000, host?: string): Promise<void> {
 //  Auto-start when executed directly (e.g. `node dist/server.js`)
 // ---------------------------------------------------------------------------
 
-const isEntryPoint = import.meta.url === `file://${process.argv[1]}`;
-if (isEntryPoint) {
+if (isMainModule(import.meta.url)) {
 	const port = parseInt(process.env.PORT || "3000", 10);
 	startServer(port, process.env.KOSHA_HOST);
 }

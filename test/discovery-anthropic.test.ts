@@ -64,6 +64,7 @@ describe("AnthropicDiscoverer", () => {
 			expect.arrayContaining(["chat", "vision", "function_calling", "reasoning", "structured_output", "prompt_caching", "effort"]),
 		);
 		expect(card.capabilities).not.toContain("fast_mode");
+		expect(card.rawCapabilities).toEqual(card.capabilities);
 		expect(card.source).toBe("api");
 	});
 
@@ -105,6 +106,14 @@ describe("capabilityTagsFromAnthropicApi", () => {
 			["effort", "function_calling", "prompt_caching", "reasoning", "structured_output", "vision"].sort(),
 		);
 		expect(capabilityTagsFromAnthropicApi({ brand_new_feature: { supported: true } })).toEqual(["brand_new_feature"]);
+	});
+
+	it("accepts boolean leaves and never resolves keys through Object.prototype", () => {
+		expect(capabilityTagsFromAnthropicApi({ vision: true })).toEqual(["vision"]);
+		expect(capabilityTagsFromAnthropicApi({ constructor: { supported: true } })).toEqual(["constructor"]);
+		for (const tag of capabilityTagsFromAnthropicApi({ constructor: { supported: true }, toString: true })) {
+			expect(typeof tag).toBe("string");
+		}
 	});
 
 	it("ignores features whose every variant is unsupported", () => {

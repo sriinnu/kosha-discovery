@@ -54,8 +54,40 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
   `/api/discovery-errors`, `/metrics`, and the proxy routes.
 - **CI:** Node 22 + 24 matrix.
 
+- **Ledger adjustment rows.** Streaming responses now write their request row
+  (pre-flight estimate) the moment the upstream accepts the call, and a
+  `kind: "adjustment"` row with the delta once the stream reports usage.
+  `ledgerRowUsd` / `isRequestRow` make every reader agree; `kosha spend`
+  counts requests, not rows.
+- **`KOSHA_TENANT_BUDGET_USD`** — optional per-tenant monthly cap, applied in
+  addition to the global cap.
+- **Translator:** `user` → `metadata.user_id`; `temperature` clamped to
+  Anthropic's 0..1; empty `stop` sequences dropped; `strict` tool flag dropped
+  on generations without strict tool use; forced `tool_choice` degraded to
+  `auto` when combined with `response_format` json_schema; `max_tokens`
+  clamped to the model's output cap; streamed no-argument tool calls end with
+  `"{}"` so SDKs can `JSON.parse`; fields with no Anthropic equivalent (`n`,
+  `seed`, `logit_bias`, penalties, logprobs) reported in `x-kosha-wire-notes`.
+- **Shared `src/claude-generation.ts`** — one parser for Claude IDs (bare,
+  `vendor/` prefixed, dotted, Bedrock-suffixed) used by both the catalog
+  feature inference and the proxy translator. New exports:
+  `parseClaudeGeneration`, `claudeEffortLadder`, `claudeSupportsPrefill`.
+- **MCP:** stdin EOF now waits for in-flight tool calls before exiting, so
+  one-shot / piped invocations get their answer.
+
 ### Changed
 
+- **Public API notes:** `OpenAIChatMessage.content` is now
+  `string | Array<unknown> | null` (assistant tool-call turns carry `null`);
+  `parseTenantTag` is exported and takes an optional second `x-kosha-tenant`
+  argument; `LedgerEntry` gained optional reconciliation fields;
+  `kosha spend --json` reports `reconciledRows`.
+- **Global budget is global.** `KOSHA_MONTHLY_BUDGET_USD` is always compared
+  against total spend; previously a request carrying a tenant tag was checked
+  only against that tenant's slice, so a fresh tag per request escaped the cap.
+- **Upstream timeout covers headers and non-streaming bodies only.** Streamed
+  bodies are no longer cut at 30 s; the shutdown signal and the client
+  disconnect end them.
 - **Default aliases track the current Claude generation:** `fable` →
   `claude-fable-5-1`, `opus` → `claude-opus-5`, `haiku` → `claude-haiku-4-5`
   (bare ID, not the dated snapshot). New pins `fable-5.1`, `mythos`, `opus-5`,
@@ -81,6 +113,28 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ### Fixed
 
+- **Paid-but-unrecorded requests.** Three paths could bill the upstream and
+  leave no ledger row: a client disconnecting mid-stream (the usage promise
+  never settled), a stream longer than 30 s (the body shared the header
+  timeout), and a non-ASCII caller string reflected into a response header
+  (undici rejects it → 500 after the upstream call). The row is now written
+  before any body is relayed, stream transformers settle on cancel, and header
+  values are reduced to printable ASCII.
+- **Translator 400s on real generations:** `output_config.effort` was sent to
+  Sonnet 4.5 / Haiku 4.5 (only Opus 4.5 has effort); both `temperature` and
+  `top_p` were forwarded on Claude 4.0 / 4.1 / 4.5 (every 4.x accepts one); a
+  trailing assistant turn was shipped as a prefill to 4.6+ (rejected) and a
+  trailing `tool_use` without its result was shipped to every generation — a
+  minimal user turn is now appended and noted.
+- **Quadratic bearer-token parse** on gated routes replaced with a linear one.
+- **Anthropic SSE parser** now caps its buffer (1 MiB) and scans each byte
+  once; a malformed upstream ends the stream with an OpenAI error chunk.
+- **Negative token counts** from a broken upstream are clamped so a reconciled
+  cost can never drive spend below zero.
+- **Capability tree keys** are looked up as own properties (`constructor` no
+  longer resolves to a function); boolean `supported` leaves are accepted.
+- **Snapshot workflow artifact** no longer includes the tee'd autofetch log
+  (secrets are masked in step logs but not in artifacts).
 - **Snapshot workflow never ran.** `update-kosha-snapshot.yml` referenced
   `runner.temp` in a job-level `env`, which GitHub rejects at parse time, so
   every run (the Monday cron included) failed in 0 s and `data/kosha-latest.json`

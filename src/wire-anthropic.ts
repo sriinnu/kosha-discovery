@@ -19,11 +19,24 @@
  * proxy fails over to a native OpenAI-compatible route instead of shipping a
  * silently-mangled request: audio / file input parts, non-`function` tool
  * types, and `response_format: json_schema` on Claude generations without
- * native structured outputs.
+ * native structured outputs. Fields with no Anthropic equivalent (`n`,
+ * `seed`, `logit_bias`, penalties, logprobs) are dropped and reported in the
+ * translation notes; `user` maps to `metadata.user_id`.
  *
  * Pure functions; no I/O.
  * @module
  */
+
+import {
+	CLAUDE_TEMPERATURE_MAX,
+	type ClaudeEffort as AnthropicEffortLevel,
+	claudeEffortLadder,
+	claudeSamplingSupport,
+	claudeSupportsForcedToolChoice,
+	claudeSupportsNativeJsonSchema,
+	claudeSupportsPrefill,
+	type SamplingSupport,
+} from "./claude-generation.js";
 
 // ---------------------------------------------------------------------------
 // OpenAI wire shapes (subset we understand)
@@ -63,6 +76,15 @@ export interface OpenAIChatRequest {
 	response_format?: unknown;
 	/** OpenAI reasoning effort: minimal | low | medium | high (| xhigh). */
 	reasoning_effort?: string;
+	/** OpenAI end-user identifier; maps to Anthropic `metadata.user_id`. */
+	user?: string;
+	/**
+	 * OpenAI fields that have no Anthropic equivalent (`n`, `seed`,
+	 * `logit_bias`, `presence_penalty`, `frequency_penalty`, …). Recorded so
+	 * the translator can report them in its notes instead of dropping them
+	 * silently.
+	 */
+	unsupportedFields?: string[];
 }
 
 /** OpenAI usage block, including the cached-token detail OpenAI SDKs understand. */
@@ -113,7 +135,7 @@ export type AnthropicToolChoice =
 	| { type: "auto" | "any" | "none"; disable_parallel_tool_use?: boolean }
 	| { type: "tool"; name: string; disable_parallel_tool_use?: boolean };
 
-export type AnthropicEffort = "low" | "medium" | "high" | "xhigh" | "max";
+export type AnthropicEffort = AnthropicEffortLevel;
 
 /** Anthropic /v1/messages request body. */
 export interface AnthropicMessagesRequest {
@@ -127,6 +149,7 @@ export interface AnthropicMessagesRequest {
 	stream?: boolean;
 	tools?: AnthropicTool[];
 	tool_choice?: AnthropicToolChoice;
+	metadata?: { user_id?: string };
 	output_config?: {
 		effort?: AnthropicEffort;
 		format?: { type: "json_schema"; schema: unknown };
@@ -186,80 +209,23 @@ export class UnsupportedWireContentError extends Error {
 }
 
 // ---------------------------------------------------------------------------
-// Per-generation Claude behaviour
+// Per-generation Claude behaviour (shared with model-features.ts)
 // ---------------------------------------------------------------------------
 
-interface ClaudeGeneration {
-	family: string;
-	major: number;
-	minor: number;
-}
+export { claudeSamplingSupport, claudeSupportsForcedToolChoice, claudeSupportsNativeJsonSchema };
+export type { SamplingSupport };
 
 /**
- * Parse the generation out of a family-first Claude ID (`claude-opus-4-8`,
- * `claude-sonnet-5`, `claude-fable-5-1`, dated `claude-haiku-4-5-20251001`,
- * dotted OpenRouter-style `claude-sonnet-4.6`). Legacy version-first IDs and
- * non-Claude IDs return `undefined` and are treated as "accepts everything".
+ * Notes embed caller-supplied strings (a tool name, an effort value) and are
+ * reflected into a response header, and HTTP header values must be
+ * ISO-8859-1 — undici's `Headers.set` throws on anything above U+00FF, and
+ * Node rejects other control characters at write time. Keep printable ASCII
+ * only and bound the length so a note can never make the proxy 500 after
+ * the upstream call has already been paid for.
  */
-function parseClaudeGeneration(modelId: string): ClaudeGeneration | undefined {
-	const id = modelId.toLowerCase().replace(/^.*\//, "").replace(/\./g, "-");
-	// Minor is 1-2 digits so an 8-digit date suffix is never read as a minor.
-	const m = /^claude-(opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?$/.exec(id);
-	if (!m) return undefined;
-	return { family: m[1], major: Number(m[2]), minor: m[3] !== undefined ? Number(m[3]) : 0 };
-}
-
-function atLeast(gen: ClaudeGeneration, major: number, minor: number): boolean {
-	return gen.major > major || (gen.major === major && gen.minor >= minor);
-}
-
-/** How a Claude model treats `temperature` / `top_p`. */
-export type SamplingSupport = "both" | "one" | "none";
-
-/**
- * Sampling parameters were removed on Opus 4.7 and every later model (Opus
- * 4.8, Opus 5, Sonnet 5, Fable, Mythos): sending them returns a 400. Opus 4.6
- * and Sonnet 4.6 accept at most one of `temperature` / `top_p`. Older models
- * accept both.
- */
-export function claudeSamplingSupport(modelId: string): SamplingSupport {
-	const gen = parseClaudeGeneration(modelId);
-	if (!gen) return "both";
-	if (atLeast(gen, 4, 7)) return "none";
-	if (atLeast(gen, 4, 6)) return "one";
-	return "both";
-}
-
-/** Effort levels a generation accepts under `output_config.effort`; empty when effort is unsupported. */
-function claudeEffortLadder(modelId: string): readonly AnthropicEffort[] {
-	const gen = parseClaudeGeneration(modelId);
-	if (!gen) return [];
-	if (atLeast(gen, 4, 7)) return ["low", "medium", "high", "xhigh", "max"];
-	if (atLeast(gen, 4, 6)) return ["low", "medium", "high", "max"];
-	if (atLeast(gen, 4, 5)) return ["low", "medium", "high"];
-	return [];
-}
-
-/**
- * Native JSON-schema structured outputs (`output_config.format`) shipped with
- * the 4.5 generation (Sonnet 4.5, Haiku 4.5, Opus 4.1) and every model since.
- */
-export function claudeSupportsNativeJsonSchema(modelId: string): boolean {
-	const gen = parseClaudeGeneration(modelId);
-	if (!gen) return false;
-	if (atLeast(gen, 4, 5)) return true;
-	return gen.family === "opus" && gen.major === 4 && gen.minor === 1;
-}
-
-/**
- * Claude Fable 5.1 and Claude Mythos 5.1 return a 400 for forced tool use
- * (`tool_choice` `any` / `tool`); everything else still honours it.
- */
-export function claudeSupportsForcedToolChoice(modelId: string): boolean {
-	const gen = parseClaudeGeneration(modelId);
-	if (!gen) return true;
-	if (gen.family !== "fable" && gen.family !== "mythos") return true;
-	return !atLeast(gen, 5, 1);
+function noteToken(value: string, max = 64): string {
+	const cleaned = value.replace(/[^\x20-\x7e]/g, "?");
+	return cleaned.length > max ? `${cleaned.slice(0, max)}…`.replace("…", "...") : cleaned;
 }
 
 /** OpenAI `reasoning_effort` vocabulary → Anthropic effort levels. */
@@ -318,6 +284,13 @@ export function coerceOpenAIChatRequest(body: Record<string, unknown>): OpenAICh
 	if (typeof body.parallel_tool_calls === "boolean") req.parallel_tool_calls = body.parallel_tool_calls;
 	if (body.response_format !== undefined) req.response_format = body.response_format;
 	if (typeof body.reasoning_effort === "string") req.reasoning_effort = body.reasoning_effort;
+	if (typeof body.user === "string" && body.user.length > 0) req.user = body.user;
+	const unsupported: string[] = [];
+	if (typeof body.n === "number" && body.n > 1) unsupported.push("n");
+	for (const key of ["seed", "logit_bias", "presence_penalty", "frequency_penalty", "logprobs", "top_logprobs"]) {
+		if (body[key] !== undefined && body[key] !== null) unsupported.push(key);
+	}
+	if (unsupported.length > 0) req.unsupportedFields = unsupported;
 	return req;
 }
 
@@ -349,8 +322,23 @@ export function translateOpenAIToAnthropicWithNotes(req: OpenAIChatRequest): Wir
 	}
 
 	const outputConfig: NonNullable<AnthropicMessagesRequest["output_config"]> = {};
-	applyResponseFormat(req.response_format, req.model, outputConfig, systemParts, notes);
+	const formatInstruction = applyResponseFormat(req.response_format, req.model, outputConfig, notes);
 	applyEffort(req.reasoning_effort, req.model, outputConfig, notes);
+	// JSON output cannot be combined with forced tool use; fall back to auto.
+	if (outputConfig.format && toolChoice && (toolChoice.type === "any" || toolChoice.type === "tool")) {
+		toolChoice = { type: "auto", ...(toolChoice.disable_parallel_tool_use ? { disable_parallel_tool_use: true } : {}) };
+		notes.push("tool_choice degraded to auto: forced tool use cannot be combined with response_format json_schema");
+	}
+	if (tools && !claudeSupportsNativeJsonSchema(req.model)) {
+		let stripped = 0;
+		for (const tool of tools) {
+			if (tool.strict) {
+				delete tool.strict;
+				stripped += 1;
+			}
+		}
+		if (stripped > 0) notes.push(`dropped strict on ${stripped} tool(s): ${req.model} predates strict tool use`);
+	}
 
 	const messages: AnthropicMessage[] = [];
 	for (const msg of req.messages ?? []) {
@@ -396,7 +384,11 @@ export function translateOpenAIToAnthropicWithNotes(req: OpenAIChatRequest): Wir
 	// Anthropic forbids two messages with the same role in a row. The OpenAI
 	// side allows it (e.g. multiple tool-result messages), so consecutive
 	// same-role messages collapse into one.
-	const collapsed = trimFinalAssistant(mergeConsecutiveRoles(messages));
+	const collapsed = finalizeTrailingAssistant(mergeConsecutiveRoles(messages), req.model, notes);
+
+	// The volatile JSON-mode instruction goes AFTER the caller's system prompt
+	// so a cached system-prompt prefix stays stable.
+	if (formatInstruction) systemParts.push(formatInstruction);
 
 	const maxTokens = req.max_completion_tokens ?? req.max_tokens;
 	const out: AnthropicMessagesRequest = {
@@ -406,11 +398,19 @@ export function translateOpenAIToAnthropicWithNotes(req: OpenAIChatRequest): Wir
 	};
 	if (systemParts.length > 0) out.system = systemParts.join("\n\n");
 	applySampling(req, out, notes);
-	if (req.stop) out.stop_sequences = Array.isArray(req.stop) ? req.stop : [req.stop];
+	if (req.stop) {
+		const stops = (Array.isArray(req.stop) ? req.stop : [req.stop]).filter((stop) => stop.trim().length > 0);
+		if (stops.length > 0) out.stop_sequences = stops;
+		else notes.push("dropped stop: only empty / whitespace sequences were given");
+	}
 	if (req.stream) out.stream = true;
 	if (tools && tools.length > 0) out.tools = tools;
 	if (toolChoice) out.tool_choice = toolChoice;
+	if (req.user) out.metadata = { user_id: noteToken(req.user, 256) };
 	if (Object.keys(outputConfig).length > 0) out.output_config = outputConfig;
+	if (req.unsupportedFields && req.unsupportedFields.length > 0) {
+		notes.push(`dropped ${req.unsupportedFields.join(", ")}: no Anthropic equivalent`);
+	}
 	return { request: out, notes };
 }
 
@@ -425,13 +425,27 @@ function applySampling(req: OpenAIChatRequest, out: AnthropicMessagesRequest, no
 		notes.push(`dropped ${dropped}: ${req.model} does not accept sampling parameters`);
 		return;
 	}
+	const temperature = hasTemp ? clampTemperature(req.temperature as number, notes) : undefined;
 	if (support === "one" && hasTemp && hasTopP) {
-		out.temperature = req.temperature;
+		out.temperature = temperature;
 		notes.push(`dropped top_p: ${req.model} accepts only one of temperature / top_p; kept temperature`);
 		return;
 	}
-	if (hasTemp) out.temperature = req.temperature;
+	if (hasTemp) out.temperature = temperature;
 	if (hasTopP) out.top_p = req.top_p;
+}
+
+/** OpenAI allows 0..2; Anthropic rejects anything above 1. */
+function clampTemperature(value: number, notes: string[]): number {
+	if (value > CLAUDE_TEMPERATURE_MAX) {
+		notes.push(`clamped temperature ${value} to ${CLAUDE_TEMPERATURE_MAX}: Anthropic's maximum`);
+		return CLAUDE_TEMPERATURE_MAX;
+	}
+	if (value < 0) {
+		notes.push(`clamped temperature ${value} to 0`);
+		return 0;
+	}
+	return value;
 }
 
 /** Map OpenAI `reasoning_effort` onto `output_config.effort`, clamped to the model's ladder. */
@@ -444,7 +458,7 @@ function applyEffort(
 	if (!effort) return;
 	const mapped = EFFORT_MAP[effort.toLowerCase()];
 	if (!mapped) {
-		notes.push(`dropped reasoning_effort '${effort}': unknown value`);
+		notes.push(`dropped reasoning_effort '${noteToken(effort)}': unknown value`);
 		return;
 	}
 	const ladder = claudeEffortLadder(modelId);
@@ -459,18 +473,21 @@ function applyEffort(
 	// xhigh / max requested on a generation without that rung → nearest lower.
 	const fallback: AnthropicEffort = mapped === "max" && ladder.includes("max") ? "max" : "high";
 	outputConfig.effort = fallback;
-	notes.push(`clamped reasoning_effort '${effort}' to '${fallback}': not available on ${modelId}`);
+	notes.push(`clamped reasoning_effort '${noteToken(effort)}' to '${fallback}': not available on ${modelId}`);
 }
 
-/** Translate `response_format`: json_schema → output_config.format; json_object → system instruction. */
+/**
+ * Translate `response_format`: json_schema → output_config.format;
+ * json_object → a system instruction, returned so the caller can append it
+ * after the user's own system prompt.
+ */
 function applyResponseFormat(
 	fmt: unknown,
 	modelId: string,
 	outputConfig: NonNullable<AnthropicMessagesRequest["output_config"]>,
-	systemParts: string[],
 	notes: string[],
-): void {
-	if (!fmt || typeof fmt !== "object") return;
+): string | undefined {
+	if (!fmt || typeof fmt !== "object") return undefined;
 	const ftype = (fmt as { type?: unknown }).type;
 	if (ftype === "json_schema") {
 		if (!claudeSupportsNativeJsonSchema(modelId)) {
@@ -483,15 +500,16 @@ function applyResponseFormat(
 			throw new UnsupportedWireContentError("response_format json_schema is missing json_schema.schema");
 		}
 		outputConfig.format = { type: "json_schema", schema };
-		return;
+		return undefined;
 	}
 	if (ftype === "json_object") {
 		// No native equivalent of OpenAI's schema-less JSON mode; the closest
 		// faithful mapping is an explicit instruction, which is how OpenAI's
 		// own docs recommend using json_object anyway.
-		systemParts.push("Respond with a single valid JSON object and nothing else — no prose, no code fences.");
 		notes.push("response_format json_object mapped to a system instruction (no native equivalent)");
+		return "Respond with a single valid JSON object and nothing else — no prose, no code fences.";
 	}
+	return undefined;
 }
 
 /** Translate OpenAI `tools` into Anthropic tool definitions. Only `function` tools are supported. */
@@ -546,7 +564,7 @@ function translateToolChoice(
 		if ((choice as { type?: unknown }).type === "function" && typeof named === "string") {
 			if (forcedOk) return { type: "tool", name: named };
 			systemParts.push(`You must respond by calling the tool \`${named}\`.`);
-			notes.push(`tool_choice '${named}' degraded to auto + instruction: ${modelId} rejects forced tool use`);
+			notes.push(`tool_choice '${noteToken(named)}' degraded to auto + instruction: ${modelId} rejects forced tool use`);
 			return { type: "auto" };
 		}
 	}
@@ -681,16 +699,45 @@ function toBlocks(content: AnthropicMessage["content"]): AnthropicContentBlock[]
 	return content;
 }
 
-/** Anthropic rejects trailing whitespace on a final assistant turn (prefill rules). */
-function trimFinalAssistant(messages: AnthropicMessage[]): AnthropicMessage[] {
+/**
+ * Make a conversation that ends on an assistant turn acceptable to Anthropic.
+ *
+ * - A trailing assistant turn is a prefill. Prefill is rejected (400) on Opus
+ *   4.6 / Sonnet 4.6 and everything newer, and a trailing `tool_use` without
+ *   its `tool_result` is rejected on every generation — in both cases a
+ *   minimal user turn is appended so the request is valid, and a note records
+ *   it.
+ * - Where prefill is still supported, trailing whitespace is trimmed (also a
+ *   400 otherwise). An assistant turn that becomes empty is dropped.
+ */
+function finalizeTrailingAssistant(messages: AnthropicMessage[], modelId: string, notes: string[]): AnthropicMessage[] {
 	const last = messages[messages.length - 1];
 	if (!last || last.role !== "assistant") return messages;
+
+	// Trim first so the emptiness check below is accurate.
 	if (typeof last.content === "string") {
 		last.content = last.content.trimEnd();
+	} else {
+		const tail = last.content[last.content.length - 1];
+		if (tail && tail.type === "text") tail.text = tail.text.trimEnd();
+		last.content = last.content.filter((block) => block.type !== "text" || block.text.length > 0);
+	}
+	const isEmpty = typeof last.content === "string" ? last.content.length === 0 : last.content.length === 0;
+	if (isEmpty) {
+		messages.pop();
+		if (messages.length === 0) messages.push({ role: "user", content: PLACEHOLDER_USER_TEXT });
 		return messages;
 	}
-	const tail = last.content[last.content.length - 1];
-	if (tail && tail.type === "text") tail.text = tail.text.trimEnd();
+
+	const endsInToolUse = typeof last.content !== "string" && last.content.some((block) => block.type === "tool_use");
+	if (endsInToolUse || !claudeSupportsPrefill(modelId)) {
+		messages.push({ role: "user", content: PLACEHOLDER_USER_TEXT });
+		notes.push(
+			endsInToolUse
+				? "appended a user turn: conversation ended on tool_calls with no tool results"
+				: `appended a user turn: ${modelId} does not accept a trailing assistant (prefill) message`,
+		);
+	}
 	return messages;
 }
 
@@ -814,9 +861,21 @@ function mapStopReason(reason: string | null, hasToolCalls = false): string {
 /** A translated OpenAI SSE stream plus the upstream usage, resolved when the stream ends. */
 export interface AnthropicStreamTranslation {
 	stream: ReadableStream<Uint8Array>;
-	/** Resolves once the stream finishes; `null` when Anthropic never reported usage. */
+	/**
+	 * Settles on every terminal path — normal end, upstream error, or the
+	 * client cancelling — with the usage Anthropic reported, or `null` when the
+	 * message never reached `message_delta` (so output tokens are unknown and
+	 * the caller should keep its pre-flight estimate).
+	 */
 	usage: Promise<AnthropicUsage | null>;
 }
+
+/**
+ * Upper bound on SSE bytes retained while waiting for an event delimiter. A
+ * well-formed Anthropic event is a few KB; a misbehaving upstream that never
+ * sends a blank line must not grow memory (or the rescans) without limit.
+ */
+const MAX_SSE_BUFFER_BYTES = 1_048_576;
 
 /**
  * Translate an Anthropic `/v1/messages` SSE stream into OpenAI
@@ -843,21 +902,28 @@ export function translateAnthropicStreamToOpenAI(
 	const encoder = new TextEncoder();
 	const decoder = new TextDecoder();
 	let buffer = "";
+	/** Index into `buffer` from which the next delimiter search starts, so each chunk is scanned once. */
+	let scanFrom = 0;
 	let id = `chatcmpl-${Date.now().toString(36)}`;
 	const created = Math.floor(Date.now() / 1000);
 	const usage: AnthropicUsage = {};
 	let sawUsage = false;
+	let sawStop = false;
 	let stopReason: string | null = null;
 	let roleSent = false;
 	let finishSent = false;
 	let done = false;
 	const toolIndexByBlock = new Map<number, number>();
+	/** Argument bytes streamed so far per tool index; zero at stop → emit "{}". */
+	const toolArgBytes = new Map<number, number>();
 	let toolCount = 0;
 
 	let resolveUsage!: (value: AnthropicUsage | null) => void;
 	const usagePromise = new Promise<AnthropicUsage | null>((resolve) => {
 		resolveUsage = resolve;
 	});
+	/** Reconciliation is only trustworthy once Anthropic reported the final output count. */
+	const settleUsage = (): void => resolveUsage(sawUsage && sawStop ? { ...usage } : null);
 
 	const encodeChunk = (delta: Record<string, unknown>, finishReason: string | null = null): Uint8Array =>
 		encoder.encode(
@@ -881,6 +947,20 @@ export function translateAnthropicStreamToOpenAI(
 		}
 	};
 
+	/**
+	 * OpenAI SDKs `JSON.parse` the accumulated arguments; real OpenAI always
+	 * emits at least "{}" for a no-argument call, so a tool block that streamed
+	 * zero argument bytes gets "{}" before the stream finishes.
+	 */
+	const closeEmptyToolArgs = (controller: TransformStreamDefaultController<Uint8Array>, only?: number): void => {
+		for (const [toolIndex, bytes] of toolArgBytes) {
+			if (only !== undefined && toolIndex !== only) continue;
+			if (bytes > 0) continue;
+			controller.enqueue(encodeChunk({ tool_calls: [{ index: toolIndex, function: { arguments: "{}" } }] }));
+			toolArgBytes.set(toolIndex, 2);
+		}
+	};
+
 	const emitFinish = (controller: TransformStreamDefaultController<Uint8Array>): void => {
 		if (finishSent) return;
 		finishSent = true;
@@ -888,6 +968,7 @@ export function translateAnthropicStreamToOpenAI(
 			controller.enqueue(encodeChunk({ role: "assistant", content: "" }));
 			roleSent = true;
 		}
+		closeEmptyToolArgs(controller);
 		controller.enqueue(encodeChunk({}, mapStopReason(stopReason, toolCount > 0)));
 	};
 
@@ -910,7 +991,7 @@ export function translateAnthropicStreamToOpenAI(
 			);
 		}
 		controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-		resolveUsage(sawUsage ? { ...usage } : null);
+		settleUsage();
 	};
 
 	const handleEvent = (evt: Record<string, unknown>, controller: TransformStreamDefaultController<Uint8Array>): void => {
@@ -930,6 +1011,7 @@ export function translateAnthropicStreamToOpenAI(
 				if (block?.type === "tool_use" && typeof evt.index === "number") {
 					const toolIndex = toolCount++;
 					toolIndexByBlock.set(evt.index, toolIndex);
+					toolArgBytes.set(toolIndex, 0);
 					controller.enqueue(
 						encodeChunk({
 							tool_calls: [
@@ -951,16 +1033,23 @@ export function translateAnthropicStreamToOpenAI(
 					controller.enqueue(encodeChunk({ content: delta.text }));
 				} else if (delta?.type === "input_json_delta" && typeof delta.partial_json === "string") {
 					const toolIndex = typeof evt.index === "number" ? toolIndexByBlock.get(evt.index) : undefined;
-					if (toolIndex !== undefined) {
+					if (toolIndex !== undefined && delta.partial_json.length > 0) {
+						toolArgBytes.set(toolIndex, (toolArgBytes.get(toolIndex) ?? 0) + delta.partial_json.length);
 						controller.enqueue(encodeChunk({ tool_calls: [{ index: toolIndex, function: { arguments: delta.partial_json } }] }));
 					}
 				}
+				break;
+			}
+			case "content_block_stop": {
+				const toolIndex = typeof evt.index === "number" ? toolIndexByBlock.get(evt.index) : undefined;
+				if (toolIndex !== undefined) closeEmptyToolArgs(controller, toolIndex);
 				break;
 			}
 			case "message_delta": {
 				const delta = evt.delta as { stop_reason?: unknown } | undefined;
 				if (delta && typeof delta.stop_reason === "string") stopReason = delta.stop_reason;
 				mergeUsage(evt.usage);
+				sawStop = true;
 				emitFinish(controller);
 				break;
 			}
@@ -983,39 +1072,78 @@ export function translateAnthropicStreamToOpenAI(
 				break;
 			}
 			default:
-				break; // ping, content_block_stop, thinking / signature deltas
+				break; // ping, thinking / signature deltas
 		}
 	};
 
-	const drain = (controller: TransformStreamDefaultController<Uint8Array>, flushAll: boolean): void => {
-		const parts = buffer.split(/\r?\n\r?\n/);
-		buffer = flushAll ? "" : (parts.pop() ?? "");
-		for (const part of parts) {
-			const data = part
-				.split(/\r?\n/)
-				.filter((line) => line.startsWith("data:"))
-				.map((line) => line.slice(5).trimStart())
-				.join("\n");
-			if (!data) continue;
-			let evt: unknown;
-			try {
-				evt = JSON.parse(data);
-			} catch {
-				continue; // partial or malformed event — skip, never crash the stream
-			}
-			if (evt && typeof evt === "object" && !done) handleEvent(evt as Record<string, unknown>, controller);
+	const handleEventText = (part: string, controller: TransformStreamDefaultController<Uint8Array>): void => {
+		const data = part
+			.split(/\r?\n/)
+			.filter((line) => line.startsWith("data:"))
+			.map((line) => line.slice(5).trimStart())
+			.join("\n");
+		if (!data) return;
+		let evt: unknown;
+		try {
+			evt = JSON.parse(data);
+		} catch {
+			return; // partial or malformed event — skip, never crash the stream
 		}
+		if (evt && typeof evt === "object" && !done) handleEvent(evt as Record<string, unknown>, controller);
+	};
+
+	/**
+	 * Consume complete events (delimited by a blank line) from `buffer`. Only
+	 * bytes appended since the last call are searched, so total work is linear
+	 * in the stream size even when events arrive in tiny chunks.
+	 */
+	const drain = (controller: TransformStreamDefaultController<Uint8Array>, flushAll: boolean): void => {
+		const delimiter = /\r?\n\r?\n/g;
+		// Back up 3 chars so a delimiter split across chunk boundaries is still found.
+		delimiter.lastIndex = Math.max(0, scanFrom - 3);
+		let consumed = 0;
+		let match: RegExpExecArray | null = delimiter.exec(buffer);
+		while (match !== null) {
+			handleEventText(buffer.slice(consumed, match.index), controller);
+			consumed = match.index + match[0].length;
+			match = delimiter.exec(buffer);
+		}
+		if (flushAll) {
+			handleEventText(buffer.slice(consumed), controller);
+			buffer = "";
+			scanFrom = 0;
+			return;
+		}
+		buffer = buffer.slice(consumed);
+		scanFrom = buffer.length;
 	};
 
 	const transform = new TransformStream<Uint8Array, Uint8Array>({
 		transform(bytes, controller) {
 			buffer += decoder.decode(bytes, { stream: true });
 			drain(controller, false);
+			if (buffer.length > MAX_SSE_BUFFER_BYTES) {
+				// Upstream is not sending well-formed SSE. Fail the stream the
+				// OpenAI way, settle usage, and stop pulling from upstream.
+				controller.enqueue(
+					encoder.encode(
+						`data: ${JSON.stringify({ error: { message: "anthropic stream exceeded the event buffer limit", type: "upstream_error" } })}\n\n`,
+					),
+				);
+				emitDone(controller);
+				controller.terminate();
+			}
 		},
 		flush(controller) {
 			buffer += decoder.decode();
 			drain(controller, true);
 			emitDone(controller);
+		},
+		// Runs when the client cancels the response or the upstream errors —
+		// neither path reaches flush(), and the proxy's ledger write is
+		// waiting on the usage promise.
+		cancel() {
+			settleUsage();
 		},
 	});
 

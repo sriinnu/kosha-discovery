@@ -26,10 +26,9 @@
  * @module
  */
 
-import { realpathSync } from "node:fs";
 import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
 import { computeContextStrategy } from "./context-strategy.js";
+import { isMainModule } from "./entry.js";
 import { ModelRegistry } from "./registry.js";
 import { parseRouteStrategy, ROUTE_STRATEGIES } from "./registry-routing.js";
 import type { ModelMode } from "./types.js";
@@ -509,6 +508,8 @@ function send(msg: JsonRpcMessage): void {
 /** Start the newline-delimited JSON-RPC loop over stdio. */
 export function runStdioServer(deps: McpDeps = defaultDeps): void {
 	let buffer = "";
+	/** In-flight requests, so an EOF on stdin waits for their answers before exiting. */
+	const pending = new Set<Promise<void>>();
 	process.stdin.setEncoding("utf-8");
 	process.stdin.on("data", (chunk: string) => {
 		buffer += chunk;
@@ -530,28 +531,27 @@ export function runStdioServer(deps: McpDeps = defaultDeps): void {
 				send(fail(null, JSON_RPC.PARSE_ERROR, "Parse error"));
 				continue;
 			}
-			handleJsonRpc(parsed, deps)
+			const job = handleJsonRpc(parsed, deps)
 				.then((response) => {
 					if (response) send(response);
 				})
 				.catch((err) => {
 					process.stderr.write(`[kosha-mcp] ${err}\n`);
+				})
+				.finally(() => {
+					pending.delete(job);
 				});
+			pending.add(job);
 		}
 	});
 
-	process.stdin.on("end", () => process.exit(0));
+	// One-shot / piped clients half-close stdin right after writing their
+	// request; exiting immediately would drop the answer still being computed.
+	process.stdin.on("end", () => {
+		Promise.allSettled(pending).then(() => process.exit(0));
+	});
 }
 
 // Only attach to stdio when executed directly (`kosha-mcp` bin or
-// `node dist/mcp-server.js`). Resolving argv[1] through realpath keeps the
-// check correct when the bin is a symlink (global npm installs), where
-// argv[1] is the link path and import.meta.url is the target.
-const isEntryPoint = (() => {
-	try {
-		return process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
-	} catch {
-		return false;
-	}
-})();
-if (isEntryPoint) runStdioServer();
+// `node dist/mcp-server.js`); see entry.ts for why realpath matters.
+if (isMainModule(import.meta.url)) runStdioServer();

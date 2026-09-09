@@ -22,7 +22,7 @@ Any MCP client config (Claude Desktop, Cursor, Zed, …):
 
 Without a global install, use `npx -y -p @sriinnu/kosha-discovery kosha-mcp` as the command.
 
-The registry is loaded lazily on the first tool call, so starting the server has no filesystem or network side effects. Discovery honours the same credential sources and cache as the CLI (`~/.kosha/`).
+The registry is loaded lazily on the first tool call, so starting the server has no network side effects (it reads only its own `package.json` for the version). Discovery honours the same credential sources and cache as the CLI (`~/.kosha/`).
 
 ## Protocol
 
@@ -49,7 +49,7 @@ Tool-execution failures (a provider timing out, a model not found) come back as 
 
 ```json
 → {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}
-← {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"kosha","version":"1.5.0"}}}
+← {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"kosha","version":"<installed version>"}}}
 → {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"kosha_ranked_routes","arguments":{"strategy":"reliable","capability":"tool_use","limit":3}}}
 ← {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{ \"strategy\": \"reliable\", \"routes\": [ … ] }"}]}}
 ```

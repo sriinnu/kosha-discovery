@@ -144,7 +144,12 @@ describe("translateOpenAIToAnthropic", () => {
 describe("per-generation Claude behaviour", () => {
 	it("classifies sampling support by generation", () => {
 		expect(claudeSamplingSupport("claude-3-5-sonnet-20241022")).toBe("both");
-		expect(claudeSamplingSupport("claude-sonnet-4-20250514")).toBe("both");
+		// Every Claude 4.x accepts at most one of temperature / top_p.
+		expect(claudeSamplingSupport("claude-sonnet-4-20250514")).toBe("one");
+		expect(claudeSamplingSupport("claude-opus-4-1")).toBe("one");
+		expect(claudeSamplingSupport("claude-sonnet-4-5")).toBe("one");
+		expect(claudeSamplingSupport("claude-haiku-4-5-20251001")).toBe("one");
+		expect(claudeSamplingSupport("anthropic.claude-opus-4-8-v1:0")).toBe("none");
 		expect(claudeSamplingSupport("claude-opus-4-6")).toBe("one");
 		expect(claudeSamplingSupport("claude-sonnet-4.6")).toBe("one");
 		expect(claudeSamplingSupport("claude-opus-4-7")).toBe("none");
@@ -219,6 +224,107 @@ describe("per-generation Claude behaviour", () => {
 		});
 		expect(legacy.request).not.toHaveProperty("output_config");
 		expect(legacy.notes.join(" ")).toMatch(/does not support output_config.effort/);
+	});
+
+	it("only Opus 4.5 in the 4.5 generation accepts effort; Sonnet / Haiku 4.5 drop it", () => {
+		for (const model of ["claude-sonnet-4-5", "claude-haiku-4-5", "claude-haiku-4-5-20251001"]) {
+			const { request, notes } = translateOpenAIToAnthropicWithNotes({
+				model,
+				messages: [{ role: "user", content: "hi" }],
+				reasoning_effort: "high",
+			});
+			expect(request, model).not.toHaveProperty("output_config");
+			expect(notes.join(" ")).toMatch(/does not support output_config.effort/);
+		}
+		expect(
+			translateOpenAIToAnthropic({ model: "claude-opus-4-5", messages: [{ role: "user", content: "hi" }], reasoning_effort: "xhigh" })
+				.output_config,
+		).toEqual({ effort: "high" });
+	});
+
+	it("clamps temperature into Anthropic's 0..1 range", () => {
+		const { request, notes } = translateOpenAIToAnthropicWithNotes({
+			model: "claude-sonnet-4-6",
+			messages: [{ role: "user", content: "hi" }],
+			temperature: 1.7,
+		});
+		expect(request.temperature).toBe(1);
+		expect(notes.join(" ")).toMatch(/clamped temperature 1.7 to 1/);
+	});
+
+	it("appends a user turn instead of shipping a prefill to 4.6+ / after trailing tool_calls; drops an empty final assistant", () => {
+		const prefill = translateOpenAIToAnthropicWithNotes({
+			model: "claude-sonnet-4-6",
+			messages: [
+				{ role: "user", content: "q" },
+				{ role: "assistant", content: "The answer is:" },
+			],
+		});
+		expect(prefill.request.messages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+		expect(prefill.notes.join(" ")).toMatch(/does not accept a trailing assistant/);
+
+		// Prefill still allowed on older generations.
+		const legacy = translateOpenAIToAnthropic({
+			model: "claude-3-5-sonnet-20241022",
+			messages: [
+				{ role: "user", content: "q" },
+				{ role: "assistant", content: "The answer is:  " },
+			],
+		});
+		expect(legacy.messages[legacy.messages.length - 1]).toEqual({ role: "assistant", content: "The answer is:" });
+
+		const trailingTool = translateOpenAIToAnthropicWithNotes({
+			model: "claude-3-5-sonnet-20241022",
+			messages: [
+				{ role: "user", content: "q" },
+				{ role: "assistant", content: null, tool_calls: [{ id: "c", type: "function", function: { name: "f", arguments: "{}" } }] },
+			],
+		});
+		expect(trailingTool.request.messages[trailingTool.request.messages.length - 1].role).toBe("user");
+		expect(trailingTool.notes.join(" ")).toMatch(/ended on tool_calls/);
+
+		const empty = translateOpenAIToAnthropic({
+			model: "x",
+			messages: [
+				{ role: "user", content: "q" },
+				{ role: "assistant", content: "   \n" },
+			],
+		});
+		expect(empty.messages).toEqual([{ role: "user", content: "q" }]);
+	});
+
+	it("drops empty stop sequences, strict on pre-structured-output generations, and reports unsupported fields", () => {
+		const { request, notes } = translateOpenAIToAnthropicWithNotes({
+			model: "claude-sonnet-4-20250514",
+			messages: [{ role: "user", content: "hi" }],
+			stop: ["", "  ", "END"],
+			tools: [{ type: "function", function: { name: "f", strict: true, parameters: { type: "object", properties: {}, additionalProperties: false } } }],
+			unsupportedFields: ["n", "seed"],
+			user: "user-42",
+		});
+		expect(request.stop_sequences).toEqual(["END"]);
+		expect(request.tools?.[0]).not.toHaveProperty("strict");
+		expect(request.metadata).toEqual({ user_id: "user-42" });
+		expect(notes.join(" ")).toMatch(/dropped strict on 1 tool/);
+		expect(notes.join(" ")).toMatch(/dropped n, seed/);
+
+		const kept = translateOpenAIToAnthropic({
+			model: "claude-sonnet-5",
+			messages: [{ role: "user", content: "hi" }],
+			tools: [{ type: "function", function: { name: "f", strict: true } }],
+		});
+		expect(kept.tools?.[0].strict).toBe(true);
+	});
+
+	it("keeps notes header-safe when caller strings are non-ASCII", () => {
+		const { notes } = translateOpenAIToAnthropicWithNotes({
+			model: "claude-fable-5-1",
+			messages: [{ role: "user", content: "hi" }],
+			tools: [{ type: "function", function: { name: "获取天气" } }],
+			tool_choice: { type: "function", function: { name: "获取天气" } },
+			reasoning_effort: "高",
+		});
+		for (const note of notes) expect(note, note).toMatch(/^[\x20-\x7e]*$/);
 	});
 
 	it("knows which generations have native JSON schema and forced tool choice", () => {
@@ -444,15 +550,28 @@ describe("translateOpenAIToAnthropic — images and response_format", () => {
 		).toThrow(UnsupportedWireContentError);
 	});
 
-	it("maps json_object onto a system instruction and records a note", () => {
+	it("maps json_object onto a system instruction APPENDED after the caller's prompt", () => {
 		const { request, notes } = translateOpenAIToAnthropicWithNotes({
 			model: "claude-sonnet-5",
 			messages: [{ role: "system", content: "sys" }, { role: "user", content: "hi" }],
 			response_format: { type: "json_object" },
 		});
+		expect(request.system?.startsWith("sys")).toBe(true);
 		expect(request.system).toMatch(/single valid JSON object/);
-		expect(request.system?.startsWith("Respond with a single valid JSON")).toBe(true);
 		expect(notes.join(" ")).toMatch(/json_object/);
+	});
+
+	it("degrades forced tool_choice to auto when combined with json_schema output", () => {
+		const { request, notes } = translateOpenAIToAnthropicWithNotes({
+			model: "claude-sonnet-5",
+			messages: [{ role: "user", content: "hi" }],
+			tools: [{ type: "function", function: { name: "f" } }],
+			tool_choice: "required",
+			response_format: { type: "json_schema", json_schema: { name: "t", schema: { type: "object" } } },
+		});
+		expect(request.tool_choice).toEqual({ type: "auto" });
+		expect(request.output_config?.format).toBeDefined();
+		expect(notes.join(" ")).toMatch(/cannot be combined with response_format/);
 	});
 });
 
@@ -477,6 +596,13 @@ describe("coerceOpenAIChatRequest", () => {
 		expect(req.stream_options).toEqual({ include_usage: true });
 		expect(req.parallel_tool_calls).toBe(false);
 		expect(req.reasoning_effort).toBe("high");
+	});
+
+	it("records fields with no Anthropic equivalent instead of silently dropping them", () => {
+		const req = coerceOpenAIChatRequest({ model: "m", messages: [], n: 3, seed: 7, logit_bias: { "1": 1 }, user: "u" });
+		expect(req.unsupportedFields).toEqual(["n", "seed", "logit_bias"]);
+		expect(req.user).toBe("u");
+		expect(coerceOpenAIChatRequest({ model: "m", messages: [], n: 1 }).unsupportedFields).toBeUndefined();
 	});
 });
 
@@ -659,6 +785,58 @@ describe("translateAnthropicStreamToOpenAI", () => {
 		expect(deltas.find((d) => d.finish_reason)?.finish_reason).toBe("tool_calls");
 	});
 
+	it("closes a no-argument tool call with \"{}\" so SDKs can JSON.parse the arguments", async () => {
+		const upstream = sse([
+			{ type: "message_start", message: { id: "msg_e", usage: { input_tokens: 2 } } },
+			{ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_e", name: "get_time", input: {} } },
+			{ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "" } },
+			{ type: "content_block_stop", index: 0 },
+			{ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 3 } },
+			{ type: "message_stop" },
+		]);
+		const { stream } = translateAnthropicStreamToOpenAI(upstream, "m");
+		const objs = parseChunks(await readAll(stream)).filter((c): c is Record<string, unknown> => c !== "[DONE]");
+		const args = objs
+			.flatMap((c) => ((c.choices as Array<{ delta: { tool_calls?: Array<{ function: { arguments: string } }> } }>)[0]?.delta.tool_calls ?? []))
+			.map((t) => t.function.arguments)
+			.join("");
+		expect(JSON.parse(args)).toEqual({});
+	});
+
+	it("ignores thinking / signature deltas and leaves text intact", async () => {
+		const upstream = sse([
+			{ type: "message_start", message: { id: "msg_t", usage: { input_tokens: 2 } } },
+			{ type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } },
+			{ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "hmm" } },
+			{ type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "sig" } },
+			{ type: "content_block_stop", index: 0 },
+			{ type: "content_block_start", index: 1, content_block: { type: "text", text: "" } },
+			{ type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "visible" } },
+			{ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 9 } },
+			{ type: "message_stop" },
+		]);
+		const { stream } = translateAnthropicStreamToOpenAI(upstream, "m");
+		const body = await readAll(stream);
+		expect(body).toContain('"content":"visible"');
+		expect(body).not.toContain("hmm");
+	});
+
+	it("settles the usage promise (null) when the client cancels mid-stream", async () => {
+		const upstream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(
+					new TextEncoder().encode('event: message_start\ndata: {"type":"message_start","message":{"id":"m","usage":{"input_tokens":5}}}\n\n'),
+				);
+				// never closes — simulates a long-running upstream
+			},
+		});
+		const { stream, usage } = translateAnthropicStreamToOpenAI(upstream, "m");
+		const reader = stream.getReader();
+		await reader.read();
+		await reader.cancel();
+		await expect(usage).resolves.toBeNull();
+	});
+
 	it("emits an error event then [DONE] when Anthropic streams an error", async () => {
 		const upstream = sse([
 			{ type: "message_start", message: { id: "msg_3", usage: { input_tokens: 1 } } },
@@ -669,7 +847,9 @@ describe("translateAnthropicStreamToOpenAI", () => {
 		const errChunk = chunks.find((c) => c !== "[DONE]" && "error" in c) as Record<string, unknown>;
 		expect(errChunk.error).toEqual({ message: "Overloaded", type: "overloaded_error" });
 		expect(chunks[chunks.length - 1]).toBe("[DONE]");
-		await expect(usage).resolves.toEqual({ input_tokens: 1 });
+		// The message never reached message_delta, so output tokens are unknown:
+		// usage resolves null and the proxy keeps its pre-flight estimate.
+		await expect(usage).resolves.toBeNull();
 	});
 
 	it("still closes cleanly with a finish chunk and [DONE] if the upstream ends early", async () => {

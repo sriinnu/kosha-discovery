@@ -491,9 +491,17 @@ jobs:
           );
           NODE
 
+      # run.log is the tee'd stdout/stderr of a process holding provider
+      # secrets. GitHub masks secrets in step logs but NOT in artifacts, so
+      # only the structured summaries are uploaded.
       - name: Upload observability artifact
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: kosha-snapshot-observability-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ env.OBS_DIR }}
+          path: |
+            ${{ env.OBS_DIR }}/provider-summary.json
+            ${{ env.OBS_DIR }}/provider-summary.txt
+            ${{ env.OBS_DIR }}/run-metadata.json
+            ${{ env.OBS_DIR }}/run-log.txt
+            ${{ env.OBS_DIR }}/failure-report.txt

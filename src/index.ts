@@ -41,9 +41,11 @@ export {
 	appendLedgerEntry,
 	DEFAULT_LEDGER_PATH,
 	estimateRequestCost,
+	isRequestRow,
 	ledgerRowUsd,
 	readMonthlyBudgetUsd,
 	readSpendForMonth,
+	readTenantBudgetUsd,
 } from "./cost.js";
 export type { ActualUsageCost, CostEstimate, LedgerEntry, UsageShape } from "./cost.js";
 export { estimateUsdCost, normalizeTokenUsage, tallyCosts } from "./tally.js";
@@ -56,9 +58,15 @@ export type {
 	UsdCostBreakdown,
 } from "./tally.js";
 export {
+	claudeEffortLadder,
 	claudeSamplingSupport,
 	claudeSupportsForcedToolChoice,
 	claudeSupportsNativeJsonSchema,
+	claudeSupportsPrefill,
+	parseClaudeGeneration,
+} from "./claude-generation.js";
+export type { ClaudeEffort, ClaudeGeneration, SamplingSupport } from "./claude-generation.js";
+export {
 	coerceOpenAIChatRequest,
 	toOpenAIUsage,
 	translateAnthropicStreamToOpenAI,
@@ -77,7 +85,6 @@ export type {
 	OpenAIChatResponse,
 	OpenAIToolCall,
 	OpenAIUsage,
-	SamplingSupport,
 	WireTranslation,
 } from "./wire-anthropic.js";
 export { extractModelVersion, extractOriginProvider, normalizeModelId } from "./normalize.js";

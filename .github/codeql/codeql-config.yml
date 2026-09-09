@@ -26,9 +26,10 @@ queries:
 #
 # Rather than maintaining a list of opaque query IDs (which differs across
 # CodeQL pack versions), we exclude the two files that own these
-# intentional flows from CodeQL gating. Every other file in the repo —
-# the discoverers, credential resolver, MCP server, cache, translator, CLI
-# commands, tests — still get the full security-extended analysis.
+# intentional flows (plus the translator they share a taint path with)
+# from CodeQL gating. Every other file in the repo — the discoverers,
+# credential resolver, MCP server, cache, CLI commands, tests — still gets
+# the full security-extended analysis.
 paths-ignore:
   - src/proxy.ts
   - src/cost.ts
