@@ -153,6 +153,13 @@ describe("KOSHA_PROXY_TOKEN gate", () => {
 		expect(proxyRequestAuthorized(headers({ authorization: "bearer   abc  " }))).toBe(true);
 		expect(proxyRequestAuthorized(headers({ "x-kosha-token": "abc" }))).toBe(true);
 		expect(proxyRequestAuthorized(headers({ "x-kosha-token": "ab" }))).toBe(false);
+		expect(proxyRequestAuthorized(headers({ authorization: "Bearer" }))).toBe(false);
+		expect(proxyRequestAuthorized(headers({ authorization: "Bearer\tabc" }))).toBe(true);
+		expect(proxyRequestAuthorized(headers({ authorization: "Bearerabc" }))).toBe(false);
+		// A pathological header must be rejected quickly (the parser is regex-free).
+		const started = performance.now();
+		expect(proxyRequestAuthorized(headers({ authorization: `Bearer a${" ".repeat(16_000)}b` }))).toBe(false);
+		expect(performance.now() - started).toBeLessThan(50);
 		delete process.env.KOSHA_PROXY_TOKEN;
 		expect(proxyRequestAuthorized(headers({}))).toBe(true);
 	});

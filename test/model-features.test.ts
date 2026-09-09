@@ -176,6 +176,12 @@ describe("inferStructuredOutputModes — Anthropic", () => {
 		}
 	});
 
+	it("classifies prefixed, dotted, and Bedrock-style IDs like their bare form", () => {
+		expect(inferStructuredOutputModes("anthropic", "anthropic/claude-sonnet-4.6")).toEqual(["json-schema", "tool-choice", "xml"]);
+		expect(inferStructuredOutputModes("anthropic", "anthropic.claude-opus-4-8-v1:0")).toEqual(["json-schema", "tool-choice", "xml"]);
+		expect(inferStructuredOutputModes("anthropic", "anthropic/claude-fable-5.1")).toEqual(["json-schema", "xml"]);
+	});
+
 	it("drops tool-choice for Fable / Mythos 5.1 (forced tool_choice returns 400)", () => {
 		expect(inferStructuredOutputModes("anthropic", "claude-fable-5-1")).toEqual(["json-schema", "xml"]);
 		expect(inferStructuredOutputModes("anthropic", "claude-mythos-5-1")).toEqual(["json-schema", "xml"]);

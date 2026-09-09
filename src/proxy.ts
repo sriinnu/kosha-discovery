@@ -38,6 +38,7 @@
  * @module
  */
 
+import { randomUUID } from "node:crypto";
 import type { Hono } from "hono";
 import type { ModelCard } from "./types.js";
 import type { ModelRegistry } from "./registry.js";
@@ -51,6 +52,7 @@ import {
 	estimateRequestCost,
 	readMonthlyBudgetUsd,
 	readSpendForMonth,
+	readTenantBudgetUsd,
 } from "./cost.js";
 import {
 	UnsupportedWireContentError,
@@ -381,16 +383,23 @@ function buildUpstreamUrl(model: ModelCard, registry: ModelRegistry): string {
 	return `${base}/chat/completions`;
 }
 
-/** Strip CR/LF/NUL and bound length before reflecting caller- or upstream-derived text into a header. */
+/**
+ * Make caller- or upstream-derived text safe to reflect into a response
+ * header: printable ASCII only, bounded length. HTTP header values must be
+ * ISO-8859-1 and undici's `Headers.set` throws on anything above U+00FF —
+ * which, if it happened after the upstream call, would turn a paid request
+ * into an unrecorded 500.
+ */
 function headerSafe(value: string, max = 400): string {
-	return value.replace(/[\r\n\0]/g, "").slice(0, max);
+	return value.replace(/[^\x20-\x7e]/g, "?").slice(0, max);
 }
 
 /**
  * Pass an OpenAI-compatible SSE stream through byte-for-byte while watching
  * for a `usage` object in the events (providers emit it on the final chunk
  * when the caller set `stream_options.include_usage`). Resolves with the last
- * usage seen, or null when the stream never carried one.
+ * usage seen, or null when the stream never carried one — on every terminal
+ * path, including the client cancelling or the upstream erroring.
  */
 function observeOpenAIStreamUsage(upstream: ReadableStream<Uint8Array>): {
 	stream: ReadableStream<Uint8Array>;
@@ -432,6 +441,9 @@ function observeOpenAIStreamUsage(upstream: ReadableStream<Uint8Array>): {
 			flush() {
 				buffer += decoder.decode();
 				scan(true);
+				resolve(lastUsage);
+			},
+			cancel() {
 				resolve(lastUsage);
 			},
 		}),
@@ -492,11 +504,11 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			return ctx.json({ error: `no model found for '${requested}'` }, 404);
 		}
 
-		// `requested` is caller-controlled. Strip control characters (CR/LF/NUL)
-		// and bound the length before reflecting it into a response header:
-		// the Headers constructor throws on raw CRLF, which would turn a
-		// malformed model string into an unhandled 500.
-		const safeRequested = requested.replace(/[\r\n\0]/g, "").slice(0, 200);
+		// `requested` is caller-controlled. Reduce it to printable ASCII and
+		// bound the length before reflecting it into a response header: the
+		// Headers API throws on CR/LF and on any non-Latin-1 character, which
+		// would turn a malformed model string into an unhandled 500.
+		const safeRequested = headerSafe(requested, 200);
 
 		// Optional per-tenant tag, drawn from a kosha-tenant-<name> bearer token.
 		// We don't trust the value as authentication — it just buckets ledger
@@ -510,29 +522,45 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 		// caller is under budget, so we refuse. Treating the read failure as
 		// $0 spent would let an attacker bypass the cap by corrupting the
 		// ledger file.
+		// The global cap is always checked against TOTAL spend — never a
+		// tenant's slice — so a caller cannot escape it by inventing a fresh
+		// tenant tag per request. A per-tenant cap is an additional gate.
 		const budget = readMonthlyBudgetUsd();
-		if (budget !== null) {
-			let spent: number;
+		const tenantBudget = tenant ? readTenantBudgetUsd() : null;
+		if (budget !== null || tenantBudget !== null) {
+			let spent = 0;
+			let tenantSpent = 0;
 			try {
-				spent = await readSpendForMonth(Date.now(), tenant);
+				if (budget !== null) spent = await readSpendForMonth(Date.now());
+				if (tenantBudget !== null) tenantSpent = await readSpendForMonth(Date.now(), tenant);
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
 				return ctx.json(
 					{
 						error: "budget enforcement unavailable — ledger could not be read",
 						detail: message,
-						budgetUsd: budget,
+						budgetUsd: budget ?? tenantBudget,
 					},
 					503,
 				);
 			}
-			if (spent >= budget) {
+			if (budget !== null && spent >= budget) {
 				return ctx.json(
 					{ error: "monthly budget exceeded", spentUsd: spent, budgetUsd: budget },
 					429,
 					{
 						"x-kosha-budget-remaining-usd": Math.max(0, budget - spent).toFixed(4),
 						"x-kosha-budget-usd": budget.toFixed(2),
+					},
+				);
+			}
+			if (tenantBudget !== null && tenantSpent >= tenantBudget) {
+				return ctx.json(
+					{ error: "tenant monthly budget exceeded", tenant, spentUsd: tenantSpent, budgetUsd: tenantBudget },
+					429,
+					{
+						"x-kosha-budget-remaining-usd": Math.max(0, tenantBudget - tenantSpent).toFixed(4),
+						"x-kosha-budget-usd": tenantBudget.toFixed(2),
 					},
 				);
 			}
@@ -615,6 +643,10 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 					throw err;
 				}
 				wireNotes = translation.notes;
+				if (model.maxOutputTokens > 0 && translation.request.max_tokens > model.maxOutputTokens) {
+					wireNotes.push(`clamped max_tokens ${translation.request.max_tokens} to ${model.maxOutputTokens}: model output cap`);
+					translation.request.max_tokens = model.maxOutputTokens;
+				}
 				upstreamBody = JSON.stringify(translation.request);
 				// Rebuild the URL via the WHATWG URL API rather than a string
 				// `replace`, so the pathname swap can't be tripped by a fragment
@@ -632,13 +664,22 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			fetchAttempts += 1;
 
 			const attemptStart = Date.now();
+			// Bound the upstream call so a hung provider can't stall the caller,
+			// and abort in-flight requests when kosha is shutting down so we
+			// drain instead of dropping streams mid-flight. The timer covers
+			// headers and non-streaming bodies only: a streamed body legitimately
+			// runs for minutes on 128K-output models, so once we start relaying
+			// a stream the timer is released and only the shutdown signal (and
+			// the client hanging up) can end it.
+			const upstreamAbort = new AbortController();
+			const upstreamTimer = setTimeout(
+				() => upstreamAbort.abort(new DOMException(`upstream did not respond within ${UPSTREAM_TIMEOUT_MS}ms`, "TimeoutError")),
+				UPSTREAM_TIMEOUT_MS,
+			);
+			const releaseTimer = (): void => clearTimeout(upstreamTimer);
 			let upstream: Response;
 			try {
-				// Bound the upstream call so a hung provider can't stall the
-				// caller, and abort in-flight requests when kosha is shutting
-				// down so we drain instead of dropping streams mid-flight.
-				const timeoutSignal = AbortSignal.timeout(UPSTREAM_TIMEOUT_MS);
-				const signal = shutdownSignal ? AbortSignal.any([timeoutSignal, shutdownSignal]) : timeoutSignal;
+				const signal = shutdownSignal ? AbortSignal.any([upstreamAbort.signal, shutdownSignal]) : upstreamAbort.signal;
 				upstream = await fetch(upstreamUrlString, {
 					method: "POST",
 					headers: upstreamHeaders,
@@ -646,6 +687,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 					signal,
 				});
 			} catch (err) {
+				releaseTimer();
 				attemptChain.push(`${model.provider}:error`);
 				const errLatency = Date.now() - attemptStart;
 				const errorType = err instanceof Error && err.name === "TimeoutError" ? "timeout" : "transport";
@@ -662,6 +704,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			// A retryable upstream failure (5xx) rolls over to the next route,
 			// unless we've spent our fetch budget — then we surface it.
 			if (upstream.status >= 500 && fetchAttempts < MAX_FETCHES) {
+				releaseTimer();
 				attemptChain.push(`${model.provider}:${upstream.status}`);
 				await upstream.body?.cancel().catch(() => {});
 				registry.recordProxyOutcome(model.provider, {
@@ -709,11 +752,19 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 
 			const upstreamStatus = upstream.status;
 			const upstreamOk = upstream.ok;
+			const requestId = randomUUID();
 			// Only charge the ledger on a successful upstream response. A 4xx
 			// is the caller's fault (malformed request, bad key) and costs
 			// nothing upstream — charging it would let malformed traffic
 			// exhaust a tenant's monthly budget. Append failures are
 			// observability losses, never a reason to fail the request.
+			//
+			// The request row is written the moment we know the upstream said
+			// yes — before any body is read or relayed — so a client that
+			// disconnects mid-stream, a stream that errors, or a later header
+			// failure can never leave a paid request unrecorded. Streaming
+			// responses learn their real usage only at the end; that lands as a
+			// separate `adjustment` row carrying the delta.
 			const recordSpend = (actual: ActualUsageCost | null): void => {
 				if (!estimate || !upstreamOk) return;
 				appendLedgerEntry({
@@ -726,6 +777,8 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 					estimatedInputTokens: estimate.inputTokens,
 					estimatedOutputTokens: estimate.expectedOutputTokens,
 					upstreamStatus,
+					kind: "request",
+					requestId,
 					...(actual
 						? {
 								actualUsd: actual.usd,
@@ -736,6 +789,31 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 								usageSource: "upstream" as const,
 							}
 						: { usageSource: "estimate" as const }),
+				}).catch(() => {});
+			};
+			const recordAdjustment = (actual: ActualUsageCost | null): void => {
+				if (!estimate || !upstreamOk || !actual) return;
+				appendLedgerEntry({
+					ts: Date.now(),
+					provider: model.provider,
+					modelId: model.id,
+					requested: safeRequested,
+					tenant,
+					estimatedUsd: 0,
+					estimatedInputTokens: 0,
+					estimatedOutputTokens: 0,
+					upstreamStatus,
+					kind: "adjustment",
+					requestId,
+					adjustmentUsd: actual.usd - estimate.estimatedUsd,
+					adjustmentInputTokens: actual.inputTokens - estimate.inputTokens,
+					adjustmentOutputTokens: actual.outputTokens - estimate.expectedOutputTokens,
+					actualUsd: actual.usd,
+					actualInputTokens: actual.inputTokens,
+					actualOutputTokens: actual.outputTokens,
+					cacheReadTokens: actual.cacheReadTokens,
+					cacheWriteTokens: actual.cacheWriteTokens,
+					usageSource: "upstream",
 				}).catch(() => {});
 			};
 			const reflectActual = (actual: ActualUsageCost | null): void => {
@@ -761,6 +839,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 					} catch {
 						raw = null;
 					}
+					releaseTimer();
 					const aErr = extractAnthropicError(raw);
 					return new Response(
 						JSON.stringify({ error: { ...aErr, code: String(upstream.status) } }),
@@ -769,15 +848,18 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 				}
 				if (wantsStream) {
 					if (!upstream.body) {
+						releaseTimer();
+						recordSpend(null);
 						return new Response(
 							JSON.stringify({ error: { message: "anthropic upstream returned no stream body", type: "upstream_error" } }),
 							{ status: 502, headers: responseHeaders },
 						);
 					}
+					// Estimate now; reconcile when (if) the stream reports usage.
+					recordSpend(null);
 					const { stream, usage } = translateAnthropicStreamToOpenAI(upstream.body, model.id, { includeUsage });
-					usage
-						.then((u) => recordSpend(actualCostFromUsage(model, u, "anthropic")))
-						.catch(() => recordSpend(null));
+					usage.then((u) => recordAdjustment(actualCostFromUsage(model, u, "anthropic"))).catch(() => {});
+					releaseTimer();
 					responseHeaders.set("content-type", "text/event-stream; charset=utf-8");
 					responseHeaders.set("cache-control", "no-cache");
 					return new Response(stream, { status: 200, headers: responseHeaders });
@@ -786,11 +868,14 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 				try {
 					raw = await upstream.json();
 				} catch {
+					releaseTimer();
+					recordSpend(null);
 					return new Response(
 						JSON.stringify({ error: { message: "anthropic upstream returned unparseable JSON", type: "upstream_error" } }),
 						{ status: 502, headers: responseHeaders },
 					);
 				}
+				releaseTimer();
 				const anthropicResponse = raw as AnthropicMessagesResponse;
 				const actual = actualCostFromUsage(model, anthropicResponse.usage, "anthropic");
 				reflectActual(actual);
@@ -801,19 +886,33 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 
 			// ── Native OpenAI-compatible passthrough ───────────────────────
 			const contentType = upstream.headers.get("content-type") ?? "";
-			if (contentType) responseHeaders.set("content-type", contentType);
+			if (contentType) responseHeaders.set("content-type", headerSafe(contentType, 200));
 			if (!upstream.ok || !upstream.body) {
+				releaseTimer();
+				if (upstream.ok) recordSpend(null);
 				return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
 			}
 			if (contentType.includes("text/event-stream")) {
 				// Bytes pass through untouched; we only watch for a trailing
 				// usage chunk (present when the caller asked for include_usage).
+				// Estimate now; reconcile when the stream ends with usage.
+				recordSpend(null);
 				const { stream, usage } = observeOpenAIStreamUsage(upstream.body);
-				usage.then((u) => recordSpend(actualCostFromUsage(model, u, "openai"))).catch(() => recordSpend(null));
+				usage.then((u) => recordAdjustment(actualCostFromUsage(model, u, "openai"))).catch(() => {});
+				releaseTimer();
 				return new Response(stream, { status: upstream.status, headers: responseHeaders });
 			}
 			if (contentType.includes("application/json")) {
-				const text = await upstream.text();
+				let text: string;
+				try {
+					text = await upstream.text();
+				} catch (err) {
+					releaseTimer();
+					recordSpend(null);
+					const message = err instanceof Error ? err.message : String(err);
+					return ctx.json({ error: `upstream body could not be read: ${message}`, resolvedProvider: model.provider, attemptChain }, 502);
+				}
+				releaseTimer();
 				let usageRaw: unknown = null;
 				try {
 					usageRaw = (JSON.parse(text) as { usage?: unknown }).usage ?? null;
@@ -825,6 +924,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 				recordSpend(actual);
 				return new Response(text, { status: upstream.status, headers: responseHeaders });
 			}
+			releaseTimer();
 			reflectActual(null);
 			recordSpend(null);
 			return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
@@ -842,7 +942,10 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 				401,
 			);
 		}
-		if (lastUnsupportedWire) {
+		// 422 only when NO upstream was ever contacted: the translator skipped
+		// every candidate. If a native route was actually tried and failed,
+		// that failure (502) is the honest answer.
+		if (lastUnsupportedWire && fetchAttempts === 0) {
 			return ctx.json(
 				{
 					error: `request uses content the Anthropic wire translator cannot carry and no native OpenAI-compatible route was available: ${lastUnsupportedWire}`,

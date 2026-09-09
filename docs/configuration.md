@@ -41,6 +41,7 @@ Built-in aliases for common models:
 | `o3` | `o3` | OpenAI reasoning |
 | `gemini-pro` | `gemini-2.5-pro` | Google Gemini 2.5 Pro (GA ID) |
 | `gemini-flash` | `gemini-2.5-flash` | Google Gemini 2.5 Flash (GA ID) |
+| `gemini-flash-lite` | `gemini-2.5-flash-lite` | Google Gemini 2.5 Flash-Lite (GA ID) |
 | `nemotron-ultra` | `nvidia/llama-3.1-nemotron-ultra-253b-v1` | NVIDIA Nemotron |
 | `mistral-large` | `mistral-large-latest` | Mistral Large |
 | `groq-llama` | `llama-3.3-70b-versatile` | Groq-hosted Llama |

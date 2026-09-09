@@ -48,16 +48,40 @@ export interface LedgerEntry {
 	cacheWriteTokens?: number;
 	/** `upstream` when the actual* fields came from the provider; `estimate` when only the pre-flight numbers exist. */
 	usageSource?: "upstream" | "estimate";
+	/**
+	 * `request` (default) for the row written when a request completes;
+	 * `adjustment` for a follow-up row that corrects an earlier estimate once
+	 * the upstream usage arrived (streaming responses). Adjustment rows carry
+	 * deltas, so summing every row's {@link ledgerRowUsd} yields actual spend.
+	 */
+	kind?: "request" | "adjustment";
+	/** Correlates an adjustment with the request row it amends. */
+	requestId?: string;
+	/** Adjustment rows only: actual − estimated, in USD (may be negative). */
+	adjustmentUsd?: number;
+	/** Adjustment rows only: actual − estimated input tokens. */
+	adjustmentInputTokens?: number;
+	/** Adjustment rows only: actual − estimated output tokens. */
+	adjustmentOutputTokens?: number;
 }
 
 /**
- * The USD figure a ledger row should count for: the reconciled upstream cost
- * when the row has one, the pre-flight estimate otherwise. Every reader
- * (budget gate, `kosha spend`, /metrics) goes through this so they agree.
+ * The USD figure a ledger row contributes to spend: an adjustment row's
+ * delta; otherwise the reconciled upstream cost when the row has one, the
+ * pre-flight estimate if not. Every reader (budget gate, `kosha spend`,
+ * /metrics) goes through this so they agree.
  */
-export function ledgerRowUsd(row: Pick<LedgerEntry, "estimatedUsd" | "actualUsd">): number {
+export function ledgerRowUsd(row: Pick<LedgerEntry, "estimatedUsd" | "actualUsd" | "kind" | "adjustmentUsd">): number {
+	if (row.kind === "adjustment") {
+		return typeof row.adjustmentUsd === "number" && Number.isFinite(row.adjustmentUsd) ? row.adjustmentUsd : 0;
+	}
 	if (typeof row.actualUsd === "number" && Number.isFinite(row.actualUsd)) return row.actualUsd;
 	return typeof row.estimatedUsd === "number" && Number.isFinite(row.estimatedUsd) ? row.estimatedUsd : 0;
+}
+
+/** True for rows that represent a completed request (not a later correction). */
+export function isRequestRow(row: Pick<LedgerEntry, "kind">): boolean {
+	return row.kind !== "adjustment";
 }
 
 /** Reconciled cost derived from a provider's `usage` block. */
@@ -104,6 +128,7 @@ export function actualCostFromUsage(model: ModelCard, rawUsage: unknown, shape: 
 		tokensTimesRate(usage.outputTokens, pricing.outputPerMillion) +
 		tokensTimesRate(cacheRead, readRate) +
 		tokensTimesRate(cacheWrite, writeRate);
+	if (!Number.isFinite(usd) || usd < 0) return null;
 
 	return { usd, inputTokens: uncachedInput, outputTokens: usage.outputTokens, cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite };
 }
@@ -198,10 +223,23 @@ function approximateInputTokens(body: Record<string, unknown>): number {
 
 /**
  * Read `KOSHA_MONTHLY_BUDGET_USD` (if any). Returns null when no budget is
- * configured — `enforceMonthlyBudget` then becomes a no-op.
+ * configured — the proxy's budget gate then becomes a no-op. This cap is
+ * global: it is always compared against total spend, never a tenant's slice,
+ * so a caller cannot escape it by inventing a fresh tenant tag.
  */
 export function readMonthlyBudgetUsd(): number | null {
-	const raw = process.env.KOSHA_MONTHLY_BUDGET_USD;
+	return readPositiveUsd(process.env.KOSHA_MONTHLY_BUDGET_USD);
+}
+
+/**
+ * Read `KOSHA_TENANT_BUDGET_USD` (if any): an additional per-tenant monthly
+ * cap applied on top of the global one to requests that carry a tenant tag.
+ */
+export function readTenantBudgetUsd(): number | null {
+	return readPositiveUsd(process.env.KOSHA_TENANT_BUDGET_USD);
+}
+
+function readPositiveUsd(raw: string | undefined): number | null {
 	if (!raw) return null;
 	const parsed = Number.parseFloat(raw);
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
@@ -279,6 +317,11 @@ function sanitizeEntry(entry: LedgerEntry): LedgerEntry {
 		...(entry.cacheReadTokens !== undefined ? { cacheReadTokens: entry.cacheReadTokens } : {}),
 		...(entry.cacheWriteTokens !== undefined ? { cacheWriteTokens: entry.cacheWriteTokens } : {}),
 		...(entry.usageSource !== undefined ? { usageSource: entry.usageSource } : {}),
+		...(entry.kind !== undefined ? { kind: entry.kind } : {}),
+		...(entry.requestId !== undefined ? { requestId: sanitizeLedgerString(entry.requestId) } : {}),
+		...(entry.adjustmentUsd !== undefined ? { adjustmentUsd: entry.adjustmentUsd } : {}),
+		...(entry.adjustmentInputTokens !== undefined ? { adjustmentInputTokens: entry.adjustmentInputTokens } : {}),
+		...(entry.adjustmentOutputTokens !== undefined ? { adjustmentOutputTokens: entry.adjustmentOutputTokens } : {}),
 	};
 }
 

@@ -43,7 +43,8 @@ COMMANDS
     --provider <name>             Scope latest fetch to one provider
   refresh (update)              Force re-discover all providers (bypass cache)
     --provider <name>             Refresh only one provider
-  serve [--port 3000]           Start HTTP API server
+  serve [--port 3000]           Start HTTP API server (binds 127.0.0.1)
+    --host <address>              Bind address; set KOSHA_PROXY_TOKEN before exposing
 
 OPTIONS
   --json                          Output as JSON (works with any command)
@@ -144,11 +145,11 @@ ollama       qwen3:8b                           chat       —          free    
 Model: claude-sonnet-5
 Provider: Anthropic
 Mode: chat
-Aliases: sonnet, sonnet-4
-Context Window: 200,000 tokens
-Max Output: 16,384 tokens
-Capabilities: chat, vision, function_calling, code, nlu
-Pricing: $3.00 / $15.00 per million tokens (in/out)
+Aliases: sonnet, sonnet-5
+Context Window: 1,000,000 tokens
+Max Output: 128,000 tokens
+Capabilities: chat, vision, function_calling, reasoning, structured_output, prompt_caching, code, nlu
+Pricing: $2.00 / $10.00 per million tokens (in/out)
 Source: api + litellm
 Discovered: 2026-02-26T10:30:00Z
 ```
@@ -211,9 +212,9 @@ audio                     2
 ```
 Provider     Model                              Mode       Context    $/M in   $/M out
 ──────────── ────────────────────────────────── ────────── ────────── ──────── ────────
-anthropic    claude-sonnet-5           chat       200K       $3.00    $15.00
+anthropic    claude-sonnet-5                    chat       1M         $2.00    $10.00
 openai       gpt-4o                             chat       128K       $2.50    $10.00
-google       gemini-2.5-pro-preview-05-06       chat       1M         $1.25    $10.00
+google       gemini-2.5-pro                     chat       1M         $1.25    $10.00
 ```
 
 ### `kosha routes gpt-4o`

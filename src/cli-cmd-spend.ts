@@ -10,7 +10,7 @@
 import { readFile, readdir } from "fs/promises";
 import { basename, dirname, join } from "node:path";
 import { c, CYAN, DIM, GREEN } from "./cli-format.js";
-import { DEFAULT_LEDGER_PATH, type LedgerEntry, ledgerRowUsd } from "./cost.js";
+import { DEFAULT_LEDGER_PATH, isRequestRow, type LedgerEntry, ledgerRowUsd } from "./cost.js";
 
 interface SpendFlags {
 	since?: string | boolean;
@@ -42,7 +42,11 @@ export async function cmdSpend(_unused: unknown, flags: Record<string, string | 
 	);
 
 	const total = inWindow.reduce((sum, r) => sum + ledgerRowUsd(r), 0);
-	const reconciled = inWindow.filter((r) => r.usageSource === "upstream").length;
+	const requests = inWindow.filter(isRequestRow);
+	// A request is reconciled when its own row carries upstream usage or a
+	// later adjustment row amended it.
+	const adjusted = new Set(inWindow.filter((r) => !isRequestRow(r)).map((r) => r.requestId));
+	const reconciled = requests.filter((r) => r.usageSource === "upstream" || (r.requestId && adjusted.has(r.requestId))).length;
 	const byProvider = bucketBy(inWindow, (r) => r.provider);
 	const byModel = bucketBy(inWindow, (r) => `${r.provider}/${r.modelId}`);
 	const byTenant = bucketBy(inWindow, (r) => r.tenant ?? "(no tenant)");
@@ -50,7 +54,7 @@ export async function cmdSpend(_unused: unknown, flags: Record<string, string | 
 	if (f.json) {
 		process.stdout.write(`${JSON.stringify({
 			ledgerPath,
-			rows: inWindow.length,
+			rows: requests.length,
 			reconciledRows: reconciled,
 			totalUsd: total,
 			byProvider: Object.fromEntries(byProvider),
@@ -60,11 +64,11 @@ export async function cmdSpend(_unused: unknown, flags: Record<string, string | 
 		return;
 	}
 
-	process.stdout.write(`${c(CYAN, "Spend summary")}  ${c(DIM, `(${inWindow.length} rows from ${ledgerPath})`)}\n`);
-	const label = reconciled === inWindow.length && reconciled > 0
-		? "total (all rows reconciled with upstream usage)"
+	process.stdout.write(`${c(CYAN, "Spend summary")}  ${c(DIM, `(${requests.length} requests from ${ledgerPath})`)}\n`);
+	const label = reconciled === requests.length && reconciled > 0
+		? "total (all requests reconciled with upstream usage)"
 		: reconciled > 0
-			? `total (${reconciled}/${inWindow.length} rows reconciled with upstream usage, rest estimated)`
+			? `total (${reconciled}/${requests.length} requests reconciled with upstream usage, rest estimated)`
 			: "total estimated";
 	process.stdout.write(`  ${c(GREEN, `$${total.toFixed(4)}`)}  ${c(DIM, label)}\n\n`);
 	renderBucket("By provider", byProvider);
@@ -119,10 +123,15 @@ function bucketBy(rows: LedgerEntry[], keyFn: (row: LedgerEntry) => string): Map
 			totalInputTokens: 0,
 			totalOutputTokens: 0,
 		};
-		cur.count += 1;
+		if (isRequestRow(row)) {
+			cur.count += 1;
+			cur.totalInputTokens += row.actualInputTokens ?? row.estimatedInputTokens ?? 0;
+			cur.totalOutputTokens += row.actualOutputTokens ?? row.estimatedOutputTokens ?? 0;
+		} else {
+			cur.totalInputTokens += row.adjustmentInputTokens ?? 0;
+			cur.totalOutputTokens += row.adjustmentOutputTokens ?? 0;
+		}
 		cur.totalUsd += ledgerRowUsd(row);
-		cur.totalInputTokens += row.actualInputTokens ?? row.estimatedInputTokens ?? 0;
-		cur.totalOutputTokens += row.actualOutputTokens ?? row.estimatedOutputTokens ?? 0;
 		out.set(key, cur);
 	}
 	return new Map(Array.from(out.entries()).sort((a, b) => b[1].totalUsd - a[1].totalUsd));

@@ -51,7 +51,9 @@ const FIELD_ALIASES: Record<keyof TokenUsage, readonly string[]> = {
 function readField(raw: Record<string, unknown>, aliases: readonly string[]): number | undefined {
 	for (const key of aliases) {
 		const value = key.includes(".") ? readPath(raw, key.split(".")) : raw[key];
-		if (typeof value === "number" && Number.isFinite(value)) return value;
+		// A negative token count is never meaningful; clamp so a broken upstream
+		// can't drive a cost figure (and the spend ledger) below zero.
+		if (typeof value === "number" && Number.isFinite(value)) return Math.max(0, value);
 	}
 	return undefined;
 }
