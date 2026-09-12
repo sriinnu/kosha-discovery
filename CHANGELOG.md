@@ -17,6 +17,35 @@ Nothing yet.
 
 ---
 
+## [1.5.1] — 2026-09-12
+
+### Changed
+
+- **README and SKILL.md rewritten as accurate, dev-facing references**
+  (were drifted / marketing-toned in places): correct provider count (25),
+  current model IDs and pricing, the full HTTP and proxy surface, current
+  `ModelCard` / `LedgerEntry` shapes, and a corrected "Adding a provider"
+  walkthrough. `kosha --help` now documents `doctor` and `spend`, which
+  existed but weren't listed.
+
+### Fixed
+
+- **Two real CodeQL `js/file-system-race` findings.** `KoshaCache.get()`
+  and `registry-runtime.ts`'s manifest-backup rotation each did a
+  path-based existence/size check followed by a separate path-based
+  read — a window in which the path could be swapped between the two
+  calls. Both now read through a single already-open file descriptor
+  (`fstat` + read on the same handle) instead, closing the gap outright
+  rather than re-checking it.
+- **Lock-contention test rewritten** to remove the same pattern from its
+  own fixture setup: it now holds one file handle for the whole test and
+  reads before/after snapshots through it at an explicit byte position,
+  rather than reopening the lock file by path — which also makes the
+  assertion strictly stronger (same inode untouched, not just matching
+  bytes at that path).
+
+---
+
 ## [1.5.0] — 2026-09-09
 
 Security defaults for the proxy, a current-generation Anthropic model layer,
