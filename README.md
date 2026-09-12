@@ -4,7 +4,7 @@
 
 # kosha-discovery
 
-AI model and provider discovery registry. Discovers models across providers, resolves credentials, enriches with pricing, and exposes the catalog through a library, CLI, HTTP API, and an OpenAI-compatible proxy.
+Model and provider discovery registry for LLM apps. It queries 25 provider APIs and local runtimes for their model lists, resolves credentials from env vars and CLI config files, fills in pricing and context limits from models.dev and LiteLLM, and exposes the result as a TypeScript library, a CLI, an HTTP API, an OpenAI-compatible proxy with cost tracking, and an MCP server.
 
 ## Install
 
@@ -24,22 +24,27 @@ import { createKosha } from "@sriinnu/kosha-discovery";
 
 const kosha = await createKosha();
 
-const models   = kosha.models();                          // all discovered models
-const cheapest = kosha.cheapestModels({ role: "image" }); // ranked by price
-const sonnet   = kosha.model("sonnet");                   // alias resolves to canonical ID
-console.log(sonnet.pricing); // { inputPerMillion: 3, outputPerMillion: 15, ... }
+const models   = kosha.models();                          // ModelCard[] across every provider
+const cheapest = kosha.cheapestModels({ role: "image" }); // ranked by price, with missingCredentials
+const sonnet   = kosha.model("sonnet");                   // alias → canonical ID; undefined if unknown
+console.log(sonnet?.pricing); // { inputPerMillion: 2, outputPerMillion: 10, cacheReadPerMillion: 0.2, ... }
 ```
 
 ### CLI
 
 ```bash
-kosha discover                       # discover all providers (writes cache + manifest)
-kosha list --provider anthropic      # filter from local cache
-kosha model sonnet                   # details for one model (alias-aware)
-kosha cheapest --role embeddings     # rank cheapest for a role
-kosha update                         # force a fresh fetch
-kosha serve --port 3000              # HTTP API (binds 127.0.0.1; --host 0.0.0.0 + KOSHA_PROXY_TOKEN to expose)
+kosha discover                       # query every provider; writes ~/.kosha/cache and the manifest
+kosha list --provider anthropic      # read from the local cache
+kosha model sonnet                   # one model, alias-aware
+kosha routes claude-opus-5           # every serving route for a model (direct, OpenRouter, Bedrock, …)
+kosha cheapest --role embeddings     # rank by price for a role
+kosha doctor --ci                    # deprecations + provider health; non-zero exit for CI
+kosha spend --since 2026-09-01       # roll up the proxy's spend ledger
+kosha refresh                        # bypass the cache and re-discover
+kosha serve --port 3000              # HTTP API + proxy; binds 127.0.0.1 (see Proxy below)
 ```
+
+Every command takes `--json`. `kosha --help` lists the rest.
 
 After each discovery, a stable v1 manifest lands at `~/.kosha/registry.json`:
 
@@ -50,15 +55,21 @@ jq '.models[] | select(.pricing.inputPerMillion < 0.1) | .modelId' ~/.kosha/regi
 ### HTTP API
 
 ```
-GET  /api/models[?provider=…&role=…]    GET  /api/models/:idOrAlias
-GET  /api/models/:idOrAlias/routes      GET  /api/models/cheapest?role=…
-GET  /api/providers                     GET  /api/roles
-POST /api/refresh                       GET  /health
+GET  /api/models?provider=&originProvider=&mode=&capability=
+GET  /api/models/:idOrAlias             GET  /api/models/:idOrAlias/routes
+GET  /api/models/cheapest?role=…        GET  /api/capabilities
+GET  /api/providers[/:id]               GET  /api/roles
+GET  /api/resolve/:alias                GET  /api/discovery-errors
+GET  /api/discovery[/delta|/watch|/cheapest|/binding]   (stable v1 contract)
+POST /api/refresh                       GET  /health          GET  /metrics
+GET  /proxy/v1/models                   POST /proxy/v1/chat/completions
 ```
+
+Parameters and response shapes: [docs/api.md](docs/api.md).
 
 ### Proxy
 
-Kosha runs as an OpenAI-compatible proxy. Point your SDK at `http://localhost:3000/proxy/v1` and it resolves the model, picks the right provider, injects credentials, and forwards — streaming included.
+`kosha serve` also exposes an OpenAI-compatible endpoint at `/proxy/v1`. Point any OpenAI SDK at it; the proxy resolves the model or alias, picks a provider you hold credentials for, injects the upstream key, forwards the request, and writes a row to the spend ledger.
 
 ```bash
 kosha serve   # start on :3000
@@ -99,15 +110,23 @@ const routed = await client.chat.completions.create({
 | `<N>k` | `128k`, `200k` | minimum context window |
 | `provider:<id>` | `provider:groq` | pin to a specific provider |
 
-The response always includes `x-kosha-model`, `x-kosha-provider`, and `x-kosha-requested` headers so the caller knows exactly what ran.
+`kosha:fastest`, `kosha:reliable`, and `kosha:balanced` take the same filters and rank on observed latency and circuit-breaker state instead of price.
 
-Supported transports: `openai`, `openai-compatible-http`, `ollama`, and `anthropic`. Anthropic is bridged through a built-in OpenAI ↔ Anthropic wire-format translator that carries streaming, tools and tool calls, `image_url` parts, `response_format`, and `reasoning_effort`; anything it can't map faithfully (audio input, non-function tools) fails over to a native OpenAI-compatible route. Google, Bedrock, and Vertex speak SDK-specific wire formats and are not yet proxied.
+Every response carries `x-kosha-model`, `x-kosha-provider`, `x-kosha-requested`, `x-kosha-attempt-chain`, and `x-kosha-estimated-cost-usd`; non-streaming responses add `x-kosha-actual-cost-usd` when the upstream returned a usage block.
 
-The server binds `127.0.0.1` by default. To expose it, run `kosha serve --host 0.0.0.0` **with** `KOSHA_PROXY_TOKEN` set; the proxy then requires `Authorization: Bearer <token>` (or `x-kosha-token`). Full reference: [docs/api.md](docs/api.md#openai-compatible-proxy).
+What the proxy can forward:
+
+| Upstream wire format | Providers | Support |
+|---|---|---|
+| OpenAI-compatible | OpenAI, Ollama, OpenRouter, Vercel, Groq, Together, Fireworks, DeepInfra, … | passthrough, streaming included |
+| Anthropic Messages | Anthropic | translated: streaming, tools, `image_url`, `response_format`, `reasoning_effort`; audio input and non-function tools fail over to an OpenAI-compatible route for the same model |
+| Cloud SDKs | Google, Bedrock, Vertex | discovery only, not proxied yet |
+
+Defaults that matter before you expose it: the server binds `127.0.0.1`. Pass `--host 0.0.0.0` (or `KOSHA_HOST`) to listen on a network interface, and set `KOSHA_PROXY_TOKEN` so `/proxy/*` and `POST /api/refresh` require `Authorization: Bearer <token>` or `x-kosha-token`. `KOSHA_MONTHLY_BUDGET_USD` caps spend per calendar month. Reference: [docs/api.md](docs/api.md#openai-compatible-proxy), [docs/operations.md](docs/operations.md).
 
 ### MCP server
 
-`kosha-mcp` exposes the registry to AI agents over the Model Context Protocol on stdio: model lookup, cheapest / strategy-ranked routes, provider health, and context-management advice.
+`kosha-mcp` serves the registry over the Model Context Protocol on stdio, so an agent can call `kosha_query_models`, `kosha_cheapest_model`, `kosha_ranked_routes`, `kosha_model_detail`, `kosha_model_routes`, `kosha_resolve_alias`, `kosha_provider_health`, and `kosha_context_strategy` without an HTTP server.
 
 ```bash
 claude mcp add kosha -- kosha-mcp
@@ -117,24 +136,32 @@ Tools and protocol details: [docs/mcp.md](docs/mcp.md).
 
 ## Supported providers
 
+25 providers. Each has a discoverer in `src/discovery/` and a credential resolver in `src/credentials/`.
+
 | Provider | Discovery | Credential sources |
 |----------|-----------|--------------------|
-| Anthropic | `/v1/models` | `ANTHROPIC_API_KEY`, Claude CLI, Codex CLI |
-| OpenAI | `/v1/models` | `OPENAI_API_KEY`, GitHub Copilot tokens |
-| Google | `/v1beta/models` | `GOOGLE_API_KEY`, `GEMINI_API_KEY`, Gemini CLI, gcloud |
-| AWS Bedrock | SDK → CLI → static | `AWS_ACCESS_KEY_ID`, `~/.aws/credentials`, SSO, IAM |
+| Anthropic | `GET /v1/models` (context, output cap, capabilities read from the API) | `ANTHROPIC_API_KEY`, Claude CLI, Codex CLI |
+| OpenAI | `GET /v1/models` | `OPENAI_API_KEY`, GitHub Copilot tokens |
+| Google | `GET /v1beta/models` | `GOOGLE_API_KEY`, `GEMINI_API_KEY`, Gemini CLI, gcloud |
+| AWS Bedrock | SDK → CLI → static list | `AWS_ACCESS_KEY_ID`, `~/.aws/credentials`, SSO, IAM |
 | Vertex AI | API + gcloud | `GOOGLE_APPLICATION_CREDENTIALS`, ADC |
-| Ollama | local API | — (local) |
-| OpenRouter | API | `OPENROUTER_API_KEY` *(optional)* |
-| Vercel AI Gateway | `/v1/models` | `AI_GATEWAY_API_KEY`, `VERCEL_OIDC_TOKEN` *(public discovery, required for execution)* |
-| NVIDIA / Together / Fireworks / Groq / Cerebras / Cohere / DeepInfra / Perplexity | API | provider key env var |
-| DeepSeek / Mistral / Moonshot (Kimi) / GLM (Zhipu) / Z.AI / MiniMax | API | provider key env var |
+| Ollama, llama.cpp, LM Studio, vLLM | local HTTP API | none |
+| OpenRouter | API | `OPENROUTER_API_KEY` (optional; unauthenticated is rate-limited) |
+| Vercel AI Gateway | `GET /v1/models` | `AI_GATEWAY_API_KEY`, `VERCEL_OIDC_TOKEN` (discovery works without; execution needs one) |
+| NVIDIA, Together, Fireworks, Groq, Cerebras, Cohere, DeepInfra, Perplexity | OpenAI-compatible API | `<PROVIDER>_API_KEY` |
+| DeepSeek, Mistral, Moonshot (Kimi), GLM (Zhipu), Z.AI, MiniMax | OpenAI-compatible API | `<PROVIDER>_API_KEY` |
 
-Full credential setup: [docs/credentials.md](docs/credentials.md).
+Without a key, direct providers fall back to the public models.dev + LiteLLM catalog, then to a curated static list, so `kosha list` works on a fresh machine. Exact env var names: [docs/credentials.md](docs/credentials.md).
 
-## Architecture
+## How it works
 
-Discovery layer talks to provider APIs and local catalogs. Enrichment layer fills pricing and context windows from the LiteLLM catalog and models.dev. Resilience layer (circuit breaker + stale-cache fallback + health tracker) keeps a flaky provider a degraded read, never a crash. Manifest layer writes a v1-stable JSON snapshot so downstream consumers read prices from one source instead of inventing their own. Proxy layer exposes an OpenAI-compatible endpoint that resolves `kosha:cheapest[…]` hints at request time, injects credentials, and forwards to the winning provider.
+1. **Discovery** — one discoverer per provider runs concurrently (`Promise.allSettled`); each returns normalized `ModelCard`s. A failing provider is recorded in `discoveryErrors()` and doesn't block the others.
+2. **Enrichment** — pricing, context window, and output cap are filled from models.dev and LiteLLM where the provider API doesn't publish them; `pricingSource` on each card says which.
+3. **Resilience** — a per-provider circuit breaker with exponential cooldown, plus stale-cache fallback, so a provider outage degrades to cached data rather than an error.
+4. **Cache and manifest** — results are cached under `~/.kosha/cache/` (24 h TTL) and exported as a versioned snapshot at `~/.kosha/registry.json` for other tools to read.
+5. **Proxy** — resolves the requested model or `kosha:<strategy>[filters]` selector against the registry, ranks candidate routes, forwards with failover, and records estimated and reconciled cost in `~/.kosha/ledger-YYYY-MM.jsonl`.
+
+Details: [docs/architecture.md](docs/architecture.md), [docs/resilience.md](docs/resilience.md).
 
 ## Development
 
@@ -151,30 +178,36 @@ pnpm run check        # lint + build + test
 
 ```
 src/
-  cli.ts                 # CLI entry point
-  cli-commands.ts        # command implementations
+  cli.ts                 # CLI entry point and arg parsing
+  cli-commands.ts        # command implementations (+ cli-cmd-*.ts for the larger ones)
   registry.ts            # ModelRegistry public API
-  registry-runtime.ts    # discovery, enrichment, cache, manifest export
-  registry-query.ts      # model/role/capability queries
+  registry-runtime.ts    # discovery orchestration, enrichment, cache, manifest export
+  registry-query.ts      # model / role / capability queries
   registry-selection.ts  # cheapest candidates, binding hints
-  registry-routing.ts    # route ranking strategies
-  discovery/             # provider discoverers
-  enrichment/            # LiteLLM pricing enrichment
-  credentials/           # credential resolution
-  proxy.ts               # OpenAI-compatible proxy
-  server.ts              # HTTP API server
-  mcp-server.ts          # MCP server
-  tally.ts               # zero-dependency token usage + cost tally
-  cost.ts                # ledger I/O, budget gates
+  registry-routing.ts    # cheapest / fastest / reliable / balanced ranking
+  discovery/             # one discoverer per provider + static and public-seed catalogs
+  enrichment/            # models.dev + LiteLLM pricing enrichment
+  credentials/           # credential resolution (env, CLI files, ADC, OAuth)
+  provider-catalog.ts    # provider descriptors: base URLs, transport, env var names
+  aliases.ts             # built-in short names → canonical model IDs
+  claude-generation.ts   # which Claude generation accepts which API parameters
+  model-features.ts      # tool dialect / structured-output inference per model
+  proxy.ts               # OpenAI-compatible proxy: routing, failover, ledger
+  wire-anthropic.ts      # OpenAI ↔ Anthropic request / response / SSE translation
+  cost.ts                # spend ledger, budget gates, usage reconciliation
+  tally.ts               # zero-dependency token usage + USD tally (also exported as ./tally)
+  server.ts              # Hono HTTP API + operator token gate
+  mcp-server.ts          # MCP stdio server
   types.ts               # shared types
 ```
 
 ### Adding a provider
 
-1. Create `src/discovery/<provider>.ts` implementing `ProviderDiscoverer`.
-2. Register it in `src/discovery/index.ts` `DISCOVERER_REGISTRY`.
-3. Add credential env vars to `src/provider-catalog.ts`.
-4. Add tests in `test/discovery/<provider>.test.ts`.
+1. Add a descriptor to `PROVIDER_CATALOG` in `src/provider-catalog.ts` (id, base URL, transport, credential env vars).
+2. Create `src/discovery/<provider>.ts` extending `BaseDiscoverer`; `fetchJSON` and `makeCard` are provided.
+3. Export it from `src/discovery/index.ts` and add a factory entry to `DISCOVERER_REGISTRY` in the same file.
+4. If the provider needs more than a single env var, add a resolver branch in `src/credentials/resolver.ts`.
+5. Add `test/discovery/<provider>.test.ts` (mock `fetch`; see `anthropic.test.ts`) and document the env vars in `docs/credentials.md`.
 
 ## Docs
 
@@ -193,14 +226,15 @@ src/
 
 ## Release
 
-Tag-driven via GitHub Actions:
+1. Bump `version` in `package.json` and date the `[Unreleased]` section in `CHANGELOG.md`; merge that as a PR.
+2. Tag and push:
 
 ```bash
 git tag -s vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
-# → Actions → "Manual Release (Tag + npm)" → run with tag=vX.Y.Z
+gh workflow run release-npm.yml -f tag=vX.Y.Z
 ```
 
-The workflow checks tag ↔ package.json match, builds, tests, publishes to npm, and creates the GitHub Release. Requires the `NPM_TOKEN` secret.
+The workflow checks that the tag matches `package.json`, runs lint / build / test, publishes to npm with provenance, and creates the GitHub Release. Publishing authenticates through npm trusted publishing (OIDC) when a trusted publisher is configured for this repo and workflow on npmjs.com, or through an `NPM_TOKEN` repository secret.
 
 ## License
 
