@@ -604,12 +604,9 @@ async function rotateBackup(manifestPath: string): Promise<void> {
 		const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 		const todayBak = join(dir, `${base}.bak.${today}`);
 
-		// Only rotate if the manifest exists and today's bak slot is empty.
-		try {
-			await stat(manifestPath);
-		} catch {
-			return; // no current manifest, nothing to back up
-		}
+		// Only rotate if today's bak slot is empty and the manifest exists.
+		// Checked in this order — cheap slot check before the read — so a
+		// taken slot short-circuits without touching the manifest at all.
 		try {
 			await stat(todayBak);
 			return; // today's slot already taken — first writer of the day wins
@@ -620,8 +617,20 @@ async function rotateBackup(manifestPath: string): Promise<void> {
 		// Copy the current manifest to today's bak slot. We copy rather than
 		// rename so the live manifest stays in place during the gap between
 		// rotation and the new rename(2) below.
+		//
+		// Read directly instead of stat()-then-readFile() on the path: a
+		// stat() that only confirms existence adds a check-then-use gap
+		// (CodeQL js/file-system-race) for no benefit, since the read below
+		// has to handle a missing/racing file anyway. Attempting the read and
+		// treating ENOENT as "nothing to back up" removes the gap outright.
 		const { readFile } = await import("fs/promises");
-		const data = await readFile(manifestPath);
+		let data: Buffer;
+		try {
+			data = await readFile(manifestPath);
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return; // no current manifest, nothing to back up
+			throw err;
+		}
 		const tmp = `${todayBak}.${randomBytes(4).toString("hex")}.tmp`;
 		try {
 			await writeFile(tmp, data);

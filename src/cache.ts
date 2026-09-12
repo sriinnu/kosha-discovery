@@ -7,7 +7,7 @@
  * @module
  */
 
-import { mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from "fs/promises";
+import { type FileHandle, mkdir, open, readdir, rename, rm, unlink, writeFile } from "fs/promises";
 import { randomBytes } from "crypto";
 import { homedir } from "os";
 import { join } from "path";
@@ -55,17 +55,28 @@ export class KoshaCache {
 	 * Returns null if the entry is missing or the file cannot be read.
 	 */
 	async get<T>(key: string): Promise<CacheEntry<T> | null> {
+		let handle: FileHandle | undefined;
 		try {
 			const filePath = this.keyToPath(key);
-			const { size } = await stat(filePath);
+			// Stat and read through the SAME open file descriptor rather than
+			// by path. fstat() on an fd reflects exactly the bytes the
+			// following read will see, so a rename/replace of the path in the
+			// gap between a path-based stat() and a path-based readFile()
+			// can't smuggle a file past the size guard below (CodeQL
+			// js/file-system-race; the fd-bound fstat+read pair has no such
+			// gap — the descriptor stays pinned to one inode).
+			handle = await open(filePath, "r");
+			const { size } = await handle.stat();
 			if (size > MAX_CACHE_FILE_BYTES) {
 				console.warn(
 					`KoshaCache: cache file for key "${sanitizeKeyForLog(key)}" is ${size} bytes (> ${MAX_CACHE_FILE_BYTES}); refusing to parse and invalidating`,
 				);
+				await handle.close();
+				handle = undefined;
 				await this.invalidate(key);
 				return null;
 			}
-			const raw = await readFile(filePath, "utf-8");
+			const raw = await handle.readFile("utf-8");
 			const entry = JSON.parse(raw) as CacheEntry<T>;
 			assertCleanPayload(entry, `cache/${key}`);
 			return entry;
@@ -78,6 +89,8 @@ export class KoshaCache {
 				console.warn(`KoshaCache: corrupted cache file for key "${sanitizeKeyForLog(key)}"`);
 			}
 			return null;
+		} finally {
+			await handle?.close().catch(() => {});
 		}
 	}
 
