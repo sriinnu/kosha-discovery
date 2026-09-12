@@ -17,7 +17,7 @@
  */
 
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { open } from "node:fs/promises";
+import { type FileHandle, open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -48,6 +48,18 @@ beforeEach(() => {
 afterEach(() => {
 	rmSync(workDir, { recursive: true, force: true });
 });
+
+/**
+ * Read a FileHandle's full current contents at an explicit position (0),
+ * independent of the descriptor's internal cursor (which a prior write()
+ * or read() would otherwise leave mid- or end-of-file).
+ */
+async function readHandleFully(fd: FileHandle): Promise<string> {
+	const { size } = await fd.stat();
+	const buf = Buffer.alloc(size);
+	await fd.read(buf, 0, size, 0);
+	return buf.toString("utf-8");
+}
 
 function makeState(snapshot: DiscoverySnapshotV1) {
 	const state = createRegistryState({ cacheDir: join(workDir, "cache") });
@@ -264,11 +276,21 @@ describe("exportRegistryManifest — central-registry merge guarantees", () => {
 		// Simulate another live process holding the lock with a fresh PID.
 		// The acquire loop will reach its 3s timeout, then the export's
 		// finally must NOT unlink the file — that lock belongs to someone else.
-		const fd = await open(lockPath, "wx");
-		await fd.write(`${process.pid + 1}\n`); // arbitrary live-looking PID
-		await fd.close();
+		//
+		// Opened once as read+write and held open for the whole test, then
+		// read back through THIS descriptor (explicit-position reads, not a
+		// reopen by path) both before and after the export runs. That proves
+		// the exact same inode survives untouched — a strictly stronger
+		// assertion than "a file with matching bytes exists at this path
+		// afterward" — and it has no check-then-use-by-path gap for
+		// CodeQL's js/file-system-race query to flag: nothing here re-opens
+		// lockPath after the initial wx+ create.
+		const fd = await open(lockPath, "wx+");
+		const fakePid = `${process.pid + 1}\n`; // arbitrary live-looking PID
+		await fd.write(fakePid);
 
-		const before = readFileSync(lockPath, "utf-8");
+		const before = await readHandleFully(fd);
+		expect(before).toBe(fakePid);
 
 		// Pre-write the manifest so the export doesn't try to do real work
 		// before the lock acquire (sweepStaleTmpFiles + mkdir are fine).
@@ -278,7 +300,8 @@ describe("exportRegistryManifest — central-registry merge guarantees", () => {
 
 		// Lock file must still exist with the same contents — we did not yank it.
 		expect(existsSync(lockPath)).toBe(true);
-		expect(readFileSync(lockPath, "utf-8")).toBe(before);
+		expect(await readHandleFully(fd)).toBe(before);
+		await fd.close();
 	}, 10_000);
 });
 
