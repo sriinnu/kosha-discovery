@@ -65,6 +65,13 @@ ${c(BOLD, "COMMANDS")}
     --provider <name>             Scope latest fetch to one provider
   ${c(CYAN, "refresh")} ${c(DIM, "(update)")}              Force re-discover all providers (bypass cache)
     --provider <name>             Refresh only one provider
+  ${c(CYAN, "doctor")} ${c(DIM, "(health)")}               Deprecation warnings + provider health, no network
+    --ci                          Exit non-zero on lifecycle findings (alias: --fail-on-warning)
+  ${c(CYAN, "spend")} ${c(DIM, "(usage)")}                 Roll up the proxy spend ledger
+    --since <iso-date>            Start of the window (default: all rows)
+    --until <iso-date>            End of the window
+    --tenant <name>               Only rows tagged with this tenant
+    --ledger <path>               Ledger file (default ~/.kosha/ledger.jsonl + monthly partitions)
   ${c(CYAN, "serve")} [--port 3000]           Start HTTP API server (binds 127.0.0.1)
     --host <address>              Bind address; set KOSHA_PROXY_TOKEN before exposing
 
@@ -104,6 +111,8 @@ ${c(BOLD, "EXAMPLES")}
   ${c(DIM, "$")} kosha latest --provider openai --json
   ${c(DIM, "$")} kosha resolve haiku
   ${c(DIM, "$")} kosha refresh --provider anthropic
+  ${c(DIM, "$")} kosha doctor --ci
+  ${c(DIM, "$")} kosha spend --since 2026-09-01 --json
   ${c(DIM, "$")} kosha serve --port 8080
   ${c(DIM, "$")} KOSHA_PROXY_TOKEN=s3cret kosha serve --host 0.0.0.0
 `.trim());
