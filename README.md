@@ -62,6 +62,22 @@ After each discovery, a stable v1 manifest lands at `~/.kosha/registry.json`:
 jq '.models[] | select(.pricing.inputPerMillion < 0.1) | .modelId' ~/.kosha/registry.json
 ```
 
+### Public snapshot
+
+A weekly discovery run publishes a full snapshot — every provider, model, price
+and limit kosha can see without your keys — at a stable URL:
+
+```bash
+curl -sL https://github.com/sriinnu/kosha-discovery/releases/download/snapshot-latest/kosha-latest.json \
+  | jq '.modelCount, .providerCount'
+```
+
+It is a release asset rather than a file in the repository: at ~2.8 MB growing
+with every provider added, committing it weekly would put roughly 150 MB of
+already-stale data a year into a repo people are meant to clone. Dated
+`snapshot-YYYY-MM-DD` pre-releases keep a short trail for diffing, pruned to the
+two most recent, and an older one is only removed once a newer one exists.
+
 ### HTTP API
 
 ```

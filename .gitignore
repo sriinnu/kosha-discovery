@@ -40,3 +40,10 @@ service_account*.json
 # Local-only agent/config files
 CLAUDE.md
 AGENTS.md
+
+# Generated discovery snapshot. Published as a release asset rather than
+# committed — at ~2.8 MB that grows with every provider, a weekly commit put
+# ~150 MB of stale data a year into a repo people are meant to clone.
+# Stable URL: https://github.com/sriinnu/kosha-discovery/releases/download/snapshot-latest/kosha-latest.json
+data/kosha-latest.json
+data/kosha-latest.sha256

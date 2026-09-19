@@ -331,6 +331,8 @@ jobs:
       - name: Evaluate commit guard
         id: guard
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           # The old rule was "commit only if at least one provider
@@ -343,14 +345,16 @@ jobs:
           # data most consumers get anyway. So the guard now asks the question
           # that actually matters: is this snapshot healthy, and is it not a
           # material regression on the one already committed?
-          # The generate step has already overwritten OUTPUT_PATH, so the
-          # snapshot to compare against comes out of git, not off disk.
-          COMMITTED_PATH="$RUNNER_TEMP/committed-snapshot.json"
-          if git show "HEAD:$OUTPUT_PATH" > "$COMMITTED_PATH" 2>/dev/null; then
-            echo "comparing against the committed snapshot at HEAD" >> "$OBS_LOG"
+          # Compare against the last published snapshot. It lives on the
+          # `snapshot-latest` release rather than in git, so the weekly refresh
+          # does not add megabytes to the repo's history every Monday.
+          COMMITTED_PATH="$RUNNER_TEMP/previous-snapshot.json"
+          if gh release download snapshot-latest --pattern "kosha-latest.json" \
+               --output "$COMMITTED_PATH" --clobber 2>/dev/null; then
+            echo "comparing against the published snapshot-latest asset" >> "$OBS_LOG"
           else
             rm -f "$COMMITTED_PATH"
-            echo "no committed snapshot at HEAD to compare against" >> "$OBS_LOG"
+            echo "no published snapshot to compare against yet" >> "$OBS_LOG"
           fi
           export COMMITTED_PATH
           DECISION="$(node --input-type=module <<'NODE'
@@ -418,24 +422,72 @@ jobs:
           fi
           echo "Secret scan passed for $OUTPUT_PATH" >> "$OBS_LOG"
 
-      - name: Commit and push if changed
-        id: commit
+      # The snapshot used to be committed to git every Monday. At ~2.8 MB of
+      # JSON that grows with every provider added, a year of that is ~150 MB of
+      # history in a repo people are expected to clone, for data that is stale
+      # the day after it lands. It is published as a release asset instead:
+      # `snapshot-latest` is a stable URL that always holds the newest one, and
+      # dated pre-releases keep a short trail for diffing.
+      - name: Publish snapshot as a release asset
+        id: publish
+        if: ${{ env.ALLOW_COMMIT == 'true' }}
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          if [[ "${ALLOW_COMMIT:-false}" != "true" ]]; then
-            echo "Skipping commit because commit guard blocked unauthenticated snapshot." >> "$OBS_LOG"
+          DATED_TAG="snapshot-$(date -u +%Y-%m-%d)"
+          echo "DATED_TAG=$DATED_TAG" >> "$GITHUB_ENV"
+
+          # Assets are uploaded under a stable filename so the download URL does
+          # not change from week to week.
+          STAGE="$RUNNER_TEMP/assets"
+          mkdir -p "$STAGE"
+          cp "$OUTPUT_PATH" "$STAGE/kosha-latest.json"
+          cp "$CHECKSUM_PATH" "$STAGE/kosha-latest.sha256"
+
+          publish_to() {
+            local tag="$1" title="$2"
+            if gh release view "$tag" >/dev/null 2>&1; then
+              gh release upload "$tag" "$STAGE/kosha-latest.json" "$STAGE/kosha-latest.sha256" --clobber
+            else
+              gh release create "$tag" "$STAGE/kosha-latest.json" "$STAGE/kosha-latest.sha256" \
+                --title "$title" --prerelease \
+                --notes "Model/provider snapshot generated $(date -u +%Y-%m-%dT%H:%M:%SZ) by the scheduled discovery run. Not a code release."
+            fi
+          }
+
+          publish_to "$DATED_TAG" "Snapshot $DATED_TAG"
+          publish_to "snapshot-latest" "Snapshot (latest)"
+          echo "Published snapshot to $DATED_TAG and snapshot-latest" >> "$OBS_LOG"
+
+      # Retention: keep the newest dated snapshots and drop the rest. Pruning
+      # runs only after the new snapshot is published above, so an older one is
+      # never removed before a newer one exists.
+      - name: Prune old snapshot releases
+        if: ${{ env.ALLOW_COMMIT == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP: "2"
+        run: |
+          set -euo pipefail
+          # Dated snapshots only; `snapshot-latest` is the moving pointer and is
+          # never pruned, and real version tags are untouched.
+          mapfile -t TAGS < <(
+            gh release list --limit 100 --json tagName,createdAt \
+              --jq '[.[] | select(.tagName | test("^snapshot-[0-9]{4}-[0-9]{2}-[0-9]{2}$"))]
+                    | sort_by(.createdAt) | reverse | .[].tagName'
+          )
+          echo "dated snapshot releases found: ${#TAGS[@]} (keeping $KEEP)" >> "$OBS_LOG"
+          if [[ "${#TAGS[@]}" -le "$KEEP" ]]; then
+            echo "Nothing to prune." >> "$OBS_LOG"
             exit 0
           fi
-          if [[ -z "$(git status --porcelain -- "$OUTPUT_PATH" "$CHECKSUM_PATH")" ]]; then
-            echo "No snapshot changes to commit."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- "$OUTPUT_PATH" "$CHECKSUM_PATH"
-          git commit -m "chore(snapshot): refresh kosha latest data"
-          git push
+          for tag in "${TAGS[@]:$KEEP}"; do
+            echo "Deleting old snapshot release $tag" >> "$OBS_LOG"
+            gh release delete "$tag" --cleanup-tag --yes
+          done
 
       - name: Collect observability
         if: always()
