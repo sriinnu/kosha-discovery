@@ -13,7 +13,20 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- **The weekly snapshot is a release asset now, not a commit.** At ~2.8 MB of
+  JSON that grows with every provider added, committing it every Monday would put
+  roughly 150 MB of already-stale data a year into a repo people are meant to
+  clone. It publishes to a `snapshot-latest` release — a stable download URL that
+  always holds the newest one — plus a dated `snapshot-YYYY-MM-DD` pre-release,
+  pruned to the two most recent. Pruning runs only after the new snapshot is
+  published, so an older snapshot is never removed before a newer one exists.
+  `data/kosha-latest.json` is no longer tracked; the health guard now compares
+  against the published asset instead of against git.
+
+  Existing history still carries the old blobs — only a history rewrite would
+  remove those, which is not worth doing to a published repo.
 
 ---
 
