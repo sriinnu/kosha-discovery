@@ -1,6 +1,6 @@
 {
 	"name": "@sriinnu/kosha-discovery",
-	"version": "1.6.1",
+	"version": "1.6.2",
 	"description": "Tells your agent which model to use and what it costs, across 45 AI providers and local runtimes",
 	"mcpName": "io.github.sriinnu/kosha-discovery",
 	"type": "module",
