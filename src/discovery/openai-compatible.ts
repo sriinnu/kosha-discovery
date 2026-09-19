@@ -100,7 +100,8 @@ export abstract class OpenAICompatibleDiscoverer extends BaseDiscoverer {
 		};
 
 		let response: OpenAICompatibleListResponse | null = null;
-		let lastError: unknown;
+		let firstError: unknown;
+		let allNotFound = true;
 		for (const endpoint of this.modelListEndpoints()) {
 			try {
 				response = await this.fetchJSON<OpenAICompatibleListResponse>(
@@ -110,11 +111,33 @@ export abstract class OpenAICompatibleDiscoverer extends BaseDiscoverer {
 				);
 				break;
 			} catch (error: unknown) {
-				lastError = error;
+				firstError ??= error;
+				// Only a 404 means "wrong path, try the next candidate". A 401,
+				// 403, or 429 is a definitive answer about the credential or the
+				// quota, and walking on to the next path just replaces that
+				// diagnosis with a 404 from a URL that never existed — which is
+				// how an expired key came to be reported as a missing endpoint.
+				if (!isNotFoundError(error)) {
+					allNotFound = false;
+					break;
+				}
 			}
 		}
+
 		if (!response) {
-			throw lastError instanceof Error ? lastError : new Error(`${this.providerName} API request failed`);
+			// Every candidate path 404'd: this provider serves models but does not
+			// enumerate them where we looked. That is a gap in our URL knowledge,
+			// not a broken provider, so fall back to the public catalog rather
+			// than reporting zero models for a provider that plainly has some.
+			if (allNotFound) {
+				try {
+					const seeds = await getPublicSeed(this.providerId);
+					if (seeds.length > 0) return seeds;
+				} catch {
+					/* fall through to the original error */
+				}
+			}
+			throw firstError instanceof Error ? firstError : new Error(`${this.providerName} API request failed`);
 		}
 
 		return response.data
@@ -229,4 +252,18 @@ export abstract class OpenAICompatibleDiscoverer extends BaseDiscoverer {
 			dimensions: classification.dimensions ?? model.output_vector_size,
 		});
 	}
+}
+
+/**
+ * True when a discovery error came from an HTTP 404.
+ *
+ * `fetchJSON` surfaces HTTP failures as `Error` messages that embed the status
+ * (`"<Provider> API error: 404 Not Found — …"`), so the status is matched out
+ * of the message rather than carried on a typed field. Anchored to the
+ * `API error:` prefix so a 404 mentioned inside a response body cannot be
+ * mistaken for the status itself.
+ */
+function isNotFoundError(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	return /API error:\s*404\b/.test(error.message);
 }

@@ -122,12 +122,21 @@ export function actualCostFromUsage(model: ModelCard, rawUsage: unknown, shape: 
 	const uncachedInput = shape === "openai" ? Math.max(0, usage.inputTokens - cacheRead) : usage.inputTokens;
 	const readRate = pricing.cacheReadPerMillion ?? pricing.inputPerMillion * (shape === "anthropic" ? 0.1 : 0.5);
 	const writeRate = pricing.cacheWritePerMillion ?? (shape === "anthropic" ? pricing.inputPerMillion * 1.25 : 0);
+	// Cache writes are billed by lifetime, and the catalog rate is the short-TTL
+	// one. Price the 1-hour share at its own rate when the entry carries it,
+	// else at Anthropic's published 2× input — the same shape as the read/write
+	// ratio fallbacks above, and only for the usage convention that reports the
+	// split in the first place.
+	const cacheWrite1h = Math.max(0, Math.min(usage.cacheWrite1hTokens ?? 0, cacheWrite));
+	const write1hRate =
+		pricing.cacheWrite1hPerMillion ?? (shape === "anthropic" ? pricing.inputPerMillion * 2 : writeRate);
 
 	const usd =
 		tokensTimesRate(uncachedInput, pricing.inputPerMillion) +
 		tokensTimesRate(usage.outputTokens, pricing.outputPerMillion) +
 		tokensTimesRate(cacheRead, readRate) +
-		tokensTimesRate(cacheWrite, writeRate);
+		tokensTimesRate(cacheWrite - cacheWrite1h, writeRate) +
+		tokensTimesRate(cacheWrite1h, write1hRate);
 	if (!Number.isFinite(usd) || usd < 0) return null;
 
 	return { usd, inputTokens: uncachedInput, outputTokens: usage.outputTokens, cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite };

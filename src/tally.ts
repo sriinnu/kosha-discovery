@@ -22,6 +22,13 @@ export interface TokenUsage {
 	cachedInputTokens?: number;
 	/** Cache-write input tokens (Anthropic-style cache creation), if reported. */
 	cacheWriteTokens?: number;
+	/**
+	 * The share of `cacheWriteTokens` written with a 1-hour TTL, when the
+	 * provider breaks the lifetime down. A SUBSET of `cacheWriteTokens`, never
+	 * an additional bucket — it changes which rate applies, not how many tokens
+	 * were written.
+	 */
+	cacheWrite1hTokens?: number;
 	/** Reasoning/thinking output tokens, if the provider bills or reports them separately. */
 	reasoningTokens?: number;
 }
@@ -45,6 +52,12 @@ const FIELD_ALIASES: Record<keyof TokenUsage, readonly string[]> = {
 		"prompt_tokens_details.cached_tokens",
 	],
 	cacheWriteTokens: ["cacheWriteTokens", "cache_creation_input_tokens", "cacheCreationInputTokens"],
+	// Anthropic nests the TTL split under cache_creation alongside the total.
+	cacheWrite1hTokens: [
+		"cacheWrite1hTokens",
+		"cache_creation.ephemeral_1h_input_tokens",
+		"cacheCreation.ephemeral1hInputTokens",
+	],
 	reasoningTokens: ["reasoningTokens", "reasoning_tokens", "completion_tokens_details.reasoning_tokens"],
 };
 
@@ -82,6 +95,7 @@ export function normalizeTokenUsage(raw: Record<string, unknown> | null | undefi
 	const outputTokens = readField(raw, FIELD_ALIASES.outputTokens) ?? 0;
 	const cachedInputTokens = readField(raw, FIELD_ALIASES.cachedInputTokens);
 	const cacheWriteTokens = readField(raw, FIELD_ALIASES.cacheWriteTokens);
+	const cacheWrite1hTokens = readField(raw, FIELD_ALIASES.cacheWrite1hTokens);
 	const reasoningTokens = readField(raw, FIELD_ALIASES.reasoningTokens);
 
 	const hasAnyUsage =
@@ -99,6 +113,8 @@ export function normalizeTokenUsage(raw: Record<string, unknown> | null | undefi
 		outputTokens,
 		...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
 		...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}),
+		// Subset of cacheWriteTokens — deliberately absent from totalTokens.
+		...(cacheWrite1hTokens !== undefined ? { cacheWrite1hTokens } : {}),
 		...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
 		totalTokens,
 	};
@@ -131,8 +147,15 @@ export function estimateUsdCost(usage: TokenUsage, pricing: ModelPricing): UsdCo
 	const cachedInputUsd = usage.cachedInputTokens
 		? tokensTimesRate(usage.cachedInputTokens, pricing.cacheReadPerMillion)
 		: 0;
-	const cacheWriteUsd = usage.cacheWriteTokens
-		? tokensTimesRate(usage.cacheWriteTokens, pricing.cacheWritePerMillion)
+	// Split the write by cache lifetime: a 1-hour write costs more than a
+	// 5-minute one, and the catalog's cacheWritePerMillion is the 5-minute rate.
+	// Without an explicit 1-hour rate the short-TTL rate is the only honest
+	// number here — estimateUsdCost has no usage shape to infer a ratio from.
+	const cacheWriteTotal = usage.cacheWriteTokens ?? 0;
+	const cacheWrite1h = Math.max(0, Math.min(usage.cacheWrite1hTokens ?? 0, cacheWriteTotal));
+	const cacheWriteUsd = cacheWriteTotal
+		? tokensTimesRate(cacheWriteTotal - cacheWrite1h, pricing.cacheWritePerMillion) +
+			tokensTimesRate(cacheWrite1h, pricing.cacheWrite1hPerMillion ?? pricing.cacheWritePerMillion)
 		: 0;
 	const reasoningUsd = usage.reasoningTokens
 		? tokensTimesRate(usage.reasoningTokens, pricing.reasoningOutputPerMillion ?? pricing.outputPerMillion)

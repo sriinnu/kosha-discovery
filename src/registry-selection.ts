@@ -184,6 +184,11 @@ function roleRequirements(role: string): TrustedCapability[] {
 			return ["chat", "vision"];
 		case "rerank":
 			return ["rerank"];
+		case "judgment":
+		case "judgements":
+		case "judgments":
+		case "decision":
+			return ["judgment"];
 		case "video_generation":
 		case "video":
 		case "videos":
@@ -209,6 +214,9 @@ function normalizeTrustedCapabilityToken(value: string | undefined): TrustedCapa
 		tools: "function_calling",
 		vision: "vision",
 		rerank: "rerank",
+		judgment: "judgment",
+		judgement: "judgment",
+		decision: "judgment",
 		structured_output: "structured_output",
 		streaming: "streaming",
 		long_context: "long_context",

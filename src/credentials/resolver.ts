@@ -20,7 +20,7 @@ import { readFile } from "fs/promises";
 import { homedir, platform } from "os";
 import { join } from "path";
 import type { CredentialResult } from "../types.js";
-import { normalizeProviderId } from "../provider-catalog.js";
+import { getProviderDescriptor, normalizeProviderId } from "../provider-catalog.js";
 
 /**
  * Multi-source credential resolver for AI providers.
@@ -120,8 +120,28 @@ export class CredentialResolver {
 			case "minimax":
 				return this.resolveSimpleEnvKey(explicitKey, "MINIMAX_API_KEY");
 			default:
-				return { source: "none" };
+				// Providers whose credential is a plain API key in one of a known
+				// set of env vars need no branch here — the catalog descriptor
+				// already lists them. Only providers with a genuinely bespoke
+				// search order (CLI files, OAuth, ADC, SSO) get a case above.
+				return this.resolveFromCatalog(providerId, explicitKey);
 		}
+	}
+
+	/**
+	 * Resolve a credential from the provider descriptor's `credentialEnvVars`.
+	 *
+	 * This is the default path, so adding a provider to `PROVIDER_CATALOG` is
+	 * enough for `kosha` to find its key. Before this existed, a catalog entry
+	 * with no matching `case` silently resolved to `{ source: "none" }` and the
+	 * provider looked unauthenticated no matter what the environment held.
+	 */
+	private resolveFromCatalog(providerId: string, explicitKey?: string): Promise<CredentialResult> {
+		const envVars = getProviderDescriptor(providerId)?.credentialEnvVars ?? [];
+		if (!explicitKey && envVars.length === 0) {
+			return Promise.resolve({ source: "none" });
+		}
+		return this.resolveMultiEnvKey(explicitKey, [...envVars]);
 	}
 
 	// ---------------------------------------------------------------------------

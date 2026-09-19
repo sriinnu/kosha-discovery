@@ -1,7 +1,10 @@
 /**
  * kosha-discovery — MiniMax provider discoverer.
  *
- * MiniMax exposes an OpenAI-compatible API endpoint.
+ * MiniMax serves international traffic from `api.minimax.io` and mainland
+ * China from `api.minimaxi.com`. Same model IDs, separate accounts, separate
+ * price sheets — so `minimax` and `minimax-cn` are distinct providers over one
+ * classifier.
  * @module
  */
 
@@ -9,9 +12,21 @@ import type { OpenAICompatibleModel, ModelClassification } from "./openai-compat
 import { OpenAICompatibleDiscoverer } from "./openai-compatible.js";
 
 export class MiniMaxDiscoverer extends OpenAICompatibleDiscoverer {
-	readonly providerId = "minimax";
-	readonly providerName = "MiniMax";
-	readonly baseUrl = "https://api.minimax.io";
+	readonly providerId: string;
+	readonly providerName: string;
+	readonly baseUrl: string;
+
+	/**
+	 * @param region - `"global"` targets `api.minimax.io`; `"cn"` targets
+	 *                 `api.minimaxi.com` under the `minimax-cn` provider ID.
+	 */
+	constructor(region: "global" | "cn" = "global") {
+		super();
+		const cn = region === "cn";
+		this.providerId = cn ? "minimax-cn" : "minimax";
+		this.providerName = cn ? "MiniMax (China)" : "MiniMax";
+		this.baseUrl = cn ? "https://api.minimaxi.com" : "https://api.minimax.io";
+	}
 
 	protected isRelevantModel(model: OpenAICompatibleModel): boolean {
 		const lower = model.id.toLowerCase();

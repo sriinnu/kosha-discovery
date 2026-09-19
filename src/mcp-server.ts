@@ -96,7 +96,7 @@ export const TOOLS = [
 				provider: { type: "string", description: "Provider ID (e.g. anthropic, openai, groq, openrouter)" },
 				mode: {
 					type: "string",
-					enum: ["chat", "embedding", "image", "video", "audio", "moderation", "rerank"],
+					enum: ["chat", "embedding", "image", "video", "audio", "moderation", "rerank", "judgment"],
 					description: "Primary model mode",
 				},
 				capability: {

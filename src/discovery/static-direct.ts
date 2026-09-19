@@ -19,8 +19,45 @@ export interface StaticModelSeed {
 	maxInputTokens?: number;
 }
 
-/** Curated OpenAI models for unauthenticated/offline discovery mode. */
+/**
+ * Curated OpenAI models for unauthenticated/offline discovery mode.
+ *
+ * Every ID that {@link DEFAULT_ALIASES} points at must appear here, otherwise
+ * `kosha model gpt5` resolves to a canonical ID with no card behind it on a
+ * machine with no key and no network. Context / output limits are left to the
+ * public-seed and LiteLLM enrichment passes.
+ */
 export const STATIC_OPENAI_MODELS: readonly StaticModelSeed[] = [
+	{
+		id: "gpt-5",
+		name: "GPT-5",
+		mode: "chat",
+		capabilities: ["chat", "vision", "function_calling", "reasoning", "structured_output", "code", "nlu"],
+	},
+	{
+		id: "gpt-5-mini",
+		name: "GPT-5 mini",
+		mode: "chat",
+		capabilities: ["chat", "vision", "function_calling", "reasoning", "structured_output", "code", "nlu"],
+	},
+	{
+		id: "gpt-5-nano",
+		name: "GPT-5 nano",
+		mode: "chat",
+		capabilities: ["chat", "function_calling", "structured_output", "code", "nlu"],
+	},
+	{
+		id: "gpt-5-pro",
+		name: "GPT-5 pro",
+		mode: "chat",
+		capabilities: ["chat", "vision", "function_calling", "reasoning", "structured_output", "code", "nlu"],
+	},
+	{
+		id: "gpt-4.1",
+		name: "GPT-4.1",
+		mode: "chat",
+		capabilities: ["chat", "vision", "function_calling", "structured_output", "code", "nlu"],
+	},
 	{
 		id: "o3",
 		name: "o3",
@@ -161,30 +198,114 @@ export const STATIC_ANTHROPIC_MODELS: readonly StaticModelSeed[] = [
 	},
 ];
 
-/** Curated Google/Gemini models for unauthenticated/offline discovery mode. */
+/**
+ * Curated Google/Gemini models for unauthenticated/offline discovery mode.
+ *
+ * These are the GA IDs that {@link DEFAULT_ALIASES} resolves to. The dated
+ * `-preview-` snapshots this list used to carry are retired and no longer
+ * accept requests, so they are not worth offering as a fallback.
+ */
 export const STATIC_GOOGLE_MODELS: readonly StaticModelSeed[] = [
 	{
-		id: "gemini-2.5-pro-preview-05-06",
+		id: "gemini-2.5-pro",
 		name: "Gemini 2.5 Pro",
 		mode: "chat",
-		capabilities: ["chat", "vision", "function_calling", "code", "nlu"],
+		capabilities: ["chat", "vision", "function_calling", "reasoning", "structured_output", "code", "nlu"],
 	},
 	{
-		id: "gemini-2.5-flash-preview-04-17",
+		id: "gemini-2.5-flash",
 		name: "Gemini 2.5 Flash",
 		mode: "chat",
-		capabilities: ["chat", "vision", "function_calling", "code", "nlu"],
+		capabilities: ["chat", "vision", "function_calling", "reasoning", "structured_output", "code", "nlu"],
 	},
 	{
-		id: "gemini-2.0-flash-lite",
-		name: "Gemini 2.0 Flash-Lite",
+		id: "gemini-2.5-flash-lite",
+		name: "Gemini 2.5 Flash-Lite",
 		mode: "chat",
-		capabilities: ["chat", "vision", "function_calling", "code", "nlu"],
+		capabilities: ["chat", "vision", "function_calling", "structured_output", "code", "nlu"],
 	},
 	{
 		id: "gemini-embedding-001",
 		name: "Gemini Embedding 001",
 		mode: "embedding",
 		capabilities: ["embedding"],
+	},
+];
+
+/**
+ * Curated xAI models for unauthenticated/offline discovery mode.
+ *
+ * The public catalogs cover xAI, so this list only has to carry the IDs the
+ * built-in aliases resolve to, for the case where neither catalog is reachable.
+ */
+export const STATIC_XAI_MODELS: readonly StaticModelSeed[] = [
+	{
+		id: "grok-4.6",
+		name: "Grok 4.6",
+		mode: "chat",
+		capabilities: ["chat", "vision", "function_calling", "reasoning", "structured_output", "code", "nlu"],
+	},
+	{
+		id: "grok-4.5",
+		name: "Grok 4.5",
+		mode: "chat",
+		capabilities: ["chat", "vision", "function_calling", "reasoning", "structured_output", "code", "nlu"],
+	},
+	{
+		id: "grok-4.3",
+		name: "Grok 4.3",
+		mode: "chat",
+		capabilities: ["chat", "vision", "function_calling", "reasoning", "structured_output", "code", "nlu"],
+	},
+	{
+		id: "grok-imagine-image",
+		name: "Grok Imagine (image)",
+		mode: "image",
+		capabilities: ["image_generation"],
+	},
+	{
+		id: "grok-imagine-video",
+		name: "Grok Imagine (video)",
+		mode: "video",
+		capabilities: ["video_generation"],
+	},
+];
+
+/**
+ * Curated TypeSafe System One models.
+ *
+ * TypeSafe appears in neither models.dev nor LiteLLM, so this is the only
+ * keyless source for it. `jev-latest` and `jev-preview` are moving aliases the
+ * API itself advertises; the pinned version is listed so a caller who pinned it
+ * still resolves. Limits and pricing live in `typesafe.ts` next to the
+ * discoverer that applies them.
+ */
+export const STATIC_TYPESAFE_MODELS: readonly StaticModelSeed[] = [
+	{
+		id: "jev-latest",
+		name: "Jev (latest)",
+		mode: "judgment",
+		capabilities: ["judgment", "structured_output", "nlu", "classification"],
+		contextWindow: 64_000,
+		maxInputTokens: 32_000,
+		maxOutputTokens: 0,
+	},
+	{
+		id: "jev-preview",
+		name: "Jev (preview)",
+		mode: "judgment",
+		capabilities: ["judgment", "structured_output", "nlu", "classification"],
+		contextWindow: 64_000,
+		maxInputTokens: 32_000,
+		maxOutputTokens: 0,
+	},
+	{
+		id: "jev-1.13.0",
+		name: "Jev 1.13.0",
+		mode: "judgment",
+		capabilities: ["judgment", "structured_output", "nlu", "classification"],
+		contextWindow: 64_000,
+		maxInputTokens: 32_000,
+		maxOutputTokens: 0,
 	},
 ];

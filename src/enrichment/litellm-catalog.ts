@@ -10,7 +10,8 @@
  *  - Promise-deduplicated singleton load — concurrent callers share one fetch.
  *  - AbortController-bounded fetch with explicit timeout.
  *  - Response size cap before parsing to prevent memory bombs.
- *  - {@link assertCleanPayload} runs before any field is read.
+ *  - {@link quarantineEntries} runs before any field is read, dropping an
+ *    unclean model entry rather than the whole catalog.
  *  - Entry-count cap after parse to bound downstream work.
  *
  * The catalog source is the same one already trusted by the existing
@@ -18,7 +19,7 @@
  * @module
  */
 
-import { assertCleanPayload } from "../security.js";
+import { type QuarantinedEntry, quarantineEntries } from "../security.js";
 
 /** Pinned upstream catalog URL — HTTPS only, no user override. */
 export const LITELLM_CATALOG_URL =
@@ -92,6 +93,21 @@ export interface LiteLLMModelEntry {
 /** Module-level promise-dedup cache so concurrent callers share one fetch. */
 let inflight: Promise<Record<string, LiteLLMModelEntry>> | null = null;
 
+/** Model entries dropped by the threat scan on the most recent load. */
+let lastQuarantined: QuarantinedEntry[] = [];
+
+/**
+ * Model entries the threat scan dropped from the last successful load.
+ *
+ * A quarantined entry is a supply-chain signal — a base64 credential or a
+ * script payload someone committed to the upstream catalog. Dropping the row
+ * keeps the other few thousand models usable, but the drop has to be
+ * reportable rather than silent, which is what this exposes.
+ */
+export function liteLLMQuarantined(): QuarantinedEntry[] {
+	return [...lastQuarantined];
+}
+
 /**
  * Fetch the LiteLLM catalog with full hardening, returning a defensively
  * filtered map. Concurrent callers share the same in-flight promise.
@@ -112,6 +128,7 @@ export function loadLiteLLMCatalog(): Promise<Record<string, LiteLLMModelEntry>>
  */
 export function resetLiteLLMCatalogCache(): void {
 	inflight = null;
+	lastQuarantined = [];
 }
 
 async function fetchAndValidate(): Promise<Record<string, LiteLLMModelEntry>> {
@@ -144,9 +161,15 @@ async function fetchAndValidate(): Promise<Record<string, LiteLLMModelEntry>> {
 		throw new Error("Failed to parse litellm data: expected an object");
 	}
 
-	assertCleanPayload(parsed, "litellm");
+	// Quarantine per model entry. This catalog carries thousands of community
+	// contributions; one unclean entry should cost that entry, not the pricing
+	// data for every model kosha knows about.
+	const { clean, dropped } = quarantineEntries(parsed, "litellm");
+	if (dropped.length > 0) {
+		lastQuarantined = dropped;
+	}
 
-	const entries = Object.entries(parsed as Record<string, unknown>);
+	const entries = Object.entries(clean);
 	if (entries.length > MAX_ENTRIES) {
 		throw new Error(
 			`LiteLLM catalog exceeds entry cap (${entries.length} > ${MAX_ENTRIES}) — refusing to load`,

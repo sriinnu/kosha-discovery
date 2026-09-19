@@ -88,7 +88,7 @@ const embedding = makeModel({
 const anthropicProvider = makeProvider("anthropic", "Anthropic", [sonnet, opus]);
 const openaiProvider = makeProvider("openai", "OpenAI", [embedding]);
 
-const MODEL_MODES = ["chat", "embedding", "image", "video", "audio", "moderation", "rerank"];
+const MODEL_MODES = ["chat", "embedding", "image", "video", "audio", "moderation", "rerank", "judgment"];
 const PRICE_METRICS = ["input", "output", "blended"];
 
 // ---------------------------------------------------------------------------

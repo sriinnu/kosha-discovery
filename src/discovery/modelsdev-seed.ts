@@ -42,7 +42,11 @@ const PROVIDER_SLUG_ALIASES: Record<string, readonly string[]> = {
 	deepseek: ["deepseek"],
 	zai: ["zai"],
 	minimax: ["minimax"],
-	moonshot: ["moonshotai", "moonshotai-cn"],
+	"minimax-cn": ["minimax-cn"],
+	// One slug per region: models.dev prices them separately and merging the
+	// two would make a model's price depend on iteration order.
+	moonshot: ["moonshotai"],
+	"moonshot-cn": ["moonshotai-cn"],
 	mistral: ["mistral"],
 	cohere: ["cohere"],
 	groq: ["groq"],
@@ -53,6 +57,25 @@ const PROVIDER_SLUG_ALIASES: Record<string, readonly string[]> = {
 	deepinfra: ["deepinfra"],
 	xai: ["xai"],
 	nvidia: ["nvidia"],
+	// GLM is published under the `zhipuai` slug; without this the keyless
+	// fallback for GLM returned nothing at all.
+	glm: ["zhipuai"],
+	alibaba: ["alibaba"],
+	"alibaba-cn": ["alibaba-cn"],
+	volcengine: ["volcengine"],
+	inception: ["inception"],
+	ai21: ["ai21"],
+	upstage: ["upstage"],
+	baseten: ["baseten"],
+	nebius: ["nebius"],
+	novita: ["novita-ai"],
+	siliconflow: ["siliconflow"],
+	"siliconflow-cn": ["siliconflow-cn"],
+	stepfun: ["stepfun-ai"],
+	"stepfun-cn": ["stepfun"],
+	huggingface: ["huggingface"],
+	"ollama-cloud": ["ollama-cloud"],
+	thinkingmachines: ["thinkingmachines"],
 	vertex: ["google-vertex", "google-vertex-anthropic"],
 	bedrock: ["amazon-bedrock"],
 };

@@ -4,7 +4,7 @@
 
 # kosha-discovery
 
-Model and provider discovery registry for LLM apps. It queries 25 provider APIs and local runtimes for their model lists, resolves credentials from env vars and CLI config files, fills in pricing and context limits from models.dev and LiteLLM, and exposes the result as a TypeScript library, a CLI, an HTTP API, an OpenAI-compatible proxy with cost tracking, and an MCP server.
+Model and provider discovery registry for LLM apps. It queries 45 provider APIs and local runtimes for their model lists, resolves credentials from env vars and CLI config files, fills in pricing and context limits from models.dev and LiteLLM, and exposes the result as a TypeScript library, a CLI, an HTTP API, an OpenAI-compatible proxy with cost tracking, and an MCP server.
 
 ## Install
 
@@ -121,6 +121,7 @@ What the proxy can forward:
 | OpenAI-compatible | OpenAI, Ollama, OpenRouter, Vercel, Groq, Together, Fireworks, DeepInfra, … | passthrough, streaming included |
 | Anthropic Messages | Anthropic | translated: streaming, tools, `image_url`, `response_format`, `reasoning_effort`; audio input and non-function tools fail over to an OpenAI-compatible route for the same model |
 | Cloud SDKs | Google, Bedrock, Vertex | discovery only, not proxied yet |
+| Non-chat / other wire | TypeSafe, Thinking Machines | discovery only — TypeSafe's System One endpoint is not a chat API, and Tinker's Anthropic-wire path differs from Anthropic's own |
 
 Defaults that matter before you expose it: the server binds `127.0.0.1`. Pass `--host 0.0.0.0` (or `KOSHA_HOST`) to listen on a network interface, and set `KOSHA_PROXY_TOKEN` so `/proxy/*` and `POST /api/refresh` require `Authorization: Bearer <token>` or `x-kosha-token`. `KOSHA_MONTHLY_BUDGET_USD` caps spend per calendar month. Reference: [docs/api.md](docs/api.md#openai-compatible-proxy), [docs/operations.md](docs/operations.md).
 
@@ -132,11 +133,21 @@ Defaults that matter before you expose it: the server binds `127.0.0.1`. Pass `-
 claude mcp add kosha -- kosha-mcp
 ```
 
+It is published to the [MCP registry](https://github.com/modelcontextprotocol/registry)
+as `io.github.sriinnu/kosha-discovery`, so clients that read the registry can
+install it without a manual command. The manifest is [`server.json`](server.json).
+
+Every provider key is optional. With no credentials at all the server still
+answers from the public models.dev and LiteLLM catalogs plus a curated offline
+list, so it is useful on a fresh machine.
+
 Tools and protocol details: [docs/mcp.md](docs/mcp.md).
 
 ## Supported providers
 
-25 providers. Each has a discoverer in `src/discovery/` and a credential resolver in `src/credentials/`.
+45 providers. Each has a descriptor in `src/provider-catalog.ts`; most OpenAI-compatible
+ones are driven from `GENERIC_OPENAI_PROVIDERS` in `src/discovery/generic-openai.ts`
+rather than a hand-written class.
 
 | Provider | Discovery | Credential sources |
 |----------|-----------|--------------------|
@@ -150,8 +161,47 @@ Tools and protocol details: [docs/mcp.md](docs/mcp.md).
 | Vercel AI Gateway | `GET /v1/models` | `AI_GATEWAY_API_KEY`, `VERCEL_OIDC_TOKEN` (discovery works without; execution needs one) |
 | NVIDIA, Together, Fireworks, Groq, Cerebras, Cohere, DeepInfra, Perplexity | OpenAI-compatible API | `<PROVIDER>_API_KEY` |
 | DeepSeek, Mistral, Moonshot (Kimi), GLM (Zhipu), Z.AI, MiniMax | OpenAI-compatible API | `<PROVIDER>_API_KEY` |
+| xAI (Grok) | `GET /v1/models`; Grok Imagine split into image / video | `XAI_API_KEY` |
+| TypeSafe (System One / Jev) | `GET /v1/models` — returns `judgment` models, not chat | `TYPESAFE_API_KEY`, `JEV_API_KEY` |
+| Thinking Machines (Inkling) | Anthropic-wire endpoint, no model list — public catalog only | `TINKER_API_KEY` |
+| Alibaba Model Studio (Qwen), Volcengine Ark (Doubao), Inception (Mercury), AI21 (Jamba), Upstage (Solar), StepFun | OpenAI-compatible API | `DASHSCOPE_API_KEY`, `ARK_API_KEY`, `INCEPTION_API_KEY`, `AI21_API_KEY`, `UPSTAGE_API_KEY`, `STEPFUN_API_KEY` |
+| Baseten, Nebius Token Factory, Novita AI, SiliconFlow, Hugging Face, Ollama Cloud | OpenAI-compatible API | `<PROVIDER>_API_KEY`, `HF_TOKEN` |
 
-Without a key, direct providers fall back to the public models.dev + LiteLLM catalog, then to a curated static list, so `kosha list` works on a fresh machine. Exact env var names: [docs/credentials.md](docs/credentials.md).
+### Regional pairs
+
+Several providers run separate hosts for international and mainland-China
+traffic, with separate keys and **separate price sheets** — Qwen 2.5 72B is
+$1.40/M input internationally against $0.574/M in China. Merging them would make
+a model's price depend on which host answered last, so each region is its own
+provider:
+
+| International | China | Differs in |
+|---|---|---|
+| `moonshot` (`api.moonshot.ai`) | `moonshot-cn` (`api.moonshot.cn`) | host, key |
+| `minimax` (`api.minimax.io`) | `minimax-cn` (`api.minimaxi.com`) | host, key |
+| `alibaba` (`dashscope-intl`) | `alibaba-cn` (`dashscope`) | host, key, pricing |
+| `siliconflow` (`.com`) | `siliconflow-cn` (`.cn`) | host, key, pricing |
+| `stepfun` (`api.stepfun.ai`) | `stepfun-cn` (`api.stepfun.com`) | host, key, pricing |
+| `zai` (`api.z.ai`) | `glm` (`open.bigmodel.cn`) | host, key, pricing |
+
+`kosha routes <model>` lists every region a model is served from, so you can
+compare prices across them directly.
+
+Without a key, providers fall back to the public models.dev + LiteLLM catalog, then to a curated static list, so `kosha list` works on a fresh machine. Exact env var names: [docs/credentials.md](docs/credentials.md).
+
+### Non-chat modes
+
+Most models are `chat`, but `mode` also covers `embedding`, `image`, `video`,
+`audio`, `moderation`, `rerank`, and `judgment`. A `judgment` model — TypeSafe's
+System One family — answers a question with a typed value (a choice and its
+probability distribution, a probability, or a score on described levels) instead
+of generating text. It carries no `chat` capability on purpose: routing a prompt
+to one would be a category error.
+
+```bash
+kosha cheapest --role judgment    # rank judgment models by price
+kosha model jev                   # mode: judgment, $0.042/M in, $0 out
+```
 
 ## How it works
 
@@ -203,11 +253,19 @@ src/
 
 ### Adding a provider
 
+For an OpenAI-compatible provider — most of them — it is two table entries:
+
 1. Add a descriptor to `PROVIDER_CATALOG` in `src/provider-catalog.ts` (id, base URL, transport, credential env vars).
-2. Create `src/discovery/<provider>.ts` extending `BaseDiscoverer`; `fetchJSON` and `makeCard` are provided.
-3. Export it from `src/discovery/index.ts` and add a factory entry to `DISCOVERER_REGISTRY` in the same file.
-4. If the provider needs more than a single env var, add a resolver branch in `src/credentials/resolver.ts`.
-5. Add `test/discovery/<provider>.test.ts` (mock `fetch`; see `anthropic.test.ts`) and document the env vars in `docs/credentials.md`.
+2. Add a spec to `GENERIC_OPENAI_PROVIDERS` in `src/discovery/generic-openai.ts`. It registers its own discoverer, resolves credentials from the descriptor's `credentialEnvVars`, and falls back to the public catalog when there is no key.
+3. Map the provider to its models.dev / LiteLLM slug in `src/discovery/modelsdev-seed.ts` and `litellm-seed.ts` so keyless discovery works. **Check the slug** — GLM is published as `zhipuai`, and a missing mapping means no keyless models at all.
+4. Add a case to `test/discovery/generic-openai.test.ts` and document the env vars in `docs/credentials.md`.
+
+Write a discoverer class only when classification genuinely needs code — per-route pricing (OpenRouter), a non-OpenAI response envelope (TypeSafe), or origin remapping (Vercel):
+
+1. Create `src/discovery/<provider>.ts` extending `BaseDiscoverer` or `OpenAICompatibleDiscoverer`; `fetchJSON` and `makeCard` are provided.
+2. Export it from `src/discovery/index.ts` and add a factory entry to `DISCOVERER_REGISTRY`.
+3. Add a resolver branch in `src/credentials/resolver.ts` only for a bespoke search order (CLI files, OAuth, ADC, SSO). A plain API key in env vars needs no branch — the descriptor covers it.
+4. Add `test/discovery/<provider>.test.ts` (mock `fetch`; see `typesafe.test.ts`).
 
 ## Docs
 

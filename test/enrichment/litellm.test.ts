@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LiteLLMEnricher } from "../../src/enrichment/litellm.js";
-import { resetLiteLLMCatalogCache } from "../../src/enrichment/litellm-catalog.js";
+import { liteLLMQuarantined, resetLiteLLMCatalogCache } from "../../src/enrichment/litellm-catalog.js";
 import type { ModelCard } from "../../src/types.js";
 
 // ---------------------------------------------------------------------------
@@ -417,6 +417,31 @@ describe("LiteLLMEnricher", () => {
 					mode: "chat",
 				},
 			};
+			vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+				new Response(JSON.stringify(poisoned), { status: 200 }),
+			);
+			const fresh = new LiteLLMEnricher();
+
+			// The poisoned row is dropped and reported; the rest of the catalog
+			// still loads. Rejecting the whole feed over one row is what made a
+			// single upstream entry able to disable pricing for every model.
+			await expect(fresh.load()).resolves.not.toThrow();
+			const quarantined = liteLLMQuarantined();
+			expect(quarantined.map((entry) => entry.key)).toContain("evil-model");
+			expect(quarantined[0].threat).toBe("base64");
+		});
+
+		it("rejects the whole feed when most of it is unclean", async () => {
+			// A localized bad row is a bad row; a feed where the majority trips
+			// the scan is a compromised feed, and that still fails closed.
+			const poisoned: Record<string, unknown> = {};
+			for (let i = 0; i < 10; i++) {
+				poisoned[`evil-${i}`] = {
+					litellm_provider: "YWRtaW46cGFzc3dvcmQxMjNAZXhhbXBsZS5jb20=",
+					mode: "chat",
+				};
+			}
+			poisoned["good-model"] = { litellm_provider: "openai", mode: "chat" };
 			vi.mocked(globalThis.fetch).mockResolvedValueOnce(
 				new Response(JSON.stringify(poisoned), { status: 200 }),
 			);

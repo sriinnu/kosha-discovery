@@ -7,8 +7,22 @@
  * @module
  */
 
-/** Supported model operational modes. */
-export type ModelMode = "chat" | "embedding" | "image" | "video" | "audio" | "moderation" | "rerank";
+/**
+ * Supported model operational modes.
+ *
+ * `judgment` covers models that return typed decisions rather than generated
+ * text — TypeSafe's System One family (Jev) answers a question with a choice,
+ * a probability, or a score, so it is neither `chat` nor `moderation`.
+ */
+export type ModelMode =
+	| "chat"
+	| "embedding"
+	| "image"
+	| "video"
+	| "audio"
+	| "moderation"
+	| "rerank"
+	| "judgment";
 
 /** Normalized transport families used by discovery consumers. */
 export type ProviderTransport = "native-http" | "openai-compatible-http" | "cloud-sdk";
@@ -67,6 +81,17 @@ export interface ModelPricing {
 	cacheReadPerMillion?: number;
 	/** USD cost per 1 million cache-write tokens (optional). */
 	cacheWritePerMillion?: number;
+	/**
+	 * USD cost per 1 million cache-write tokens written with a 1-hour TTL
+	 * (optional). Providers that offer more than one cache lifetime charge more
+	 * for the longer one — Anthropic bills a 5-minute write at 1.25× input and a
+	 * 1-hour write at 2× — while every upstream catalog we ingest publishes only
+	 * a single `cache_write` rate, which is the short-TTL one. Populated from a
+	 * source or an operator override; when absent, consumers fall back to the
+	 * provider's published ratio rather than silently pricing a 1-hour write as
+	 * if it were a 5-minute one.
+	 */
+	cacheWrite1hPerMillion?: number;
 	/** USD cost per 1 million input tokens via the Batch API (optional). */
 	batchInputPerMillion?: number;
 	/** USD cost per 1 million output tokens via the Batch API (optional). */

@@ -4,8 +4,8 @@
  * Pulls the keyless community catalog at https://models.dev/api.json,
  * which is maintained by the SST team and tends to surface new models
  * faster than LiteLLM. Same hardening contract as the LiteLLM loader:
- * HTTPS-pinned URL, assertCleanPayload scan, bounded body read, entry-count
- * cap, promise-deduped singleton.
+ * HTTPS-pinned URL, per-provider threat quarantine, bounded body read,
+ * entry-count cap, promise-deduped singleton.
  *
  * Schema (top level):
  *   {
@@ -27,7 +27,7 @@
  * @module
  */
 
-import { assertCleanPayload } from "../security.js";
+import { type QuarantinedEntry, quarantineEntries } from "../security.js";
 
 /** Pinned upstream catalog URL — HTTPS only. */
 export const MODELSDEV_CATALOG_URL = "https://models.dev/api.json";
@@ -99,6 +99,19 @@ export interface ModelsDevProvider {
 /** Module-level promise-dedup cache. */
 let inflight: Promise<Record<string, ModelsDevProvider>> | null = null;
 
+/** Provider entries dropped by the threat scan on the most recent load. */
+let lastQuarantined: QuarantinedEntry[] = [];
+
+/**
+ * Provider entries the threat scan dropped from the last successful load.
+ *
+ * Surfaced so `kosha doctor` can report a quarantined provider instead of it
+ * just going quietly missing from the catalog.
+ */
+export function modelsDevQuarantined(): QuarantinedEntry[] {
+	return [...lastQuarantined];
+}
+
 /**
  * Fetch the models.dev catalog with full hardening. Concurrent callers
  * share the same in-flight promise.
@@ -116,6 +129,7 @@ export function loadModelsDevCatalog(): Promise<Record<string, ModelsDevProvider
 /** Test-only helper to clear the cache between runs. */
 export function resetModelsDevCatalogCache(): void {
 	inflight = null;
+	lastQuarantined = [];
 }
 
 async function fetchAndValidate(): Promise<Record<string, ModelsDevProvider>> {
@@ -148,9 +162,16 @@ async function fetchAndValidate(): Promise<Record<string, ModelsDevProvider>> {
 		throw new Error("Failed to parse models.dev catalog: expected an object");
 	}
 
-	assertCleanPayload(parsed, "models.dev");
+	// Quarantine per provider rather than rejecting the catalog. models.dev
+	// aggregates 200+ contributors, so one contributor's odd model name must not
+	// be able to take out every other provider's entry — which is exactly what
+	// an all-or-nothing scan did.
+	const { clean, dropped } = quarantineEntries(parsed, "models.dev");
+	if (dropped.length > 0) {
+		lastQuarantined = dropped;
+	}
 
-	const entries = Object.entries(parsed as Record<string, unknown>);
+	const entries = Object.entries(clean);
 	if (entries.length > MAX_PROVIDER_ENTRIES) {
 		throw new Error(
 			`models.dev catalog exceeds provider cap (${entries.length} > ${MAX_PROVIDER_ENTRIES}) — refusing to load`,
