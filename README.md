@@ -4,7 +4,17 @@
 
 # kosha-discovery
 
-Model and provider discovery registry for LLM apps. It queries 45 provider APIs and local runtimes for their model lists, resolves credentials from env vars and CLI config files, fills in pricing and context limits from models.dev and LiteLLM, and exposes the result as a TypeScript library, a CLI, an HTTP API, an OpenAI-compatible proxy with cost tracking, and an MCP server.
+**Tells your agent — or your code — which model to use and what it costs.**
+
+kosha discovers models across 45 providers and local runtimes, finds your API keys
+wherever they already live (env vars, Claude CLI, Codex, gcloud ADC, AWS SSO), fills
+in pricing and context limits, and answers questions like *the cheapest model with
+tool use and 128k context that I actually hold a key for*. It ships as a TypeScript
+library, a CLI, an HTTP API, an OpenAI-compatible proxy with a spend ledger, and an
+MCP server.
+
+It works with no API keys at all — discovery falls back to the public models.dev and
+LiteLLM catalogs, so `kosha list` is useful on a fresh machine.
 
 ## Install
 
