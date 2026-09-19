@@ -24,6 +24,13 @@ export { GLMDiscoverer } from "./glm.js";
 export { ZAIDiscoverer } from "./zai.js";
 export { MiniMaxDiscoverer } from "./minimax.js";
 export { OpenAICompatibleDiscoverer } from "./openai-compatible.js";
+export {
+	GENERIC_OPENAI_PROVIDERS,
+	GenericOpenAICompatibleDiscoverer,
+	getGenericProviderSpec,
+	type OpenAICompatibleProviderSpec,
+} from "./generic-openai.js";
+export { TypeSafeDiscoverer } from "./typesafe.js";
 export { BaseDiscoverer } from "./base.js";
 
 import type { ProviderDiscoverer } from "../types.js";
@@ -52,6 +59,8 @@ import { MoonshotDiscoverer } from "./moonshot.js";
 import { GLMDiscoverer } from "./glm.js";
 import { ZAIDiscoverer } from "./zai.js";
 import { MiniMaxDiscoverer } from "./minimax.js";
+import { GENERIC_OPENAI_PROVIDERS, GenericOpenAICompatibleDiscoverer } from "./generic-openai.js";
+import { TypeSafeDiscoverer } from "./typesafe.js";
 import { normalizeProviderId } from "../provider-catalog.js";
 
 /**
@@ -85,10 +94,21 @@ const DISCOVERER_REGISTRY: Record<string, DiscovererFactory> = {
 	cerebras: () => new CerebrasDiscoverer(),
 	perplexity: () => new PerplexityDiscoverer(),
 	deepseek: () => new DeepSeekDiscoverer(),
-	moonshot: () => new MoonshotDiscoverer(),
+	moonshot: () => new MoonshotDiscoverer("global"),
+	"moonshot-cn": () => new MoonshotDiscoverer("cn"),
 	glm: () => new GLMDiscoverer(),
 	zai: () => new ZAIDiscoverer(),
-	minimax: () => new MiniMaxDiscoverer(),
+	minimax: () => new MiniMaxDiscoverer("global"),
+	"minimax-cn": () => new MiniMaxDiscoverer("cn"),
+	typesafe: () => new TypeSafeDiscoverer(),
+	// Every spec-driven OpenAI-compatible provider registers itself, so adding
+	// one to GENERIC_OPENAI_PROVIDERS is the only change needed here.
+	...Object.fromEntries(
+		GENERIC_OPENAI_PROVIDERS.map((spec): [string, DiscovererFactory] => [
+			spec.providerId,
+			(baseUrl) => new GenericOpenAICompatibleDiscoverer(spec, baseUrl),
+		]),
+	),
 };
 
 /**

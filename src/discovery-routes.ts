@@ -17,7 +17,7 @@ import type { ModelRegistry } from "./registry.js";
  * plane stays self-contained; the canonical `ModelMode` union lives in
  * `types.ts` and these strings must stay in sync with it.
  */
-const DISCOVERY_MODEL_MODES = ["chat", "embedding", "image", "video", "audio", "moderation", "rerank"] as const;
+const DISCOVERY_MODEL_MODES = ["chat", "embedding", "image", "video", "audio", "moderation", "rerank", "judgment"] as const;
 
 /** Allowed values for the {@link DiscoveryBindingQuery.priceMetric} query parameter. */
 const DISCOVERY_PRICE_METRICS = ["input", "output", "blended"] as const;

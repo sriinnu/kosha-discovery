@@ -1,7 +1,12 @@
 /**
  * kosha-discovery — Moonshot/Kimi provider discoverer.
  *
- * Moonshot (Kimi) exposes an OpenAI-compatible API.
+ * Moonshot (Kimi) exposes an OpenAI-compatible API on two independent hosts:
+ * `api.moonshot.ai` for international accounts and `api.moonshot.cn` for
+ * mainland China. They take different keys and publish different prices for
+ * the same model IDs, so kosha treats them as two providers (`moonshot` and
+ * `moonshot-cn`) sharing one classifier — collapsing them would make a model's
+ * price depend on which host answered last.
  * @module
  */
 
@@ -9,9 +14,21 @@ import type { OpenAICompatibleModel, ModelClassification } from "./openai-compat
 import { OpenAICompatibleDiscoverer } from "./openai-compatible.js";
 
 export class MoonshotDiscoverer extends OpenAICompatibleDiscoverer {
-	readonly providerId = "moonshot";
-	readonly providerName = "Moonshot (Kimi)";
-	readonly baseUrl = "https://api.moonshot.cn";
+	readonly providerId: string;
+	readonly providerName: string;
+	readonly baseUrl: string;
+
+	/**
+	 * @param region - `"global"` targets `api.moonshot.ai`; `"cn"` targets
+	 *                 `api.moonshot.cn` under the `moonshot-cn` provider ID.
+	 */
+	constructor(region: "global" | "cn" = "global") {
+		super();
+		const cn = region === "cn";
+		this.providerId = cn ? "moonshot-cn" : "moonshot";
+		this.providerName = cn ? "Moonshot (Kimi, China)" : "Moonshot (Kimi)";
+		this.baseUrl = cn ? "https://api.moonshot.cn" : "https://api.moonshot.ai";
+	}
 
 	protected isRelevantModel(model: OpenAICompatibleModel): boolean {
 		return !model.id.startsWith("ft:");

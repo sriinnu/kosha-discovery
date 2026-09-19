@@ -1,7 +1,8 @@
 {
 	"name": "@sriinnu/kosha-discovery",
-	"version": "1.5.1",
+	"version": "1.6.0",
 	"description": "AI Model & Provider Discovery Registry -- kosha (कोश) treasury of models",
+	"mcpName": "io.github.sriinnu/kosha-discovery",
 	"type": "module",
 	"packageManager": "pnpm@10.33.0",
 	"license": "MIT",
@@ -28,6 +29,13 @@
 		"vertex-ai",
 		"ai-models",
 		"provider-discovery",
+		"mcp",
+		"mcp-server",
+		"model-context-protocol",
+		"xai",
+		"grok",
+		"qwen",
+		"typesafe",
 		"model-routing",
 		"pricing",
 		"cli"
@@ -82,6 +90,7 @@
 	},
 	"files": [
 		"dist",
+		"server.json",
 		"logo.svg",
 		"README.md",
 		"LICENSE"

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { scanPayload, assertCleanPayload } from "../src/security.js";
 
+
 // ---------------------------------------------------------------------------
 // scanPayload — comprehensive threat detection
 // ---------------------------------------------------------------------------
@@ -27,13 +28,88 @@ describe("scanPayload", () => {
 		});
 
 		it("detects base64 without padding", () => {
-			const hit = scanPayload({ val: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuv" });
+			// Built rather than pasted so the assertion states its own intent:
+			// arbitrary bytes, base64-encoded, padding stripped.
+			const unpadded = Buffer.from("kosha discovery registry 2026 test vector")
+				.toString("base64")
+				.replace(/=+$/, "");
+			const hit = scanPayload({ val: unpadded });
 			expect(hit).toBeDefined();
 			expect(hit!.threat).toBe("base64");
 		});
 
+		it("allows digit-free identifier-shaped strings in the base64 alphabet", () => {
+			// A namespaced model ID from models.dev. 33 chars, mixed case, in the
+			// base64 alphabet — and flagging it used to reject the entire
+			// 222-provider catalog, taking every keyless fallback down with it.
+			expect(scanPayload({ "deepinfra/thinkingmachines/Inkling": { id: "x" } })).toBeUndefined();
+			expect(scanPayload({ details: "/api/v1/models/openrouter/free/endpoints" })).toBeUndefined();
+		});
+
+		it("detects a credential hidden behind base64 even with no digit signal", () => {
+			// Decoded rather than guessed at from character distribution, so the
+			// narrowing above does not create a hole to smuggle a key through.
+			const fakeKey = "sk-abcdefghijklmnopqrstuvwxyzABCDEF";
+			const encoded = Buffer.from(`token ${fakeKey}`).toString("base64");
+			const hit = scanPayload({ note: encoded });
+			expect(hit).toBeDefined();
+			expect(hit!.threat).toBe("base64");
+		});
+
+		it("detects a script payload hidden behind base64", () => {
+			const encoded = Buffer.from("<script>fetch('http://evil')</script>").toString("base64");
+			expect(scanPayload({ note: encoded })?.threat).toBe("base64");
+		});
+
 		it("ignores short strings that match base64 alphabet", () => {
 			expect(scanPayload({ id: "gpt4o", provider: "openai" })).toBeUndefined();
+		});
+	});
+
+	describe("terminal and rendering injection", () => {
+		it("rejects ANSI escape sequences in a model name", () => {
+			// kosha prints model names straight to a terminal, so an ESC here is
+			// enough to clear the screen or rewrite earlier output.
+			const hit = scanPayload({ name: "gpt-\u001b[2J\u001b[Hevil" });
+			expect(hit?.threat).toBe("control_chars");
+		});
+
+		it("rejects an OSC window-title sequence in a model ID", () => {
+			expect(scanPayload({ id: "model\u001b]0;pwned\u0007" })?.threat).toBe("control_chars");
+		});
+
+		it("rejects a control character used as an object key", () => {
+			expect(scanPayload({ "bad\u001bkey": 1 })?.threat).toBe("control_chars");
+		});
+
+		it("rejects bidi overrides that make text render unlike its bytes", () => {
+			expect(scanPayload({ id: "claude-\u202eopus" })?.threat).toBe("bidi_override");
+		});
+
+		it("rejects zero-width characters in an ID", () => {
+			expect(scanPayload({ id: "claude\u200b-opus" })?.threat).toBe("bidi_override");
+		});
+
+		it("still allows tab, newline, and carriage return in prose", () => {
+			expect(scanPayload({ description: "line one\nline two\ttabbed\r" })).toBeUndefined();
+		});
+	});
+
+	describe("nesting", () => {
+		it("reports excessive nesting instead of overflowing the stack", () => {
+			const root: Record<string, unknown> = {};
+			let cursor = root;
+			for (let i = 0; i < 500; i++) {
+				const next: Record<string, unknown> = {};
+				cursor.n = next;
+				cursor = next;
+			}
+			expect(scanPayload(root)?.threat).toBe("excessive_nesting");
+		});
+
+		it("accepts the nesting depth a real catalog uses", () => {
+			const realistic = { provider: { models: { "m-1": { cost: { batch: { input: 1 } } } } } };
+			expect(scanPayload(realistic)).toBeUndefined();
 		});
 	});
 

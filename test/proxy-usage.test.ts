@@ -326,3 +326,62 @@ describe("budget gate", () => {
 		});
 	});
 });
+
+describe("actualCostFromUsage — cache write TTL", () => {
+	const anthropicModel = {
+		...model,
+		pricing: { inputPerMillion: 10, outputPerMillion: 50, cacheReadPerMillion: 0.25, cacheWritePerMillion: 12.5 },
+	};
+
+	it("prices the 1h share at 2x input when the catalog has no explicit 1h rate", () => {
+		// Anthropic reports the TTL split inside cache_creation; the catalog's
+		// cacheWritePerMillion is the 5-minute rate, so the 1h share must not use it.
+		const out = actualCostFromUsage(
+			anthropicModel,
+			{
+				input_tokens: 0,
+				output_tokens: 0,
+				cache_creation_input_tokens: 1000,
+				cache_creation: { ephemeral_5m_input_tokens: 400, ephemeral_1h_input_tokens: 600 },
+			},
+			"anthropic",
+		);
+		// 400 × $12.5 + 600 × $20 per MTok
+		expect(out?.usd).toBeCloseTo(0.005 + 0.012, 9);
+	});
+
+	it("prefers an explicit cacheWrite1hPerMillion over the 2x ratio", () => {
+		const out = actualCostFromUsage(
+			{ ...anthropicModel, pricing: { ...anthropicModel.pricing, cacheWrite1hPerMillion: 18 } },
+			{
+				input_tokens: 0,
+				output_tokens: 0,
+				cache_creation_input_tokens: 1000,
+				cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 1000 },
+			},
+			"anthropic",
+		);
+		expect(out?.usd).toBeCloseTo(0.018, 9);
+	});
+
+	it("is unchanged when the provider reports no TTL split", () => {
+		const out = actualCostFromUsage(
+			anthropicModel,
+			{ input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 1000 },
+			"anthropic",
+		);
+		// All 1000 at the 5-minute rate — the behaviour before the split existed.
+		expect(out?.usd).toBeCloseTo(0.0125, 9);
+	});
+
+	it("keeps a non-Anthropic shape on its own write rate", () => {
+		// A 1h-shaped field arriving on an OpenAI-convention block must not
+		// conjure Anthropic's 2x ratio for a vendor that does not bill that way.
+		const out = actualCostFromUsage(
+			{ ...model, pricing: { inputPerMillion: 1, outputPerMillion: 4, cacheWritePerMillion: 0.625 } },
+			{ prompt_tokens: 0, completion_tokens: 0, cacheWriteTokens: 1000, cacheWrite1hTokens: 1000 },
+			"openai",
+		);
+		expect(out?.usd).toBeCloseTo(0.000625, 9);
+	});
+});

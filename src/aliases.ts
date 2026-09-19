@@ -57,6 +57,35 @@ export const DEFAULT_ALIASES: Readonly<Record<string, string>> = {
 	"gemini-flash": "gemini-2.5-flash",
 	"gemini-flash-lite": "gemini-2.5-flash-lite",
 
+	// ── xAI — Grok family ──
+	"grok": "grok-4.6",
+	"grok-4.6": "grok-4.6",
+	"grok-4.5": "grok-4.5",
+	"grok-4.3": "grok-4.3",
+	"grok-imagine": "grok-imagine-image",
+	"grok-imagine-video": "grok-imagine-video",
+
+	// ── TypeSafe — System One judgment models ──
+	// These answer questions with typed values; they are not chat models, so
+	// they never resolve from a bare family alias like `opus` or `gpt5`.
+	"jev": "jev-latest",
+	"jev-preview": "jev-preview",
+
+	// ── Thinking Machines — Inkling (served over the Anthropic wire) ──
+	"inkling": "thinkingmachines/Inkling",
+
+	// ── Alibaba — Qwen family via Model Studio / DashScope ──
+	"qwen-max": "qwen-max",
+	"qwen-plus": "qwen3.6-plus",
+	"qwen-coder": "qwen3-coder-plus",
+
+	// ── Other direct providers ──
+	"jamba": "jamba-large",
+	"jamba-mini": "jamba-mini",
+	"solar": "solar-pro4",
+	"mercury": "mercury-2.5",
+	"doubao": "doubao-seed-2-1-pro-260628",
+
 	// ── Moonshot — Kimi family ──
 	"kimi": "kimi-k3",
 	"kimi-k3": "kimi-k3",

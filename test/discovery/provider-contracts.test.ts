@@ -109,7 +109,7 @@ describe("provider contracts", () => {
 
 		expect(getProviderDescriptor("glm")).toMatchObject({
 			transport: "openai-compatible-http",
-			credentialEnvVars: ["GLM_API_KEY", "ZHIPUAI_API_KEY"],
+			credentialEnvVars: ["GLM_API_KEY", "ZHIPUAI_API_KEY", "ZHIPU_API_KEY"],
 		});
 
 		expect(getProviderDescriptor("zai")).toMatchObject({

@@ -819,12 +819,14 @@ function quarantinePricingMove(
 		outputPerMillion?: number;
 		cacheReadPerMillion?: number;
 		cacheWritePerMillion?: number;
+		cacheWrite1hPerMillion?: number;
 	} | null | undefined;
 	const fields: Array<keyof NonNullable<Rates>> = [
 		"inputPerMillion",
 		"outputPerMillion",
 		"cacheReadPerMillion",
 		"cacheWritePerMillion",
+		"cacheWrite1hPerMillion",
 	];
 	for (const side of ["pricing", "originPricing"] as const) {
 		const a = (previous[side] as Rates) ?? null;
@@ -877,8 +879,8 @@ export interface PricingAnomaly {
 	ts: number;
 	/** Stable model key, e.g. `anthropic:claude-opus-4-7`. */
 	key: string;
-	/** Which rate moved: `input`, `output`, `cacheRead`, `cacheWrite`. */
-	field: "input" | "output" | "cacheRead" | "cacheWrite";
+	/** Which rate moved: `input`, `output`, `cacheRead`, `cacheWrite`, `cacheWrite1h`. */
+	field: "input" | "output" | "cacheRead" | "cacheWrite" | "cacheWrite1h";
 	/** Whether the change was on `originPricing` (direct) or `pricing` (proxy). */
 	side: "origin" | "proxy";
 	previous: number;
@@ -920,6 +922,7 @@ function detectPricingAnomalies(
 		outputPerMillion?: number;
 		cacheReadPerMillion?: number;
 		cacheWritePerMillion?: number;
+		cacheWrite1hPerMillion?: number;
 	} | null
 		| undefined;
 	const fields: { name: PricingAnomaly["field"]; key: keyof NonNullable<RateBlock> }[] = [
@@ -927,6 +930,7 @@ function detectPricingAnomalies(
 		{ name: "output", key: "outputPerMillion" },
 		{ name: "cacheRead", key: "cacheReadPerMillion" },
 		{ name: "cacheWrite", key: "cacheWritePerMillion" },
+		{ name: "cacheWrite1h", key: "cacheWrite1hPerMillion" },
 	];
 	const sides: { name: PricingAnomaly["side"]; pick: (m: { pricing?: RateBlock; originPricing?: RateBlock }) => RateBlock }[] = [
 		{ name: "origin", pick: (m) => m.originPricing },

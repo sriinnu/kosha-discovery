@@ -58,7 +58,7 @@ describe("new first-class providers", () => {
 	it("discovers Moonshot/Kimi models", async () => {
 		const discoverer = new MoonshotDiscoverer();
 		mockFetch({
-			"https://api.moonshot.cn/v1/models": {
+			"https://api.moonshot.ai/v1/models": {
 				status: 200,
 				body: {
 					data: [

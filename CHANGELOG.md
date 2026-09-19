@@ -17,6 +17,123 @@ Nothing yet.
 
 ---
 
+## [1.6.0] — 2026-09-19
+
+### Fixed
+
+- **One upstream model name was silently disabling every keyless provider
+  fallback.** The `base64` threat rule flagged the models.dev catalog key
+  `deepinfra/thinkingmachines/Inkling` — 33 characters, mixed case, entirely
+  within the base64 alphabet — and because the scan was all-or-nothing, kosha
+  rejected the *whole* 222-provider catalog. On a machine without API keys (the
+  common case) that meant NVIDIA, Together, Fireworks, Groq, Mistral, DeepInfra,
+  Cohere, Cerebras, Perplexity, MiniMax and GLM all reported **zero models**,
+  with nothing in `discoveryErrors()` to say why. Live discovery went from 917
+  models across 23 providers to 2,458 across 34 once fixed.
+- **Moonshot pointed at the wrong region.** The sole `moonshot` provider used
+  `api.moonshot.cn`, the mainland-China host, which an international key cannot
+  authenticate against. `moonshot` is now `api.moonshot.ai` and `moonshot-cn`
+  carries the China host.
+- **GLM had no keyless fallback at all.** models.dev publishes it under the
+  `zhipuai` slug, which was missing from the seed map, so keyless GLM discovery
+  returned nothing.
+- **An auth failure was reported as a missing endpoint.** The OpenAI-compatible
+  endpoint chain walked past a 401 to a fallback path that never existed and
+  reported *that* path's 404, hiding every expired-key diagnosis. Only a 404
+  now advances to the next candidate; a 401/403/429 is reported as-is.
+- **A provider whose model-list path 404s no longer reports zero models** — it
+  falls back to the public catalog, since a gap in kosha's URL knowledge is not
+  the same as a provider having no models.
+- **The stale-but-offline path resolved aliases to nothing.** The curated
+  fallback lists predated GPT-5 and still pinned retired `gemini-*-preview-*`
+  snapshots, so with no key *and* no network, `kosha model gpt5` and
+  `kosha model gemini-pro` resolved to IDs with no card behind them.
+- **A catalog entry with no `case` in the credential resolver silently resolved
+  to no credential.** The resolver now derives env vars from the provider
+  descriptor by default, so adding a catalog entry is enough.
+
+### Added
+
+- **A separate rate for 1-hour cache writes.** Providers that offer more than
+  one cache lifetime charge more for the longer one — Anthropic bills a
+  5-minute write at 1.25× input and a 1-hour write at 2× — but every catalog we
+  ingest (models.dev, LiteLLM, OpenRouter, Vercel) publishes a single
+  `cache_write` rate, which is the short one. `ModelPricing` gains
+  `cacheWrite1hPerMillion`, `TokenUsage` gains `cacheWrite1hTokens` (read from
+  Anthropic's `cache_creation.ephemeral_1h_input_tokens`; a subset of the write
+  total, never added to it), and cost reconciliation prices that share at its
+  own rate — falling back to the published 2× input ratio for Anthropic-shaped
+  usage rather than billing a 1-hour write as if it were a 5-minute one.
+  Consumers that cache exclusively at 1 hour, as Claude Code does, were
+  under-counting every cache write by a factor of 1.6. Pricing-anomaly
+  detection watches the new rate too.
+
+- **TypeSafe (System One / Jev) as a first-class provider.** `GET
+  /v1/models` on `api.typesafe.ai`, credentials from `TYPESAFE_API_KEY` or
+  `JEV_API_KEY`, documented 64k request / 32k state limits, and input-only
+  pricing ($0.042/M in, $0 out — a typed judgment emits no billable
+  completion). Alias: `jev`.
+- **New `judgment` model mode**, plus a matching trusted capability and role.
+  System One models answer a question with a choice, probability, or score
+  rather than generating text, so tagging them `chat` would let a router send
+  them prompts they cannot answer. Threaded through the v1 discovery contract,
+  the HTTP mode enum, and the MCP tool schema.
+- **xAI (Grok) as a direct provider.** `api.x.ai/v1`, `XAI_API_KEY`, with Grok
+  Imagine split into `image` and `video` modes. xAI was already referenced as an
+  *origin* provider and already had seed-catalog slugs wired — the direct
+  provider itself was missing, so those slugs were dead code and no direct Grok
+  route ever appeared in `kosha routes`.
+- **Thinking Machines (Inkling).** Tinker serves it over an Anthropic-wire
+  endpoint with no model-list path, so it is discovered seed-only. Alias:
+  `inkling`.
+- **Regional provider pairs, priced independently.** `alibaba` / `alibaba-cn`,
+  `siliconflow` / `siliconflow-cn`, `moonshot` / `moonshot-cn`, `minimax` /
+  `minimax-cn`, `stepfun` / `stepfun-cn`. The same model ID can cost very
+  different amounts per region — Qwen 2.5 72B is $1.40/M international against
+  $0.574/M in China — so merging the regions would make a model's price depend
+  on which host answered last.
+- **Nine further providers**: Alibaba Model Studio (Qwen), Volcengine Ark
+  (Doubao), Inception Labs (Mercury), AI21 (Jamba), Upstage (Solar), Baseten,
+  Nebius Token Factory, Novita AI, SiliconFlow, Hugging Face Inference
+  Providers, Ollama Cloud. 25 providers → 45, counting the regional pairs.
+- **`control_chars` and `bidi_override` threat rules.** kosha prints
+  catalog-derived model names straight to a terminal, so an ESC byte in an
+  upstream name could clear the screen, rewrite earlier output, or set the
+  window title — enough to make `kosha list` show a different model than the one
+  it routes to. Bidi and zero-width overrides ("trojan source") make text render
+  unlike its bytes.
+- **`excessive_nesting` rule.** A few megabytes of `[[[[…]]]]` previously
+  overflowed the stack inside the scanner before any field was read.
+- **base64 detection now decodes rather than only guessing.** Any string in the
+  base64 alphabet is decoded and its plaintext re-scanned for credential,
+  script, and shell patterns, so an encoded key is caught on its contents
+  regardless of character distribution.
+- **MCP registry publishing, automated.** `server.json` plus `mcpName` in
+  `package.json` register the server as `io.github.sriinnu/kosha-discovery`, and
+  the release workflow publishes it with `mcp-publisher login github-oidc` — the
+  job's own OIDC token proves the `io.github.sriinnu/*` namespace, so there is no
+  interactive login and no secret to rotate. The step runs after the npm publish,
+  because the registry verifies ownership by reading `mcpName` out of the
+  published package, and it refuses to publish a manifest whose version does not
+  match the tag.
+- **`quarantineEntries()`** for the large community catalogs: a tripping entry
+  is dropped and recorded (`modelsDevQuarantined()`, `liteLLMQuarantined()`)
+  instead of taking the whole feed down. A feed where more than half the entries
+  trip still fails closed, and a poisoned top-level key is never quarantined.
+
+### Changed
+
+- **Adding an OpenAI-compatible provider is now a table entry, not a class.**
+  `GenericOpenAICompatibleDiscoverer` takes the four things that actually vary
+  (base URL, model-list path, origin derivation, which IDs to keep) as data in
+  `GENERIC_OPENAI_PROVIDERS`. Providers with genuinely non-trivial
+  classification — OpenRouter, Vercel, Groq — keep their own discoverers.
+- Aliases added: `grok`, `jev`, `inkling`, `qwen-max`, `qwen-plus`,
+  `qwen-coder`, `jamba`, `solar`, `mercury`, `doubao`.
+- GLM additionally accepts `ZHIPU_API_KEY`, the name models.dev documents.
+
+---
+
 ## [1.5.1] — 2026-09-12
 
 ### Changed

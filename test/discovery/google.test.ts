@@ -90,7 +90,7 @@ describe("GoogleDiscoverer", () => {
 		mockFetchError(new Error("network unreachable"));
 		const result = await discoverer.discover(noCredential);
 		expect(result.length).toBeGreaterThan(0);
-		expect(result.some((m) => m.id === "gemini-2.5-pro-preview-05-06")).toBe(true);
+		expect(result.some((m) => m.id === "gemini-2.5-pro")).toBe(true);
 		expect(result.every((m) => m.provider === "google")).toBe(true);
 		expect(result.every((m) => m.source === "manual")).toBe(true);
 	});

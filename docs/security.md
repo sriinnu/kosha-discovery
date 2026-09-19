@@ -4,19 +4,63 @@ Kosha applies zero-trust guardrails to all external data -- every API response, 
 
 ## Runtime Payload Scanning
 
-All external data passes through `assertCleanPayload()` which deep-scans every key and string value for 9 threat types:
+All external data passes through `assertCleanPayload()` which deep-scans every key and string value for 12 threat types:
 
 | Threat | What it catches |
 |--------|----------------|
 | `credential_leak` | `sk-*`, `AKIA*`, `ghp_*`, `gho_*`, `xoxb-*`, `xoxp-*`, `AIza*`, `ya29.*`, `glpat-*`, `npm_*`, `pypi-*`, `hf_*`, Bearer tokens |
-| `base64` | 32+ char base64-encoded blobs (credential exfiltration) |
+| `base64` | 32+ char base64 blobs, by character distribution **or** by decoding them and re-scanning the plaintext |
 | `script_injection` | `<script>`, `javascript:`, `on*=` event handlers |
 | `shell_injection` | `$(cmd)`, backtick execution, pipe/chain to curl/wget/bash |
 | `data_uri` | `data:text/html`, `data:application/*` |
 | `null_byte` | `\x00`, `\u0000`, `%00` |
+| `control_chars` | C0/C1 control characters and DEL — ANSI/terminal escape injection |
+| `bidi_override` | Bidi and zero-width formatting overrides ("trojan source") |
 | `proto_pollution` | `__proto__` keys |
 | `hex_payload` | 64+ char hex blobs |
 | `oversized_string` | Values >2048 chars |
+| `excessive_nesting` | Payloads nested deeper than 64 levels |
+
+### Terminal escape injection
+
+Kosha prints catalog-derived model IDs and names straight to a terminal. An ESC
+byte in an upstream model name is enough to move the cursor, clear the screen,
+rewrite output already printed, or set the window title — so a provider could
+make `kosha list` display a different model than the one it routes to. The
+`control_chars` and `bidi_override` rules catch this at ingestion, which covers
+the CLI, the HTTP API, and the MCP server in one place rather than escaping at
+each print site.
+
+### How `base64` decides
+
+A character-class heuristic alone cannot separate real base64 from a namespaced
+model ID: `deepinfra/thinkingmachines/Inkling` is 33 characters drawn entirely
+from the base64 alphabet. Requiring a digit alongside mixed case separates the
+two, because base64 of random bytes is digit-dense while hand-written
+identifiers often are not. Measured over 200k samples, a random 32-byte blob's
+base64 lacks a digit 0.06% of the time, and an `sk-`-shaped ASCII key never did.
+
+The remaining gap is closed by decoding rather than guessing: any string in the
+base64 alphabet is decoded and the plaintext re-scanned for credential, script,
+and shell patterns. An encoded key is caught on its contents regardless of how
+its characters happen to be distributed.
+
+### Quarantine vs. rejection
+
+`assertCleanPayload()` rejects the whole payload, which is right for data kosha
+depends on in full — a provider's own `/v1/models` response, a cache file it
+wrote itself.
+
+It is the wrong policy for the large community catalogs. models.dev aggregates
+200+ contributors and LiteLLM thousands of model entries, so an all-or-nothing
+scan lets any one contributor's unusual model name disable **every** keyless
+provider fallback at once. Those two loaders use `quarantineEntries()` instead:
+a tripping entry is dropped and recorded (`modelsDevQuarantined()`,
+`liteLLMQuarantined()`), and the rest of the catalog still loads. A feed where
+more than half the entries trip is not one bad row — that still fails closed.
+
+A poisoned top-level *key* (`__proto__`, a null byte) is never quarantined: it
+is a structural attack on the object, so the feed is rejected outright.
 
 ### Gated Ingestion Points
 
@@ -74,3 +118,11 @@ Hardened to block:
 ## Background
 
 These guardrails were motivated by the LiteLLM supply-chain attack where base64-encoded credentials were injected into a community-maintained JSON file. Kosha takes a zero-tolerance stance: base64 and secrets are never expected in model metadata, pricing data, or provider API responses.
+
+The counterweight, learned the hard way: a tripwire that fails closed over an
+entire feed is itself an availability bug. One legitimate model name published
+upstream (`deepinfra/thinkingmachines/Inkling`) tripped the base64 rule and made
+kosha reject the whole models.dev catalog — silently zeroing every provider that
+had no API key, which is most of them on a fresh machine. The fix was not to
+weaken the defence but to make it precise (decode instead of guess) and to
+narrow its blast radius (quarantine the entry, not the feed).

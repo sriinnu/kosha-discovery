@@ -20,6 +20,7 @@ export type TrustedCapability =
 	| "vision"
 	| "video_generation"
 	| "rerank"
+	| "judgment"
 	| "structured_output"
 	| "streaming"
 	| "long_context"
@@ -253,6 +254,12 @@ export const DISCOVERY_ROLE_DEFINITIONS: readonly DiscoveryRoleDefinition[] = [
 		suitabilityHint: "Document or passage reranking pipelines.",
 	},
 	{
+		roleId: "judgment",
+		requiredCapabilities: ["judgment"],
+		preferredCapabilities: ["structured_output", "low_latency", "cheap_inference"],
+		suitabilityHint: "Typed decisions — choices, probabilities, scores — that code consumes directly.",
+	},
+	{
 		roleId: "local_exec",
 		requiredCapabilities: ["local_exec"],
 		preferredCapabilities: ["low_latency", "cheap_inference"],
@@ -295,6 +302,12 @@ export function trustedCapabilitiesForModel(model: ModelCard, descriptor: Provid
 	if (rawCaps.includes("vision")) caps.add("vision");
 	if (model.mode === "video" || rawCaps.includes("video_generation")) caps.add("video_generation");
 	if (rawCaps.includes("rerank") || lowerId.includes("rerank")) caps.add("rerank");
+	// System One / judgment models answer with typed values, not generated text,
+	// so they never get `chat` or `streaming` — `judgment` is the routable tag.
+	if (model.mode === "judgment" || rawCaps.includes("judgment")) {
+		caps.add("judgment");
+		caps.add("structured_output");
+	}
 	if (descriptor.isLocal) caps.add("local_exec");
 
 	// Chat-capable providers almost universally expose streaming, so I surface it

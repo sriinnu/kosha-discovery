@@ -62,6 +62,13 @@ const PROVIDER_SLUG_ALIASES: Record<string, readonly string[]> = {
 	cerebras: ["cerebras"],
 	deepinfra: ["deepinfra"],
 	xai: ["xai"],
+	glm: ["zhipu", "zhipuai"],
+	alibaba: ["dashscope"],
+	volcengine: ["volcengine"],
+	nebius: ["nebius"],
+	novita: ["novita"],
+	huggingface: ["huggingface"],
+	ai21: ["ai21"],
 };
 
 /**

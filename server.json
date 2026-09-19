@@ -1,0 +1,73 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.sriinnu/kosha-discovery",
+  "title": "Kosha Model Discovery",
+  "description": "Tells your agent which model to use and what it costs, across 45 providers and local runtimes.",
+  "websiteUrl": "https://github.com/sriinnu/kosha-discovery",
+  "repository": {
+    "url": "https://github.com/sriinnu/kosha-discovery",
+    "source": "github"
+  },
+  "version": "1.6.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@sriinnu/kosha-discovery",
+      "version": "1.6.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "ANTHROPIC_API_KEY",
+          "description": "Anthropic API key. Optional \u2014 without it, Anthropic models are read from the public models.dev / LiteLLM catalogs instead of the live API.",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "OPENAI_API_KEY",
+          "description": "OpenAI API key. Optional \u2014 falls back to the public catalogs when absent.",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "GOOGLE_API_KEY",
+          "description": "Google AI Studio / Gemini API key. Optional.",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "OPENROUTER_API_KEY",
+          "description": "OpenRouter key. Optional for discovery (unauthenticated requests are rate-limited), required to execute through OpenRouter.",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "XAI_API_KEY",
+          "description": "xAI (Grok) API key. Optional.",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "TYPESAFE_API_KEY",
+          "description": "TypeSafe System One (Jev) API key. Optional.",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "KOSHA_CACHE_TTL_HOURS",
+          "description": "Override the discovery cache TTL. Defaults to 24 hours.",
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
+    }
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "tool": "manual",
+      "notes": "Every provider key is optional. With no credentials at all, kosha still answers from the public models.dev and LiteLLM catalogs plus a curated offline list, so the server is useful on a fresh machine. Full env var reference: docs/credentials.md."
+    }
+  }
+}
