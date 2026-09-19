@@ -17,6 +17,37 @@ Nothing yet.
 
 ---
 
+## [1.6.1] — 2026-09-19
+
+### Fixed
+
+- **The new `bidi_override` rule cost 372 models.** It flagged every zero-width
+  formatting character, and OpenAI's own description of GPT-5.2-Codex contains a
+  U+2060 WORD JOINER — which made the scan reject Vercel AI Gateway's entire
+  375-model payload. Exactly the failure 1.6.0 was released to fix, reintroduced
+  by the rule added alongside it. The rule now names only the controls that
+  actually reorder rendering (U+202A–U+202E, U+2066–U+2069, the trojan-source
+  set). U+200C ZWNJ and U+200D ZWJ are explicitly allowed: they are *required*
+  for correct Devanagari, Persian, Arabic and emoji rendering, and a registry
+  called कोश has no business calling them attacks.
+- **The published snapshot had been stale since 2026-07-17** while every
+  scheduled run reported success. The commit guard required at least one
+  authenticated provider, no provider secrets are configured on the repo, so the
+  condition was never satisfiable and the job silently skipped its commit every
+  week. The guard now asks whether the snapshot is *healthy* instead: at least
+  500 models across at least 10 providers, and not more than 20% thinner than the
+  snapshot already committed. Keyless discovery is not a dry run — it is what
+  most consumers get.
+- **The MCP registry publish raced npm's own read API.** The registry resolves
+  the npm version before it will register a manifest, and npm's read API lags its
+  publish by tens of seconds — so on the 1.6.0 release the step failed with
+  `version '1.6.0' was not found (status: 404)` moments after a successful
+  publish, and the registry publish had to be re-run by hand. The release
+  workflow now waits for the version to actually resolve on npm (up to five
+  minutes) before publishing the manifest.
+
+---
+
 ## [1.6.0] — 2026-09-19
 
 ### Fixed
