@@ -1,6 +1,6 @@
 {
 	"name": "@sriinnu/kosha-discovery",
-	"version": "1.6.0",
+	"version": "1.6.1",
 	"description": "AI Model & Provider Discovery Registry -- kosha (कोश) treasury of models",
 	"mcpName": "io.github.sriinnu/kosha-discovery",
 	"type": "module",

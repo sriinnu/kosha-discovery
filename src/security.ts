@@ -129,12 +129,25 @@ function decodesToThreat(value: string): boolean {
 const CONTROL_CHAR_PATTERN = new RegExp("[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f-\\u009f]");
 
 /**
- * Bidirectional and invisible formatting overrides — the "trojan source"
- * family. These reorder how text renders without changing the bytes, so a
- * model ID can display as one thing and resolve as another. Nothing in a model
- * catalogue needs them.
+ * Bidirectional overrides, embeddings, and isolates — the "trojan source"
+ * family (CVE-2021-42574). These reorder how text renders without changing the
+ * bytes, so a model ID can display as one thing and resolve as another.
+ *
+ * Scoped deliberately to U+202A–U+202E and U+2066–U+2069, the controls that
+ * actually reorder. The zero-width formatting characters are NOT here, and that
+ * is the point:
+ *
+ *  - U+200C ZWNJ and U+200D ZWJ are *required* for correct rendering of
+ *    Devanagari, Persian, and Arabic, and for emoji sequences. A registry named
+ *    कोश has no business calling them attacks.
+ *  - U+2060 WORD JOINER, U+200B ZWSP, and U+FEFF BOM are typographic. Flagging
+ *    them cost 372 models: OpenAI's own description of GPT-5.2-Codex carries a
+ *    WORD JOINER, which made the scan reject Vercel AI Gateway's entire payload.
+ *
+ * That is the same failure this module was just fixed for — an over-broad rule
+ * failing closed over a whole feed — so the rule now names only what reorders.
  */
-const BIDI_OVERRIDE_PATTERN = /[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/;
+const BIDI_OVERRIDE_PATTERN = /[\u202a-\u202e\u2066-\u2069]/;
 
 /** Known credential prefixes — each must be followed by enough chars to be a real key. */
 const CREDENTIAL_PATTERNS = [

@@ -333,19 +333,72 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          AUTH_COUNT="$(node --input-type=module <<'NODE'
+          # The old rule was "commit only if at least one provider
+          # authenticated". No provider secrets are configured on this repo, so
+          # that rule was never satisfiable and the published snapshot sat at
+          # 2026-07-17 for two months while every scheduled run reported success.
+          #
+          # Keyless discovery is not a dry run — it reads models.dev and LiteLLM
+          # and currently yields ~2,800 models across 35 providers, which is the
+          # data most consumers get anyway. So the guard now asks the question
+          # that actually matters: is this snapshot healthy, and is it not a
+          # material regression on the one already committed?
+          # The generate step has already overwritten OUTPUT_PATH, so the
+          # snapshot to compare against comes out of git, not off disk.
+          COMMITTED_PATH="$RUNNER_TEMP/committed-snapshot.json"
+          if git show "HEAD:$OUTPUT_PATH" > "$COMMITTED_PATH" 2>/dev/null; then
+            echo "comparing against the committed snapshot at HEAD" >> "$OBS_LOG"
+          else
+            rm -f "$COMMITTED_PATH"
+            echo "no committed snapshot at HEAD to compare against" >> "$OBS_LOG"
+          fi
+          export COMMITTED_PATH
+          DECISION="$(node --input-type=module <<'NODE'
           import { readFile } from "node:fs/promises";
-          const snapshot = JSON.parse(await readFile(process.env.OUTPUT_PATH, "utf8"));
-          const authenticatedProviders = snapshot.providers.filter((provider) => provider.authenticated === true);
-          process.stdout.write(String(authenticatedProviders.length));
+
+          const MIN_MODELS = 500;
+          const MIN_PROVIDERS = 10;
+          const MAX_SHRINK = 0.2; // refuse a snapshot >20% thinner than the current one
+
+          const fresh = JSON.parse(await readFile(process.env.OUTPUT_PATH, "utf8"));
+          const authed = fresh.providers.filter((p) => p.authenticated === true).length;
+          const withModels = fresh.providers.filter((p) => (p.models?.length ?? 0) > 0).length;
+          const reasons = [];
+
+          if ((fresh.modelCount ?? 0) < MIN_MODELS) {
+            reasons.push(`only ${fresh.modelCount} models (floor ${MIN_MODELS})`);
+          }
+          if (withModels < MIN_PROVIDERS) {
+            reasons.push(`only ${withModels} providers returned models (floor ${MIN_PROVIDERS})`);
+          }
+
+          // Compare against the snapshot already in the tree, when there is one.
+          let previous = null;
+          try {
+            previous = JSON.parse(await readFile(process.env.COMMITTED_PATH, "utf8"));
+          } catch {
+            /* first snapshot, or the path moved — nothing to compare against */
+          }
+          if (previous?.modelCount > 0) {
+            const ratio = (fresh.modelCount ?? 0) / previous.modelCount;
+            if (ratio < 1 - MAX_SHRINK) {
+              reasons.push(
+                `model count fell from ${previous.modelCount} to ${fresh.modelCount} (${Math.round((1 - ratio) * 100)}% thinner)`,
+              );
+            }
+          }
+
+          process.stdout.write(JSON.stringify({ allow: reasons.length === 0, reasons, authed, withModels }));
           NODE
           )"
-          echo "AUTHENTICATED_PROVIDER_COUNT=$AUTH_COUNT" >> "$GITHUB_ENV"
-          if [[ "${AUTH_COUNT}" == "0" ]]; then
-            echo "ALLOW_COMMIT=false" >> "$GITHUB_ENV"
-            echo "No authenticated providers detected. Commit will be skipped." >> "$OBS_LOG"
-          else
+          echo "AUTHENTICATED_PROVIDER_COUNT=$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).authed))' "$DECISION")" >> "$GITHUB_ENV"
+          if node -e 'process.exit(JSON.parse(process.argv[1]).allow ? 0 : 1)' "$DECISION"; then
             echo "ALLOW_COMMIT=true" >> "$GITHUB_ENV"
+            echo "Snapshot passed the health guard." >> "$OBS_LOG"
+          else
+            echo "ALLOW_COMMIT=false" >> "$GITHUB_ENV"
+            node -e 'console.log("Snapshot rejected by health guard: " + JSON.parse(process.argv[1]).reasons.join("; "))' "$DECISION" >> "$OBS_LOG"
+            node -e 'console.log("::warning::Snapshot rejected by health guard: " + JSON.parse(process.argv[1]).reasons.join("; "))' "$DECISION"
           fi
 
       - name: Safety scan snapshot for secrets

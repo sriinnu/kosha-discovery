@@ -86,8 +86,23 @@ describe("scanPayload", () => {
 			expect(scanPayload({ id: "claude-\u202eopus" })?.threat).toBe("bidi_override");
 		});
 
-		it("rejects zero-width characters in an ID", () => {
-			expect(scanPayload({ id: "claude\u200b-opus" })?.threat).toBe("bidi_override");
+		it("rejects every bidi control that reorders rendering", () => {
+			for (const ch of ["\u202a", "\u202b", "\u202c", "\u202d", "\u202e", "\u2066", "\u2067", "\u2068", "\u2069"]) {
+				expect(scanPayload({ id: `claude${ch}opus` })?.threat, `U+${ch.codePointAt(0)!.toString(16)}`).toBe(
+					"bidi_override",
+				);
+			}
+		});
+
+		it("allows zero-width formatting characters that legitimately appear in prose", () => {
+			// U+2060 WORD JOINER appears in OpenAI's own description of
+			// GPT-5.2-Codex; flagging it made the scan reject Vercel AI Gateway's
+			// entire 375-model payload. ZWNJ and ZWJ are required for correct
+			// Devanagari, Persian, Arabic, and emoji rendering.
+			expect(scanPayload({ description: "GPT\u20115.2\u2060 optimized for coding" })).toBeUndefined();
+			expect(scanPayload({ id: "claude\u200b-opus" })).toBeUndefined();
+			expect(scanPayload({ name: "\u0915\u094b\u0936\u200c\u200d" })).toBeUndefined();
+			expect(scanPayload({ note: "\ufeffleading bom" })).toBeUndefined();
 		});
 
 		it("still allows tab, newline, and carriage return in prose", () => {
