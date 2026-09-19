@@ -128,11 +128,30 @@ jobs:
               throw new Error(`mcpName ${pkg.mcpName} does not match server name ${srv.name}`);
             }
           '
+          # The registry resolves the npm version before it will register the
+          # manifest, and npm's read API lags its own publish by tens of
+          # seconds. On the 1.6.0 release that raced and the step failed with
+          # "version '1.6.0' was not found (status: 404)" moments after a
+          # successful publish, so wait for the version to actually resolve
+          # instead of relying on luck.
+          PKG_VERSION="${RELEASE_TAG#v}"
+          for attempt in $(seq 1 30); do
+            if npm view "${PKG_NAME}@${PKG_VERSION}" version >/dev/null 2>&1; then
+              echo "npm has ${PKG_NAME}@${PKG_VERSION} (attempt ${attempt})"
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "::error::${PKG_NAME}@${PKG_VERSION} did not appear on npm within 5 minutes" >&2
+              exit 1
+            fi
+            sleep 10
+          done
           /tmp/mcp-publisher login github-oidc
           /tmp/mcp-publisher publish
         env:
           MCP_PUBLISHER_VERSION: v1.8.1
           RELEASE_TAG: ${{ github.event.inputs.tag }}
+          PKG_NAME: "@sriinnu/kosha-discovery"
 
       - name: Create GitHub release
         if: ${{ github.event.inputs.create_github_release == 'true' }}

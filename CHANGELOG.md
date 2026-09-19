@@ -13,7 +13,15 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **The MCP registry publish raced npm's own read API.** The registry resolves
+  the npm version before it will register a manifest, and npm's read API lags its
+  publish by tens of seconds — so on the 1.6.0 release the step failed with
+  `version '1.6.0' was not found (status: 404)` moments after a successful
+  publish, and the registry publish had to be re-run by hand. The release
+  workflow now waits for the version to actually resolve on npm (up to five
+  minutes) before publishing the manifest.
 
 ---
 
