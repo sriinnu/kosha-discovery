@@ -17,6 +17,20 @@ Nothing yet.
 
 ---
 
+## [1.6.2] — 2026-09-19
+
+### Changed
+
+- **The README and npm description now lead with what kosha does** rather than
+  which category it belongs to. Both opened by restating the package name, which
+  told a passerby nothing — and that matters more than usual here: npm search is
+  download-ranked, so from zero the only discovery paths are the MCP registry and
+  someone landing on the repo, and in both the first sentence is the whole pitch.
+  Released on its own because the npm package page only picks up a description
+  change on publish.
+
+---
+
 ## [1.6.1] — 2026-09-19
 
 ### Fixed
