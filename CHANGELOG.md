@@ -108,6 +108,14 @@ Nothing yet.
   base64 alphabet is decoded and its plaintext re-scanned for credential,
   script, and shell patterns, so an encoded key is caught on its contents
   regardless of character distribution.
+- **MCP registry publishing, automated.** `server.json` plus `mcpName` in
+  `package.json` register the server as `io.github.sriinnu/kosha-discovery`, and
+  the release workflow publishes it with `mcp-publisher login github-oidc` — the
+  job's own OIDC token proves the `io.github.sriinnu/*` namespace, so there is no
+  interactive login and no secret to rotate. The step runs after the npm publish,
+  because the registry verifies ownership by reading `mcpName` out of the
+  published package, and it refuses to publish a manifest whose version does not
+  match the tag.
 - **`quarantineEntries()`** for the large community catalogs: a tripping entry
   is dropped and recorded (`modelsDevQuarantined()`, `liteLLMQuarantined()`)
   instead of taking the whole feed down. A feed where more than half the entries

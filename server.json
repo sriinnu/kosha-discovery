@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.sriinnu/kosha-discovery",
   "title": "Kosha Model Discovery",
-  "description": "Tells an agent which model to use and what it will cost: live model, pricing, context-limit, and provider-health data discovered across 45 AI providers and local runtimes.",
+  "description": "Tells your agent which model to use and what it costs, across 45 providers and local runtimes.",
   "websiteUrl": "https://github.com/sriinnu/kosha-discovery",
   "repository": {
     "url": "https://github.com/sriinnu/kosha-discovery",
@@ -21,13 +21,13 @@
       "environmentVariables": [
         {
           "name": "ANTHROPIC_API_KEY",
-          "description": "Anthropic API key. Optional — without it, Anthropic models are read from the public models.dev / LiteLLM catalogs instead of the live API.",
+          "description": "Anthropic API key. Optional \u2014 without it, Anthropic models are read from the public models.dev / LiteLLM catalogs instead of the live API.",
           "isRequired": false,
           "isSecret": true
         },
         {
           "name": "OPENAI_API_KEY",
-          "description": "OpenAI API key. Optional — falls back to the public catalogs when absent.",
+          "description": "OpenAI API key. Optional \u2014 falls back to the public catalogs when absent.",
           "isRequired": false,
           "isSecret": true
         },

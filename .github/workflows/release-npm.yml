@@ -17,6 +17,11 @@ on:
         required: false
         default: true
         type: boolean
+      publish_mcp:
+        description: "Publish kosha-mcp to the MCP registry (io.github.sriinnu/kosha-discovery)"
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -88,6 +93,46 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public --provenance
+
+      # The MCP registry verifies npm ownership by reading `mcpName` out of the
+      # PUBLISHED package.json and matching it against server.json's `name`, so
+      # this has to run after the npm publish above. Auth is the job's own OIDC
+      # token — the `io.github.sriinnu/*` namespace is proved by the repo owner,
+      # so there is no interactive login and no secret to rotate.
+      - name: Publish to the MCP registry
+        if: ${{ github.event.inputs.publish_mcp == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64) ASSET=mcp-publisher_linux_amd64.tar.gz ;;
+            aarch64|arm64) ASSET=mcp-publisher_linux_arm64.tar.gz ;;
+            *) echo "unsupported runner arch: $(uname -m)" >&2; exit 1 ;;
+          esac
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/${ASSET}" \
+            -o /tmp/mcp-publisher.tar.gz
+          tar -xzf /tmp/mcp-publisher.tar.gz -C /tmp mcp-publisher
+          chmod +x /tmp/mcp-publisher
+          # server.json pins its own version; fail loudly rather than publishing
+          # a manifest that points at a different release than the tag.
+          node -e '
+            const fs = require("node:fs");
+            const srv = JSON.parse(fs.readFileSync("server.json", "utf8"));
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            const tag = process.env.RELEASE_TAG.replace(/^v/, "");
+            const seen = [srv.version, srv.packages[0].version, pkg.version];
+            if (seen.some((v) => v !== tag)) {
+              throw new Error(`version mismatch: tag ${tag} vs ${seen.join(", ")}`);
+            }
+            if (pkg.mcpName !== srv.name) {
+              throw new Error(`mcpName ${pkg.mcpName} does not match server name ${srv.name}`);
+            }
+          '
+          /tmp/mcp-publisher login github-oidc
+          /tmp/mcp-publisher publish
+        env:
+          MCP_PUBLISHER_VERSION: v1.8.1
+          RELEASE_TAG: ${{ github.event.inputs.tag }}
 
       - name: Create GitHub release
         if: ${{ github.event.inputs.create_github_release == 'true' }}
