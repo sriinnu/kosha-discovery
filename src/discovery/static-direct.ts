@@ -29,6 +29,30 @@ export interface StaticModelSeed {
  */
 export const STATIC_OPENAI_MODELS: readonly StaticModelSeed[] = [
 	{
+		id: "gpt-6.1-sol",
+		name: "GPT-6.1 Sol",
+		mode: "chat",
+		capabilities: ["chat", "vision", "function_calling", "reasoning", "structured_output", "code", "nlu"],
+	},
+	{
+		id: "gpt-6-astra",
+		name: "GPT-6 Astra",
+		mode: "chat",
+		capabilities: ["chat", "vision", "function_calling", "reasoning", "structured_output", "code", "nlu"],
+	},
+	{
+		id: "gpt-6-sol",
+		name: "GPT-6 Sol",
+		mode: "chat",
+		capabilities: ["chat", "vision", "function_calling", "reasoning", "structured_output", "code", "nlu"],
+	},
+	{
+		id: "gpt-6-luna",
+		name: "GPT-6 Luna",
+		mode: "chat",
+		capabilities: ["chat", "vision", "function_calling", "reasoning", "structured_output", "code", "nlu"],
+	},
+	{
 		id: "gpt-5",
 		name: "GPT-5",
 		mode: "chat",
@@ -57,6 +81,12 @@ export const STATIC_OPENAI_MODELS: readonly StaticModelSeed[] = [
 		name: "GPT-4.1",
 		mode: "chat",
 		capabilities: ["chat", "vision", "function_calling", "structured_output", "code", "nlu"],
+	},
+	{
+		id: "o1",
+		name: "o1",
+		mode: "chat",
+		capabilities: ["chat", "code", "nlu"],
 	},
 	{
 		id: "o3",
@@ -134,7 +164,7 @@ const CLAUDE_CURRENT_CAPABILITIES: readonly string[] = [
  * Curated Anthropic models for unauthenticated/offline discovery mode.
  *
  * Context / output limits are the documented Anthropic first-party values
- * (Sep 2026): 1M context and 128K output across the Claude 5 and Opus /
+ * (Oct 2026): 1M context and 128K output across the Claude 5 and Opus /
  * Sonnet 4.6+ tiers, 200K / 64K for Haiku 4.5. Pricing is left to the
  * public-seed / LiteLLM enrichment pass so a price change never requires a
  * code release.
@@ -157,6 +187,22 @@ export const STATIC_ANTHROPIC_MODELS: readonly StaticModelSeed[] = [
 		maxOutputTokens: 128_000,
 	},
 	{
+		id: "claude-mythos-5-1",
+		name: "Claude Mythos 5.1",
+		mode: "chat",
+		capabilities: [...CLAUDE_CURRENT_CAPABILITIES],
+		contextWindow: 1_000_000,
+		maxOutputTokens: 128_000,
+	},
+	{
+		id: "claude-opus-5-5",
+		name: "Claude Opus 5.5",
+		mode: "chat",
+		capabilities: [...CLAUDE_CURRENT_CAPABILITIES],
+		contextWindow: 1_000_000,
+		maxOutputTokens: 128_000,
+	},
+	{
 		id: "claude-opus-5",
 		name: "Claude Opus 5",
 		mode: "chat",
@@ -167,6 +213,22 @@ export const STATIC_ANTHROPIC_MODELS: readonly StaticModelSeed[] = [
 	{
 		id: "claude-opus-4-8",
 		name: "Claude Opus 4.8",
+		mode: "chat",
+		capabilities: [...CLAUDE_CURRENT_CAPABILITIES],
+		contextWindow: 1_000_000,
+		maxOutputTokens: 128_000,
+	},
+	{
+		id: "claude-opus-4-7",
+		name: "Claude Opus 4.7",
+		mode: "chat",
+		capabilities: [...CLAUDE_CURRENT_CAPABILITIES],
+		contextWindow: 1_000_000,
+		maxOutputTokens: 128_000,
+	},
+	{
+		id: "claude-sonnet-5-5",
+		name: "Claude Sonnet 5.5",
 		mode: "chat",
 		capabilities: [...CLAUDE_CURRENT_CAPABILITIES],
 		contextWindow: 1_000_000,
@@ -201,11 +263,23 @@ export const STATIC_ANTHROPIC_MODELS: readonly StaticModelSeed[] = [
 /**
  * Curated Google/Gemini models for unauthenticated/offline discovery mode.
  *
- * These are the GA IDs that {@link DEFAULT_ALIASES} resolves to. The dated
+ * These are the IDs that {@link DEFAULT_ALIASES} resolves to. The dated
  * `-preview-` snapshots this list used to carry are retired and no longer
  * accept requests, so they are not worth offering as a fallback.
  */
 export const STATIC_GOOGLE_MODELS: readonly StaticModelSeed[] = [
+	{
+		id: "gemini-3.8-flash",
+		name: "Gemini 3.8 Flash",
+		mode: "chat",
+		capabilities: ["chat", "vision", "function_calling", "reasoning", "structured_output", "code", "nlu"],
+	},
+	{
+		id: "gemini-3.5-flash-lite",
+		name: "Gemini 3.5 Flash-Lite",
+		mode: "chat",
+		capabilities: ["chat", "vision", "function_calling", "structured_output", "code", "nlu"],
+	},
 	{
 		id: "gemini-2.5-pro",
 		name: "Gemini 2.5 Pro",
@@ -225,6 +299,12 @@ export const STATIC_GOOGLE_MODELS: readonly StaticModelSeed[] = [
 		capabilities: ["chat", "vision", "function_calling", "structured_output", "code", "nlu"],
 	},
 	{
+		id: "gemini-embedding-2",
+		name: "Gemini Embedding 2",
+		mode: "embedding",
+		capabilities: ["embedding"],
+	},
+	{
 		id: "gemini-embedding-001",
 		name: "Gemini Embedding 001",
 		mode: "embedding",
@@ -239,6 +319,12 @@ export const STATIC_GOOGLE_MODELS: readonly StaticModelSeed[] = [
  * built-in aliases resolve to, for the case where neither catalog is reachable.
  */
 export const STATIC_XAI_MODELS: readonly StaticModelSeed[] = [
+	{
+		id: "grok-4.7",
+		name: "Grok 4.7",
+		mode: "chat",
+		capabilities: ["chat", "vision", "function_calling", "reasoning", "structured_output", "code", "nlu"],
+	},
 	{
 		id: "grok-4.6",
 		name: "Grok 4.6",

@@ -361,6 +361,16 @@ export const GENERIC_OPENAI_PROVIDERS: readonly OpenAICompatibleProviderSpec[] =
 		chatCapabilities: ["function_calling", "nlu"],
 	},
 	{
+		providerId: "meta",
+		providerName: "Meta (Muse Spark)",
+		baseUrl: "https://api.meta.ai/v1",
+		modeRules: [
+			["muse-image", "image"],
+			["transcribe", "audio"],
+		],
+		chatCapabilities: ["function_calling", "code", "nlu"],
+	},
+	{
 		providerId: "baseten",
 		providerName: "Baseten",
 		baseUrl: "https://inference.baseten.co/v1",

@@ -187,10 +187,17 @@ export abstract class BaseDiscoverer implements ProviderDiscoverer {
 			const enriched = apiCards.map((api) => {
 				const seed = seedById.get(api.id);
 				if (!seed) return api;
-				const apiHasPricing = !!api.pricing || !!api.originPricing;
-				if (apiHasPricing) return api;
-				return {
+				// A provider's model list says a model exists, rarely whether it
+				// is on its way out or when it shipped; the catalog knows both.
+				const dated: ModelCard = {
 					...api,
+					status: api.status ?? seed.status,
+					releaseDate: api.releaseDate ?? seed.releaseDate,
+				};
+				const apiHasPricing = !!api.pricing || !!api.originPricing;
+				if (apiHasPricing) return dated;
+				return {
+					...dated,
 					pricing: seed.pricing,
 					originPricing: seed.originPricing,
 				};

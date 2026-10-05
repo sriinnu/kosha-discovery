@@ -79,6 +79,8 @@ export interface ModelsDevModel {
 	knowledge?: string;
 	release_date?: string;
 	last_updated?: string;
+	/** Lifecycle marker: `"deprecated"`, `"beta"` or `"alpha"`; absent when GA. */
+	status?: string;
 	modalities?: ModelsDevModalities;
 	open_weights?: boolean;
 	cost?: ModelsDevCost;

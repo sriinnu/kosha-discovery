@@ -112,12 +112,14 @@ export function claudeSupportsNativeJsonSchema(modelId: string): boolean {
 }
 
 /**
- * Claude Fable 5.1 and Claude Mythos 5.1 return a 400 for forced tool use
- * (`tool_choice` `any` / `tool`); everything else still honours it.
+ * Forced tool use (`tool_choice` `any` / `tool`) returns a 400 on Claude Fable
+ * 5.1 / Mythos 5.1 and on Opus 5.5 / Sonnet 5.5, and on every later model in
+ * those lines. Everything older — and Haiku — still honours it.
  */
 export function claudeSupportsForcedToolChoice(modelId: string): boolean {
 	const gen = parseClaudeGeneration(modelId);
 	if (!gen) return true;
-	if (gen.family !== "fable" && gen.family !== "mythos") return true;
-	return !atLeast(gen, 5, 1);
+	if (gen.family === "fable" || gen.family === "mythos") return !atLeast(gen, 5, 1);
+	if (gen.family === "opus" || gen.family === "sonnet") return !atLeast(gen, 5, 5);
+	return true;
 }

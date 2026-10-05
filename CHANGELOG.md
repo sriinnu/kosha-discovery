@@ -13,7 +13,54 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
+## [1.7.0] — 2026-10-05
+
+### Fixed
+
+- **Forced tool use on Claude Opus 5.5 and Sonnet 5.5 no longer 400s through the
+  proxy.** Both models reject `tool_choice` `any` / `tool`, like Fable 5.1 and
+  Mythos 5.1 before them, but the gate only knew about the Fable line — so
+  `tool_choice: "required"` was passed straight through. It now degrades to
+  `auto` plus an instruction, and `tool-choice` is no longer advertised as a
+  structured-output mode for those models.
+- **Keyless Bedrock and Vertex list what those platforms actually serve.** With
+  no AWS / gcloud tooling, both discoverers jumped straight to a hand-written
+  list (seven models topped by Opus 4.6; five including two retired Gemini
+  previews) even though models.dev was already mapped for them. The public
+  catalog now sits between the CLI and the static list, with the real model
+  creator restored as `originProvider` — including Bedrock's geography-prefixed
+  inference profiles (`us.anthropic.…`, `global.openai.…`). The static lists
+  themselves are refreshed for the fully-offline case.
+- **GPT-6, DeepSeek V4 and the unversioned Qwen tiers get correct feature
+  hints.** The family patterns stopped at `gpt-5` and `deepseek-v3`, so newer
+  IDs fell through to the legacy answer (`cl100k_base`, no JSON schema, or no
+  tool calling at all).
+- **A rejected API key no longer removes the provider.** When a credentialed
+  discovery call failed and there was no cache to fall back on, the provider's
+  entire catalog vanished from routing and pricing — so one expired key, or a
+  China-region key tried against the international host of a regional pair,
+  cost you every model that provider serves. It now falls back to the keyless
+  public catalog, reports the provider as unauthenticated, and still records the
+  error for `kosha doctor`.
+- **Resellers are no longer credited as model creators.** Keyless cards took the
+  serving provider as `originProvider`, so Perplexity's row for
+  `claude-opus-5-5` ranked as a direct route beside Anthropic's. The creator is
+  now recovered from the model ID.
+- The snapshot workflow's run metadata read the outcome of a step that had been
+  renamed, so it recorded `failure` on every run.
+
 ### Changed
+
+- **Bare aliases moved to the current generation:** `opus` → `claude-opus-5-5`,
+  `sonnet` → `claude-sonnet-5-5`, `grok` → `grok-4.7`, `gemini-flash` →
+  `gemini-3.8-flash`, `gemini-flash-lite` → `gemini-3.5-flash-lite`,
+  `qwen-max` → `qwen3.8-max`, `qwen-plus` → `qwen3.7-plus`. The previous targets
+  stay reachable through pinned forms (`opus-5`, `sonnet-5`, `grok-4.6`,
+  `gemini-flash-2.5`, `gemini-flash-lite-2.5`). `nemotron-super` pointed at an ID
+  NVIDIA never served and now resolves to
+  `nvidia/llama-3.3-nemotron-super-49b-v1.5`.
+- `applyPromoOverrides` takes the override table as an optional third argument.
+  The built-in table is empty: its only entry expired in May.
 
 - **The weekly snapshot is a release asset now, not a commit.** At ~2.8 MB of
   JSON that grows with every provider added, committing it every Monday would put
@@ -27,6 +74,35 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
   Existing history still carries the old blobs — only a history rewrite would
   remove those, which is not worth doing to a published repo.
+
+### Added
+
+- Aliases for GPT-6 (`gpt6`, `gpt6-sol`, `gpt6-astra`, `gpt6-luna`),
+  `opus-5.5`, `sonnet-5.5`, `grok-4.7` and `gemini-embed-2`.
+- **Meta (Muse Spark)** as a direct provider — `META_MODEL_API_KEY`,
+  `api.meta.ai`. 46 providers.
+- **Model cards carry `releaseDate` and a models.dev lifecycle status.** The
+  catalog already published both; the seed dropped them. `deprecated` and
+  `beta` / `alpha` now land on `status` (as `deprecated` / `preview`), so the
+  existing deprecated-route demotion and `kosha doctor` see models.dev's view as
+  well as LiteLLM's sunset dates. Live-API cards pick the same fields up from the
+  seed. `releaseDate` is also on the v1 discovery contract (nullable, additive).
+- `catalogSource` (`"models.dev"` | `"litellm"`) on keyless cards, for telling
+  the two public catalogs apart when they disagree. `source` is unchanged.
+- **Bedrock rows join cross-provider route lookups.** `kosha routes
+  claude-opus-5-5` now includes `anthropic.claude-opus-5-5` and its geography
+  profiles (`us.`, `eu.`, `global.` …), each at its own price.
+- Snapshot release notes list what changed since the previous snapshot — new
+  models, repricings, new deprecations, removals (`pnpm snapshot:diff a.json
+  b.json`).
+- `pnpm aliases:check <snapshot.json>` reports aliases whose target no provider
+  lists any more, and bare aliases that have a newer sibling in the catalog. The
+  weekly snapshot run annotates itself with the result.
+
+### Removed
+
+- The `groq-mixtral` alias. Groq retired `mixtral-8x7b-32768`; the alias
+  resolved to an ID with nothing behind it.
 
 ---
 

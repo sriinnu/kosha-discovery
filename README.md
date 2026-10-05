@@ -6,7 +6,7 @@
 
 **Tells your agent — or your code — which model to use and what it costs.**
 
-kosha discovers models across 45 providers and local runtimes, finds your API keys
+kosha discovers models across 46 providers and local runtimes, finds your API keys
 wherever they already live (env vars, Claude CLI, Codex, gcloud ADC, AWS SSO), fills
 in pricing and context limits, and answers questions like *the cheapest model with
 tool use and 128k context that I actually hold a key for*. It ships as a TypeScript
@@ -46,7 +46,7 @@ console.log(sonnet?.pricing); // { inputPerMillion: 2, outputPerMillion: 10, cac
 kosha discover                       # query every provider; writes ~/.kosha/cache and the manifest
 kosha list --provider anthropic      # read from the local cache
 kosha model sonnet                   # one model, alias-aware
-kosha routes claude-opus-5           # every serving route for a model (direct, OpenRouter, Bedrock, …)
+kosha routes claude-opus-5-5         # every serving route for a model (direct, OpenRouter, Bedrock, …)
 kosha cheapest --role embeddings     # rank by price for a role
 kosha doctor --ci                    # deprecations + provider health; non-zero exit for CI
 kosha spend --since 2026-09-01       # roll up the proxy's spend ledger
@@ -77,6 +77,10 @@ with every provider added, committing it weekly would put roughly 150 MB of
 already-stale data a year into a repo people are meant to clone. Dated
 `snapshot-YYYY-MM-DD` pre-releases keep a short trail for diffing, pruned to the
 two most recent, and an older one is only removed once a newer one exists.
+
+Each snapshot's release notes list what changed since the previous one — new
+models, repricings, new deprecations, removals. The same diff runs locally with
+`pnpm snapshot:diff old.json new.json`.
 
 ### HTTP API
 
@@ -171,7 +175,7 @@ Tools and protocol details: [docs/mcp.md](docs/mcp.md).
 
 ## Supported providers
 
-45 providers. Each has a descriptor in `src/provider-catalog.ts`; most OpenAI-compatible
+46 providers. Each has a descriptor in `src/provider-catalog.ts`; most OpenAI-compatible
 ones are driven from `GENERIC_OPENAI_PROVIDERS` in `src/discovery/generic-openai.ts`
 rather than a hand-written class.
 
@@ -180,8 +184,8 @@ rather than a hand-written class.
 | Anthropic | `GET /v1/models` (context, output cap, capabilities read from the API) | `ANTHROPIC_API_KEY`, Claude CLI, Codex CLI |
 | OpenAI | `GET /v1/models` | `OPENAI_API_KEY`, GitHub Copilot tokens |
 | Google | `GET /v1beta/models` | `GOOGLE_API_KEY`, `GEMINI_API_KEY`, Gemini CLI, gcloud |
-| AWS Bedrock | SDK → CLI → static list | `AWS_ACCESS_KEY_ID`, `~/.aws/credentials`, SSO, IAM |
-| Vertex AI | API + gcloud | `GOOGLE_APPLICATION_CREDENTIALS`, ADC |
+| AWS Bedrock | SDK → CLI → public catalog → static list | `AWS_ACCESS_KEY_ID`, `~/.aws/credentials`, SSO, IAM |
+| Vertex AI | API → gcloud → public catalog → static list | `GOOGLE_APPLICATION_CREDENTIALS`, ADC |
 | Ollama, llama.cpp, LM Studio, vLLM | local HTTP API | none |
 | OpenRouter | API | `OPENROUTER_API_KEY` (optional; unauthenticated is rate-limited) |
 | Vercel AI Gateway | `GET /v1/models` | `AI_GATEWAY_API_KEY`, `VERCEL_OIDC_TOKEN` (discovery works without; execution needs one) |
@@ -190,7 +194,7 @@ rather than a hand-written class.
 | xAI (Grok) | `GET /v1/models`; Grok Imagine split into image / video | `XAI_API_KEY` |
 | TypeSafe (System One / Jev) | `GET /v1/models` — returns `judgment` models, not chat | `TYPESAFE_API_KEY`, `JEV_API_KEY` |
 | Thinking Machines (Inkling) | Anthropic-wire endpoint, no model list — public catalog only | `TINKER_API_KEY` |
-| Alibaba Model Studio (Qwen), Volcengine Ark (Doubao), Inception (Mercury), AI21 (Jamba), Upstage (Solar), StepFun | OpenAI-compatible API | `DASHSCOPE_API_KEY`, `ARK_API_KEY`, `INCEPTION_API_KEY`, `AI21_API_KEY`, `UPSTAGE_API_KEY`, `STEPFUN_API_KEY` |
+| Alibaba Model Studio (Qwen), Volcengine Ark (Doubao), Inception (Mercury), AI21 (Jamba), Upstage (Solar), StepFun, Meta (Muse Spark) | OpenAI-compatible API | `DASHSCOPE_API_KEY`, `ARK_API_KEY`, `INCEPTION_API_KEY`, `AI21_API_KEY`, `UPSTAGE_API_KEY`, `STEPFUN_API_KEY`, `META_MODEL_API_KEY` |
 | Baseten, Nebius Token Factory, Novita AI, SiliconFlow, Hugging Face, Ollama Cloud | OpenAI-compatible API | `<PROVIDER>_API_KEY`, `HF_TOKEN` |
 
 ### Regional pairs
@@ -213,7 +217,7 @@ provider:
 `kosha routes <model>` lists every region a model is served from, so you can
 compare prices across them directly.
 
-Without a key, providers fall back to the public models.dev + LiteLLM catalog, then to a curated static list, so `kosha list` works on a fresh machine. Exact env var names: [docs/credentials.md](docs/credentials.md).
+Without a key, providers fall back to the public models.dev + LiteLLM catalog, then to a curated static list, so `kosha list` works on a fresh machine. The same fallback applies when a key is present but rejected: the provider stays listed from the public catalog, shows as unauthenticated, and the error is kept for `kosha doctor`. Exact env var names: [docs/credentials.md](docs/credentials.md).
 
 ### Non-chat modes
 
@@ -232,7 +236,7 @@ kosha model jev                   # mode: judgment, $0.042/M in, $0 out
 ## How it works
 
 1. **Discovery** — one discoverer per provider runs concurrently (`Promise.allSettled`); each returns normalized `ModelCard`s. A failing provider is recorded in `discoveryErrors()` and doesn't block the others.
-2. **Enrichment** — pricing, context window, and output cap are filled from models.dev and LiteLLM where the provider API doesn't publish them; `pricingSource` on each card says which.
+2. **Enrichment** — pricing, context window, and output cap are filled from models.dev and LiteLLM where the provider API doesn't publish them; `pricingSource` on each card says which. Cards also carry `releaseDate` and a lifecycle `status` where a catalog publishes them.
 3. **Resilience** — a per-provider circuit breaker with exponential cooldown, plus stale-cache fallback, so a provider outage degrades to cached data rather than an error.
 4. **Cache and manifest** — results are cached under `~/.kosha/cache/` (24 h TTL) and exported as a versioned snapshot at `~/.kosha/registry.json` for other tools to read.
 5. **Proxy** — resolves the requested model or `kosha:<strategy>[filters]` selector against the registry, ranks candidate routes, forwards with failover, and records estimated and reconciled cost in `~/.kosha/ledger-YYYY-MM.jsonl`.
@@ -248,7 +252,15 @@ pnpm run typecheck    # tsc --noEmit
 pnpm run lint         # biome lint
 pnpm test             # vitest run
 pnpm run check        # lint + build + test
+
+pnpm aliases:check snapshot.json        # built-in aliases that are dead or a generation behind
+pnpm snapshot:diff old.json new.json    # what changed between two snapshots
 ```
+
+The alias table in `src/aliases.ts` is the one part of the catalog written by
+hand. `aliases:check` compares it against a snapshot, and the weekly snapshot
+run annotates itself with the result, so a bare alias like `opus` falling behind
+shows up there rather than in a bug report.
 
 ### Project layout
 
@@ -310,7 +322,7 @@ Write a discoverer class only when classification genuinely needs code — per-r
 
 ## Release
 
-1. Bump `version` in `package.json` and date the `[Unreleased]` section in `CHANGELOG.md`; merge that as a PR.
+1. Bump `version` in `package.json` and `server.json` (both places), and date the `[Unreleased]` section in `CHANGELOG.md`; merge that as a PR.
 2. Tag and push:
 
 ```bash

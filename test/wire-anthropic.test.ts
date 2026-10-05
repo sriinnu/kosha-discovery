@@ -337,6 +337,11 @@ describe("per-generation Claude behaviour", () => {
 		expect(claudeSupportsForcedToolChoice("claude-fable-5")).toBe(true);
 		expect(claudeSupportsForcedToolChoice("claude-fable-5-1")).toBe(false);
 		expect(claudeSupportsForcedToolChoice("claude-mythos-5-1")).toBe(false);
+		expect(claudeSupportsForcedToolChoice("claude-sonnet-5")).toBe(true);
+		expect(claudeSupportsForcedToolChoice("claude-opus-5-5")).toBe(false);
+		expect(claudeSupportsForcedToolChoice("claude-sonnet-5-5")).toBe(false);
+		expect(claudeSupportsForcedToolChoice("anthropic.claude-opus-5-5")).toBe(false);
+		expect(claudeSupportsForcedToolChoice("claude-haiku-4-5")).toBe(true);
 	});
 });
 

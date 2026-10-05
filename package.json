@@ -1,7 +1,7 @@
 {
 	"name": "@sriinnu/kosha-discovery",
-	"version": "1.6.2",
-	"description": "Tells your agent which model to use and what it costs, across 45 AI providers and local runtimes",
+	"version": "1.7.0",
+	"description": "Tells your agent which model to use and what it costs, across 46 AI providers and local runtimes",
 	"mcpName": "io.github.sriinnu/kosha-discovery",
 	"type": "module",
 	"packageManager": "pnpm@10.33.0",
@@ -86,6 +86,8 @@
 		"latest": "node dist/cli.js latest --json",
 		"autofetch": "node scripts/auto-fetch-latest.mjs",
 		"autofetch:once": "node scripts/auto-fetch-latest.mjs --once",
+		"aliases:check": "node scripts/check-alias-freshness.mjs",
+		"snapshot:diff": "node scripts/snapshot-diff.mjs",
 		"prepare": "cp hooks/pre-commit .git/hooks/pre-commit 2>/dev/null && chmod +x .git/hooks/pre-commit || true"
 	},
 	"files": [
@@ -96,14 +98,14 @@
 		"LICENSE"
 	],
 	"dependencies": {
-		"@hono/node-server": "^2.1.1",
-		"hono": "^4.13.7"
+		"@hono/node-server": "^2.1.3",
+		"hono": "^4.13.13"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "^2.5.12",
-		"@types/node": "^26.5.0",
+		"@biomejs/biome": "^2.5.15",
+		"@types/node": "^26.6.4",
 		"typescript": "^7.0.2",
-		"vitest": "^5.0.0"
+		"vitest": "^5.0.3"
 	},
 	"pnpm": {
 		"overrides": {

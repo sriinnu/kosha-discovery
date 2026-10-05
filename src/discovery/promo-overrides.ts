@@ -44,23 +44,12 @@ export interface PromoOverride {
 
 /**
  * Built-in promo overrides. Keep small and well-cited.
+ *
+ * Empty as of Oct 2026: the one entry this carried (DeepSeek's 75%-off
+ * `deepseek-v4-pro` launch promo) ended 2026-05-31 and the public catalogs
+ * now publish the standing rate.
  */
-export const PROMO_OVERRIDES: readonly PromoOverride[] = [
-	{
-		providerId: "deepseek",
-		modelId: "deepseek-v4-pro",
-		// 75% off the standard $1.74/$3.48 input/output rates.
-		// Cache hit also discounted 75% from $0.0145/M to $0.003625/M.
-		pricing: {
-			inputPerMillion: 0.435,
-			outputPerMillion: 0.87,
-			cacheReadPerMillion: 0.003625,
-		},
-		endsAt: new Date("2026-05-31T15:59:00Z"),
-		reason:
-			"DeepSeek 75% off promo on deepseek-v4-pro, extended to 2026-05-31 — https://api-docs.deepseek.com/quick_start/pricing/",
-	},
-];
+export const PROMO_OVERRIDES: readonly PromoOverride[] = [];
 
 /**
  * Apply any active promo overrides to the given cards in place. Returns the
@@ -68,10 +57,16 @@ export const PROMO_OVERRIDES: readonly PromoOverride[] = [
  * matching active override are unchanged.
  *
  * Idempotent — re-running on already-overridden cards yields the same result.
+ *
+ * @param overrides - The override table; defaults to {@link PROMO_OVERRIDES}.
  */
-export function applyPromoOverrides(cards: ModelCard[], now: Date = new Date()): ModelCard[] {
+export function applyPromoOverrides(
+	cards: ModelCard[],
+	now: Date = new Date(),
+	overrides: readonly PromoOverride[] = PROMO_OVERRIDES,
+): ModelCard[] {
 	if (cards.length === 0) return cards;
-	const active = PROMO_OVERRIDES.filter((promo) => promo.endsAt.getTime() > now.getTime());
+	const active = overrides.filter((promo) => promo.endsAt.getTime() > now.getTime());
 	if (active.length === 0) return cards;
 
 	for (let i = 0; i < cards.length; i += 1) {

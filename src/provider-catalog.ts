@@ -647,6 +647,21 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		primaryCredentialEnvVar: "UPSTAGE_API_KEY",
 	},
 	{
+		providerId: "meta",
+		canonicalProviderId: "meta",
+		aliases: ["meta-ai", "muse"],
+		name: "Meta (Muse Spark)",
+		origin: "direct",
+		isLocal: false,
+		transport: "openai-compatible-http",
+		defaultBaseUrl: "https://api.meta.ai/v1",
+		credentialRequired: true,
+		// Meta's own docs call the variable `MODEL_API_KEY`; that name is too
+		// generic to claim, so only the namespaced forms are read.
+		credentialEnvVars: ["META_MODEL_API_KEY", "META_API_KEY"],
+		primaryCredentialEnvVar: "META_MODEL_API_KEY",
+	},
+	{
 		providerId: "baseten",
 		canonicalProviderId: "baseten",
 		aliases: [],

@@ -27,7 +27,16 @@ vi.mock("node:child_process", () => ({
 	execFileSync: vi.fn(),
 }));
 
+// The public catalog is a network source; default it to empty so the static
+// fallback tests stay hermetic, and feed it explicitly where it is under test.
+vi.mock("../../src/discovery/public-seed.js", () => ({
+	getPublicSeed: vi.fn(async () => []),
+}));
+
 import { execFileSync, execSync } from "node:child_process";
+import { getPublicSeed } from "../../src/discovery/public-seed.js";
+
+const mockedGetPublicSeed = vi.mocked(getPublicSeed);
 
 const mockedExecSync = vi.mocked(execSync);
 const mockedExecFileSync = vi.mocked(execFileSync);
@@ -211,6 +220,12 @@ describe("inferOriginFromBedrockId", () => {
 		expect(inferOriginFromBedrockId("anthropic.claude-sonnet-4-6-v1:0")).toBe("anthropic");
 		expect(inferOriginFromBedrockId("anthropic.claude-opus-4-6-v1:0")).toBe("anthropic");
 		expect(inferOriginFromBedrockId("anthropic.claude-haiku-4-5-v1:0")).toBe("anthropic");
+		expect(inferOriginFromBedrockId("anthropic.claude-opus-5-5")).toBe("anthropic");
+		expect(inferOriginFromBedrockId("us.anthropic.claude-opus-5-5")).toBe("anthropic");
+		expect(inferOriginFromBedrockId("global.openai.gpt-6-sol")).toBe("openai");
+		expect(inferOriginFromBedrockId("us-gov.openai.gpt-6-sol")).toBe("openai");
+		expect(inferOriginFromBedrockId("xai.grok-4.7")).toBe("xai");
+		expect(inferOriginFromBedrockId("constructor.prototype")).toBe("unknown");
 	});
 
 	it("extracts 'amazon' from Titan model IDs", () => {
@@ -278,10 +293,10 @@ describe("BedrockDiscoverer — static fallback", () => {
 	it("static fallback: Claude Opus has correct fields", async () => {
 		const d = new BedrockDiscoverer();
 		const cards = await d.discover(noCredential);
-		const opus = cards.find((c) => c.id === "anthropic.claude-opus-4-6-v1:0");
+		const opus = cards.find((c) => c.id === "anthropic.claude-opus-5-5");
 
 		expect(opus).toBeDefined();
-		expect(opus!.name).toBe("Claude Opus 4.6 (Bedrock)");
+		expect(opus!.name).toBe("Claude Opus 5.5 (Bedrock)");
 		expect(opus!.provider).toBe("bedrock");
 		expect(opus!.originProvider).toBe("anthropic");
 		expect(opus!.mode).toBe("chat");
@@ -318,7 +333,7 @@ describe("BedrockDiscoverer — static fallback", () => {
 	it("static fallback: Mistral has function_calling", async () => {
 		const d = new BedrockDiscoverer();
 		const cards = await d.discover(noCredential);
-		const mistral = cards.find((c) => c.id === "mistral.mistral-large-2411-v1:0");
+		const mistral = cards.find((c) => c.id === "mistral.mistral-large-3-675b-instruct");
 
 		expect(mistral).toBeDefined();
 		expect(mistral!.originProvider).toBe("mistral");
@@ -669,5 +684,76 @@ describe("BedrockDiscoverer — region resolution", () => {
 
 		const llama = cards.find((c) => c.id === "meta.llama3-3-70b-instruct-v1:0");
 		expect(llama!.region).toBe("eu-west-1");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// BedrockDiscoverer — public catalog fallback
+// ---------------------------------------------------------------------------
+
+describe("BedrockDiscoverer — public catalog fallback", () => {
+	const seed = (id: string): ModelCard => ({
+		id,
+		name: id,
+		provider: "bedrock",
+		originProvider: "bedrock",
+		mode: "chat",
+		capabilities: ["chat"],
+		contextWindow: 1_000_000,
+		maxOutputTokens: 128_000,
+		pricing: { inputPerMillion: 4, outputPerMillion: 20 },
+		aliases: [],
+		discoveredAt: 0,
+		source: "litellm",
+	});
+
+	beforeEach(() => {
+		mockedExecFileSync.mockImplementation(() => {
+			throw new Error("aws: command not found");
+		});
+	});
+
+	afterEach(() => {
+		mockedGetPublicSeed.mockReset();
+		mockedGetPublicSeed.mockResolvedValue([]);
+	});
+
+	it("serves the public catalog, not the static list, when AWS tooling is absent", async () => {
+		mockedGetPublicSeed.mockResolvedValue([
+			seed("anthropic.claude-opus-5-5"),
+			seed("us.anthropic.claude-sonnet-5-5"),
+			seed("global.openai.gpt-6-sol"),
+		]);
+
+		const cards = await new BedrockDiscoverer().discover(noCredential);
+
+		expect(mockedGetPublicSeed).toHaveBeenCalledWith("bedrock");
+		expect(cards.map((c) => c.id)).toEqual([
+			"anthropic.claude-opus-5-5",
+			"us.anthropic.claude-sonnet-5-5",
+			"global.openai.gpt-6-sol",
+		]);
+		expect(cards.map((c) => c.originProvider)).toEqual(["anthropic", "anthropic", "openai"]);
+		expect(cards[0].pricing).toEqual({ inputPerMillion: 4, outputPerMillion: 20 });
+		expect(cards.every((c) => c.source === "litellm")).toBe(true);
+	});
+
+	it("falls back to the static list when the public catalog throws", async () => {
+		mockedGetPublicSeed.mockRejectedValue(new Error("offline"));
+		const cards = await new BedrockDiscoverer().discover(noCredential);
+		expect(cards).toHaveLength(7);
+		expect(cards.every((c) => c.source === "manual")).toBe(true);
+	});
+
+	it("does not consult the public catalog when the CLI answers", async () => {
+		mockedExecFileSync.mockReturnValue(
+			JSON.stringify({ modelSummaries: [{ modelId: "anthropic.claude-opus-5-5", modelName: "Claude Opus 5.5" }] }) as never,
+		);
+		mockedGetPublicSeed.mockResolvedValue([seed("global.openai.gpt-6-sol")]);
+
+		const cards = await new BedrockDiscoverer().discover(noCredential);
+
+		expect(cards.map((c) => c.id)).toEqual(["anthropic.claude-opus-5-5"]);
+		expect(mockedGetPublicSeed).not.toHaveBeenCalled();
 	});
 });

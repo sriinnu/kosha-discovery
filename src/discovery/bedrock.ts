@@ -4,7 +4,8 @@
  * Resolution strategy (in order):
  * 1. AWS SDK (`@aws-sdk/client-bedrock`) — if installed in the host project.
  * 2. AWS CLI fallback (`aws bedrock list-foundation-models --output json`).
- * 3. Static fallback list of well-known Bedrock foundation models (Feb 2026).
+ * 3. Public catalog (models.dev) — the full keyless Bedrock listing.
+ * 4. Static fallback list of well-known Bedrock foundation models (Oct 2026).
  *
  * Credentials use the standard AWS credential chain:
  * environment variables (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`),
@@ -20,6 +21,7 @@ import { assertSafeShellArg } from "../shell-safe.js";
 import { assertCleanPayload } from "../security.js";
 import type { CredentialResult, ModelCard, ModelMode } from "../types.js";
 import { BaseDiscoverer } from "./base.js";
+import { getPublicSeed } from "./public-seed.js";
 
 // ---------------------------------------------------------------------------
 // Internal types that mirror the AWS SDK / CLI response shapes
@@ -70,44 +72,56 @@ const VENDOR_TO_ORIGIN: Record<string, string> = {
 	ai21: "ai21",
 	stability: "stability",
 	"amazon-bedrock-preview": "amazon",
+	openai: "openai",
+	xai: "xai",
+	google: "google",
+	deepseek: "deepseek",
+	qwen: "qwen",
+	nvidia: "nvidia",
+	writer: "writer",
+	minimax: "minimax",
+	moonshot: "moonshot",
+	moonshotai: "moonshot",
+	zai: "zai",
 };
 
 // ---------------------------------------------------------------------------
-// Static fallback catalogue (Feb 2026)
+// Static fallback catalogue (Oct 2026)
 // ---------------------------------------------------------------------------
 
 /**
- * A minimal set of well-known Bedrock foundation models used when neither
- * the SDK nor the CLI is available.  Context windows and output limits are
+ * A minimal set of well-known Bedrock foundation models used when the SDK,
+ * the CLI and the public catalog are all unavailable — in practice, offline
+ * with no AWS tooling.  Context windows and output limits are
  * intentionally set to 0 so that the litellm enrichment pass can fill them in.
  */
 const STATIC_MODELS: ReadonlyArray<
 	Pick<ModelCard, "id" | "name" | "mode" | "capabilities" | "originProvider">
 > = [
 	{
-		id: "anthropic.claude-opus-4-6-v1:0",
-		name: "Claude Opus 4.6 (Bedrock)",
+		id: "anthropic.claude-opus-5-5",
+		name: "Claude Opus 5.5 (Bedrock)",
 		mode: "chat",
 		capabilities: ["chat", "vision", "code", "nlu", "function_calling"],
 		originProvider: "anthropic",
 	},
 	{
-		id: "anthropic.claude-sonnet-4-6-v1:0",
-		name: "Claude Sonnet 4.6 (Bedrock)",
+		id: "anthropic.claude-sonnet-5-5",
+		name: "Claude Sonnet 5.5 (Bedrock)",
 		mode: "chat",
 		capabilities: ["chat", "vision", "code", "nlu", "function_calling"],
 		originProvider: "anthropic",
 	},
 	{
-		id: "anthropic.claude-haiku-4-5-v1:0",
+		id: "anthropic.claude-haiku-4-5-20251001-v1:0",
 		name: "Claude Haiku 4.5 (Bedrock)",
 		mode: "chat",
 		capabilities: ["chat", "vision", "code", "nlu", "function_calling"],
 		originProvider: "anthropic",
 	},
 	{
-		id: "amazon.titan-text-premier-v2:0",
-		name: "Titan Text Premier v2 (Bedrock)",
+		id: "amazon.nova-pro-v1:0",
+		name: "Nova Pro (Bedrock)",
 		mode: "chat",
 		capabilities: ["chat", "nlu"],
 		originProvider: "amazon",
@@ -127,8 +141,8 @@ const STATIC_MODELS: ReadonlyArray<
 		originProvider: "meta",
 	},
 	{
-		id: "mistral.mistral-large-2411-v1:0",
-		name: "Mistral Large 2411 (Bedrock)",
+		id: "mistral.mistral-large-3-675b-instruct",
+		name: "Mistral Large 3 (Bedrock)",
 		mode: "chat",
 		capabilities: ["chat", "code", "nlu", "function_calling"],
 		originProvider: "mistral",
@@ -142,10 +156,11 @@ const STATIC_MODELS: ReadonlyArray<
 /**
  * Discovers models available through AWS Bedrock.
  *
- * Tries three resolution strategies in order:
+ * Tries four resolution strategies in order:
  * 1. `@aws-sdk/client-bedrock` (if installed in the host project).
  * 2. AWS CLI (`aws bedrock list-foundation-models`).
- * 3. Static fallback catalogue.
+ * 3. Public catalog seed (models.dev).
+ * 4. Static fallback catalogue.
  *
  * The `credential` argument is optional in the sense that the AWS SDK and CLI
  * both rely on the ambient credential chain.  However, the `credential.metadata`
@@ -159,7 +174,7 @@ export class BedrockDiscoverer extends BaseDiscoverer {
 	/**
 	 * Discover all foundation models available on AWS Bedrock.
 	 *
-	 * Resolution order: SDK → CLI → static fallback.
+	 * Resolution order: SDK → CLI → public catalog → static fallback.
 	 *
 	 * @param credential - Optional credential; `metadata.region` overrides the
 	 *                     `AWS_DEFAULT_REGION` environment variable.
@@ -183,10 +198,17 @@ export class BedrockDiscoverer extends BaseDiscoverer {
 				return models;
 			}
 		} catch {
-			// CLI not installed or threw — fall through to static list
+			// CLI not installed or threw — fall through to the public catalog
 		}
 
-		// 3. Last resort: static catalogue
+		// 3. No AWS tooling or credentials: the public catalog still knows what
+		//    Bedrock serves and what it costs.
+		const seeds = await this.publicCatalogFallback();
+		if (seeds.length > 0) {
+			return seeds;
+		}
+
+		// 4. Last resort: static catalogue
 		return this.staticFallback();
 	}
 
@@ -267,13 +289,34 @@ export class BedrockDiscoverer extends BaseDiscoverer {
 	}
 
 	// -------------------------------------------------------------------------
-	// Strategy 3 — Static fallback
+	// Strategy 3 — Public catalog
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Source the Bedrock listing from the public seed pipeline.
+	 *
+	 * The seed stamps every card with `originProvider: "bedrock"`; the vendor
+	 * is recoverable from the model ID, so it is restored here.  IDs carrying
+	 * a geography prefix (`us.`, `eu.`, `global.` …) are cross-region inference
+	 * profiles and are kept as-is — they are what callers actually invoke.
+	 */
+	private async publicCatalogFallback(): Promise<ModelCard[]> {
+		try {
+			const seeds = await getPublicSeed(this.providerId);
+			return seeds.map((seed) => ({ ...seed, originProvider: inferOriginFromBedrockId(seed.id) }));
+		} catch {
+			return [];
+		}
+	}
+
+	// -------------------------------------------------------------------------
+	// Strategy 4 — Static fallback
 	// -------------------------------------------------------------------------
 
 	/**
 	 * Return a hardcoded catalogue of well-known Bedrock foundation models.
 	 *
-	 * Used when neither the SDK nor the CLI is available.  All entries have
+	 * Used when the SDK, the CLI and the public catalog all come up empty.  All entries have
 	 * `source: "manual"` and zero context/output token limits — the litellm
 	 * enrichment pass is expected to populate those fields later.
 	 */
@@ -412,7 +455,9 @@ export class BedrockDiscoverer extends BaseDiscoverer {
  * Extract the origin provider from a Bedrock model ID.
  *
  * Bedrock model IDs follow the pattern `{vendor}.{model-name}-v{n}:{variant}`,
- * e.g. `anthropic.claude-opus-4-6-v1:0` → `"anthropic"`.
+ * e.g. `anthropic.claude-opus-4-6-v1:0` → `"anthropic"`.  Cross-region
+ * inference profiles put a geography first (`us.anthropic.claude-opus-5-5`),
+ * in which case the vendor is the second segment.
  *
  * Falls back to `"unknown"` for unrecognised vendor prefixes.
  *
@@ -423,14 +468,16 @@ export class BedrockDiscoverer extends BaseDiscoverer {
  * inferOriginFromBedrockId("anthropic.claude-sonnet-4-6-v1:0") // "anthropic"
  * inferOriginFromBedrockId("meta.llama3-3-70b-instruct-v1:0")  // "meta"
  * inferOriginFromBedrockId("amazon.titan-text-premier-v2:0")   // "amazon"
+ * inferOriginFromBedrockId("global.anthropic.claude-opus-5-5") // "anthropic"
  */
 export function inferOriginFromBedrockId(modelId: string): string {
 	// The vendor prefix is everything before the first dot
-	const dotIndex = modelId.indexOf(".");
-	if (dotIndex === -1) {
+	const segments = modelId.toLowerCase().split(".");
+	if (segments.length < 2) {
 		return "unknown";
 	}
 
-	const vendor = modelId.slice(0, dotIndex).toLowerCase();
-	return VENDOR_TO_ORIGIN[vendor] ?? "unknown";
+	const lookup = (vendor: string): string | undefined =>
+		Object.hasOwn(VENDOR_TO_ORIGIN, vendor) ? VENDOR_TO_ORIGIN[vendor] : undefined;
+	return lookup(segments[0]) ?? (segments.length > 2 ? lookup(segments[1]) : undefined) ?? "unknown";
 }

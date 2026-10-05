@@ -22,6 +22,7 @@
  * @module
  */
 
+import { extractOriginProvider } from "../normalize.js";
 import type { ModelCard } from "../types.js";
 import { getLiteLLMSeed } from "./litellm-seed.js";
 import { getModelsDevSeed } from "./modelsdev-seed.js";
@@ -48,7 +49,17 @@ export async function getPublicSeed(providerId: string): Promise<ModelCard[]> {
 		merged.push(card);
 	}
 
+	// Both seeds stamp `originProvider` with the serving provider, which is
+	// only true for a provider's own models. A reseller's row for
+	// `claude-opus-5-5` was claiming the reseller built it — and so ranked as
+	// a direct route next to Anthropic's. Recover the creator from the ID.
+	const attributed = merged.map((card) =>
+		card.originProvider === providerId
+			? { ...card, originProvider: extractOriginProvider(card.id) ?? providerId }
+			: card,
+	);
+
 	// Final pass: apply any active promotional overrides for cases where the
 	// public catalogs haven't yet picked up a publicly-announced discount.
-	return applyPromoOverrides(merged);
+	return applyPromoOverrides(attributed);
 }

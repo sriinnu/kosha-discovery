@@ -16,7 +16,7 @@ import { getProviderConfig, getProviderDescriptor, isLocalProvider, normalizePro
 import { registryDiscoverySnapshot } from "./registry-discovery.js";
 import type { DiscoveryDependencies, RegistryState } from "./registry-state.js";
 import { StaleCachePolicy } from "./resilience.js";
-import type { CredentialResult, DiscoveryOptions, Enricher, ModelCard, ProviderDiscoverer, ProviderInfo } from "./types.js";
+import type { CredentialResult, DiscoveryError, DiscoveryOptions, Enricher, ModelCard, ProviderDiscoverer, ProviderInfo } from "./types.js";
 import { applyPromoOverrides } from "./discovery/promo-overrides.js";
 import { assertCleanPayload } from "./security.js";
 
@@ -65,11 +65,14 @@ export async function registryDiscover(
 
 	const discoverers = await dependencies.loadDiscoverers(providers, options?.includeLocal);
 	const timeout = options?.timeout ?? DEFAULT_TIMEOUT_MS;
+	// Providers whose credentialed call failed but which were still listed from
+	// the public catalog: the error is reported, the provider is not dropped.
+	const degraded: DiscoveryError[] = [];
 	const results = await Promise.allSettled(
-		discoverers.map((discoverer) => discoverProvider(state, dependencies, discoverer, timeout)),
+		discoverers.map((discoverer) => discoverProvider(state, dependencies, discoverer, timeout, degraded)),
 	);
 
-	state.lastDiscoveryErrors = [];
+	state.lastDiscoveryErrors = [...degraded];
 	for (let index = 0; index < results.length; index += 1) {
 		const result = results[index];
 		if (result.status === "fulfilled") {
@@ -999,6 +1002,7 @@ async function discoverProvider(
 	dependencies: DiscoveryDependencies,
 	discoverer: ProviderDiscoverer,
 	timeout: number,
+	degraded: DiscoveryError[],
 ): Promise<ProviderInfo | null> {
 	const breaker = state.healthTracker.breaker(discoverer.providerId);
 	const startedAt = Date.now();
@@ -1047,6 +1051,37 @@ async function discoverProvider(
 		);
 		if (stale) {
 			return stale.data;
+		}
+
+		// A rejected or unreachable credentialed call says nothing about what
+		// the provider serves or charges — that is public. Without this, one
+		// expired key (or a China-region key tried against the international
+		// host) removed the provider's whole catalog from routing and pricing.
+		// The failure is still recorded, and the provider is reported as
+		// unauthenticated, because that is what it effectively is.
+		if (credential.source !== "none") {
+			try {
+				const models = await discoverer.discover({ source: "none" }, { timeout });
+				if (models.length > 0) {
+					degraded.push({
+						providerId: discoverer.providerId,
+						providerName: discoverer.providerName,
+						error: errorMessage,
+						timestamp: Date.now(),
+					});
+					return {
+						id: discoverer.providerId,
+						name: discoverer.providerName,
+						baseUrl: discoverer.baseUrl,
+						authenticated: false,
+						credentialSource: "none",
+						models,
+						lastRefreshed: Date.now(),
+					};
+				}
+			} catch {
+				/* the keyless path failed too — report the original error */
+			}
 		}
 
 		throw error;

@@ -1,6 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { applyPromoOverrides, PROMO_OVERRIDES } from "../../src/discovery/promo-overrides.js";
+import { applyPromoOverrides as applyWith, PROMO_OVERRIDES, type PromoOverride } from "../../src/discovery/promo-overrides.js";
 import type { ModelCard } from "../../src/types.js";
+
+// The built-in table is allowed to be empty, so behaviour is exercised against
+// a fixture rather than whichever promo happens to be live.
+const FIXTURE: readonly PromoOverride[] = [
+	{
+		providerId: "deepseek",
+		modelId: "deepseek-v4-pro",
+		pricing: { inputPerMillion: 0.435, outputPerMillion: 0.87, cacheReadPerMillion: 0.003625 },
+		endsAt: new Date("2026-05-31T15:59:00Z"),
+		reason: "test fixture",
+	},
+];
+
+const applyPromoOverrides = (cards: ModelCard[], now?: Date): ModelCard[] => applyWith(cards, now, FIXTURE);
 
 function card(provider: string, id: string, pricing: ModelCard["pricing"]): ModelCard {
 	return {
