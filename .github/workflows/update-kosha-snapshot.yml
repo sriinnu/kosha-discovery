@@ -320,6 +320,14 @@ jobs:
           console.log(`Validated snapshot schema for ${providerCount} providers and ${modelCount} models.`);
           NODE
 
+      # The catalog refreshes itself every week; the alias table is written by
+      # hand. This is what notices when `opus` or `grok` has fallen a generation
+      # behind. Advisory only — it annotates the run and never blocks publishing.
+      - name: Check alias freshness
+        continue-on-error: true
+        shell: bash
+        run: node scripts/check-alias-freshness.mjs "$OUTPUT_PATH" | tee -a "$OBS_LOG"
+
       - name: Generate checksum
         id: checksum
         shell: bash
@@ -446,14 +454,27 @@ jobs:
           cp "$OUTPUT_PATH" "$STAGE/kosha-latest.json"
           cp "$CHECKSUM_PATH" "$STAGE/kosha-latest.sha256"
 
+          # Release notes carry what changed since the last published snapshot
+          # (downloaded by the guard step above): new models, price changes,
+          # deprecations. The diff is a nicety — if it fails, publish anyway.
+          NOTES="$RUNNER_TEMP/release-notes.md"
+          PREVIOUS="$RUNNER_TEMP/previous-snapshot.json"
+          {
+            echo "Model/provider snapshot generated $(date -u +%Y-%m-%dT%H:%M:%SZ) by the scheduled discovery run. Not a code release."
+            echo
+            if [[ -f "$PREVIOUS" ]]; then
+              node scripts/snapshot-diff.mjs "$PREVIOUS" "$OUTPUT_PATH" || echo "_Diff against the previous snapshot was unavailable._"
+            fi
+          } > "$NOTES"
+
           publish_to() {
             local tag="$1" title="$2"
             if gh release view "$tag" >/dev/null 2>&1; then
               gh release upload "$tag" "$STAGE/kosha-latest.json" "$STAGE/kosha-latest.sha256" --clobber
+              gh release edit "$tag" --notes-file "$NOTES"
             else
               gh release create "$tag" "$STAGE/kosha-latest.json" "$STAGE/kosha-latest.sha256" \
-                --title "$title" --prerelease \
-                --notes "Model/provider snapshot generated $(date -u +%Y-%m-%dT%H:%M:%SZ) by the scheduled discovery run. Not a code release."
+                --title "$title" --prerelease --notes-file "$NOTES"
             fi
           }
 
@@ -497,7 +518,7 @@ jobs:
           VALIDATE_OUTCOME: ${{ steps.validate.outcome }}
           CHECKSUM_OUTCOME: ${{ steps.checksum.outcome }}
           SCAN_OUTCOME: ${{ steps.scan.outcome }}
-          COMMIT_OUTCOME: ${{ steps.commit.outcome }}
+          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
         run: |
           set -euo pipefail
           mkdir -p "$OBS_DIR"
@@ -509,7 +530,9 @@ jobs:
             ["validate", process.env.VALIDATE_OUTCOME ?? "unknown"],
             ["checksum", process.env.CHECKSUM_OUTCOME ?? "unknown"],
             ["scan", process.env.SCAN_OUTCOME ?? "unknown"],
-            ["commit", process.env.COMMIT_OUTCOME ?? "unknown"],
+            // "skipped" is the health guard declining to publish, which it
+            // reports as its own warning; it is not a failed step.
+            ["publish", process.env.PUBLISH_OUTCOME || "unknown"],
           ];
 
           const snapshotPath = process.env.OUTPUT_PATH;
@@ -559,11 +582,11 @@ jobs:
             outputPath: snapshotPath,
             checksumPath,
             outcomes,
-            status: outcomes.some(([, outcome]) => outcome !== "success") ? "failure" : "success",
+            status: outcomes.some(([, outcome]) => outcome !== "success" && outcome !== "skipped") ? "failure" : "success",
           };
 
           const failureLines = outcomes
-            .filter(([, outcome]) => outcome !== "success")
+            .filter(([, outcome]) => outcome !== "success" && outcome !== "skipped")
             .map(([step, outcome]) => `${step}: ${outcome}`);
 
           const providerLines = providerSummary.providers.length > 0

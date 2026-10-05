@@ -173,6 +173,7 @@ function buildSeedCard(id: string, providerId: string, entry: LiteLLMModelEntry)
 		aliases: [],
 		discoveredAt: Date.now(),
 		source: "litellm",
+		catalogSource: "litellm",
 	};
 	return applyFreeTierFlag(card);
 }

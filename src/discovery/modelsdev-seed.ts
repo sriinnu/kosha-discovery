@@ -11,7 +11,7 @@
  * @module
  */
 
-import type { ModelCard, ModelMode, ModelPricing } from "../types.js";
+import type { ModelCard, ModelMode, ModelPricing, ModelStatus } from "../types.js";
 import { applyFreeTierFlag } from "./free-tier.js";
 import {
 	type ModelsDevModel,
@@ -66,6 +66,7 @@ const PROVIDER_SLUG_ALIASES: Record<string, readonly string[]> = {
 	inception: ["inception"],
 	ai21: ["ai21"],
 	upstage: ["upstage"],
+	meta: ["meta"],
 	baseten: ["baseten"],
 	nebius: ["nebius"],
 	novita: ["novita-ai"],
@@ -158,8 +159,27 @@ function buildSeedCard(id: string, providerId: string, entry: ModelsDevModel): M
 		// stability — kosha consumers only need to know "came from a public
 		// community catalog" vs "came from a live API".
 		source: "litellm",
+		catalogSource: "models.dev",
 	};
+	const status = mapStatus(entry.status);
+	if (status) card.status = status;
+	if (typeof entry.release_date === "string" && RELEASE_DATE_PATTERN.test(entry.release_date)) {
+		card.releaseDate = entry.release_date;
+	}
 	return applyFreeTierFlag(card);
+}
+
+/** `YYYY-MM-DD`, or `YYYY-MM` for entries dated to the month. */
+const RELEASE_DATE_PATTERN = /^\d{4}-\d{2}(?:-\d{2})?$/;
+
+/**
+ * Translate a models.dev lifecycle marker. A GA model carries no marker and
+ * is left unset, so the LiteLLM pass can still date its deprecation.
+ */
+function mapStatus(status: string | undefined): ModelStatus | undefined {
+	if (status === "deprecated") return "deprecated";
+	if (status === "beta" || status === "alpha") return "preview";
+	return undefined;
 }
 
 function pickPositive(value: number | undefined): number | undefined {

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { AliasResolver, DEFAULT_ALIASES } from "../src/aliases.js";
+import {
+	STATIC_ANTHROPIC_MODELS,
+	STATIC_GOOGLE_MODELS,
+	STATIC_OPENAI_MODELS,
+	STATIC_XAI_MODELS,
+} from "../src/discovery/static-direct.js";
 
 describe("AliasResolver", () => {
 	describe("default alias resolution", () => {
@@ -9,9 +15,9 @@ describe("AliasResolver", () => {
 			expect(resolver.resolve("fable")).toBe("claude-fable-5-1");
 			expect(resolver.resolve("fable-5.1")).toBe("claude-fable-5-1");
 			expect(resolver.resolve("mythos")).toBe("claude-mythos-5-1");
-			expect(resolver.resolve("opus")).toBe("claude-opus-5");
+			expect(resolver.resolve("opus")).toBe("claude-opus-5-5");
 			expect(resolver.resolve("opus-5")).toBe("claude-opus-5");
-			expect(resolver.resolve("sonnet")).toBe("claude-sonnet-5");
+			expect(resolver.resolve("sonnet")).toBe("claude-sonnet-5-5");
 			expect(resolver.resolve("sonnet-5")).toBe("claude-sonnet-5");
 			expect(resolver.resolve("haiku")).toBe("claude-haiku-4-5");
 			expect(resolver.resolve("haiku-4.5")).toBe("claude-haiku-4-5");
@@ -48,8 +54,8 @@ describe("AliasResolver", () => {
 
 		it("resolves Google aliases", () => {
 			expect(resolver.resolve("gemini-pro")).toBe("gemini-2.5-pro");
-			expect(resolver.resolve("gemini-flash")).toBe("gemini-2.5-flash");
-			expect(resolver.resolve("gemini-flash-lite")).toBe("gemini-2.5-flash-lite");
+			expect(resolver.resolve("gemini-flash")).toBe("gemini-3.8-flash");
+			expect(resolver.resolve("gemini-flash-lite")).toBe("gemini-3.5-flash-lite");
 		});
 
 		it("never points a Google alias at a dated preview ID", () => {
@@ -104,7 +110,7 @@ describe("AliasResolver", () => {
 			});
 			expect(resolver.resolve("my-alias")).toBe("my-model-id");
 			// Default still works
-			expect(resolver.resolve("opus")).toBe("claude-opus-5");
+			expect(resolver.resolve("opus")).toBe("claude-opus-5-5");
 		});
 	});
 
@@ -112,9 +118,9 @@ describe("AliasResolver", () => {
 		const resolver = new AliasResolver();
 
 		it("finds all aliases for a given model ID", () => {
-			const aliases = resolver.reverseAliases("claude-sonnet-5");
+			const aliases = resolver.reverseAliases("claude-sonnet-5-5");
 			expect(aliases).toContain("sonnet");
-			expect(aliases).toContain("sonnet-5");
+			expect(aliases).toContain("sonnet-5.5");
 			expect(aliases).toHaveLength(2);
 		});
 
@@ -171,7 +177,37 @@ describe("AliasResolver", () => {
 			const resolver = new AliasResolver({ "custom": "custom-model" });
 			const all = resolver.all();
 			expect(all["custom"]).toBe("custom-model");
-			expect(all["sonnet"]).toBe("claude-sonnet-5");
+			expect(all["sonnet"]).toBe("claude-sonnet-5-5");
 		});
+	});
+});
+
+describe("DEFAULT_ALIASES — offline coverage", () => {
+	// An alias that resolves to an ID with no card behind it is a dead end on a
+	// machine with no key and no network. This is the guard that keeps the alias
+	// table and the static fallback lists from drifting apart again.
+	const STATIC_IDS = new Set(
+		[...STATIC_ANTHROPIC_MODELS, ...STATIC_OPENAI_MODELS, ...STATIC_GOOGLE_MODELS, ...STATIC_XAI_MODELS].map((m) => m.id),
+	);
+	const FIRST_PARTY = /^(claude-|gpt-|o\d|text-embedding-|gemini-|grok-)/;
+
+	it("every first-party alias target has a static fallback card", () => {
+		const orphans = Object.entries(DEFAULT_ALIASES)
+			.filter(([, target]) => FIRST_PARTY.test(target) && !STATIC_IDS.has(target))
+			.map(([alias, target]) => `${alias} -> ${target}`);
+		expect(orphans).toEqual([]);
+	});
+
+	it("bare family aliases track the current generation", () => {
+		const resolver = new AliasResolver();
+		expect(resolver.resolve("opus")).toBe(resolver.resolve("opus-5.5"));
+		expect(resolver.resolve("sonnet")).toBe(resolver.resolve("sonnet-5.5"));
+		expect(resolver.resolve("fable")).toBe(resolver.resolve("fable-5.1"));
+		expect(resolver.resolve("grok")).toBe(resolver.resolve("grok-4.7"));
+		expect(resolver.resolve("gpt6")).toBe("gpt-6.1-sol");
+		// Pinned generations survive the bare alias moving on.
+		expect(resolver.resolve("opus-5")).toBe("claude-opus-5");
+		expect(resolver.resolve("sonnet-5")).toBe("claude-sonnet-5");
+		expect(resolver.resolve("gemini-flash-2.5")).toBe("gemini-2.5-flash");
 	});
 });

@@ -112,6 +112,8 @@ export interface DiscoveryModelV1 {
 	deprecationDate: string | null;
 	/** Canonical successor model ID when the provider has published one. */
 	replacedBy: string | null;
+	/** First-release date (`YYYY-MM-DD` or `YYYY-MM`) when a catalog publishes one. */
+	releaseDate: string | null;
 	/**
 	 * Number of consecutive discovery passes in which this model was absent
 	 * from the fresh fetch. Reset to 0 when the model reappears. Once it

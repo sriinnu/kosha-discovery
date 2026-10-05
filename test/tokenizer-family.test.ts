@@ -28,6 +28,12 @@ describe("inferTokenizerFamily — OpenAI", () => {
 		expect(inferTokenizerFamily("openai", "gpt-5")).toBe("o200k_base");
 	});
 
+	it("returns o200k_base for GPT-6 and other post-GPT-5 names", () => {
+		expect(inferTokenizerFamily("openai", "gpt-6-sol")).toBe("o200k_base");
+		expect(inferTokenizerFamily("openai", "gpt-6.1-sol")).toBe("o200k_base");
+		expect(inferTokenizerFamily(undefined, "gpt-daybreak-blue-latest")).toBe("o200k_base");
+	});
+
 	it("returns cl100k_base for legacy GPT-4 and GPT-3.5", () => {
 		expect(inferTokenizerFamily("openai", "gpt-4")).toBe("cl100k_base");
 		expect(inferTokenizerFamily("openai", "gpt-4-turbo")).toBe("cl100k_base");

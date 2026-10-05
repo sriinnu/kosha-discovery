@@ -65,9 +65,9 @@ export function inferToolDialect(
 		return "none";
 	}
 
-	// OpenAI — newer frontier models (GPT-4.1, GPT-5, o1/o3/o4) target Responses API.
+	// OpenAI — newer frontier models (GPT-4.1, GPT-5 and later, o1/o3/o4) target Responses API.
 	if (origin === "openai" || /^(gpt-|o[134]|text-embedding-|chatgpt)/.test(id)) {
-		if (/gpt-4\.1|gpt-5|^o1\b|^o3\b|^o4\b/.test(id) || id.startsWith("o1-") || id.startsWith("o3-") || id.startsWith("o4-")) {
+		if (/gpt-4\.1|gpt-(?:[5-9]|\d{2})|gpt-daybreak|^o1\b|^o3\b|^o4\b/.test(id) || id.startsWith("o1-") || id.startsWith("o3-") || id.startsWith("o4-")) {
 			return "openai-responses";
 		}
 		// Legacy GPT-3.5 has very flaky tool calling; newer GPT-3.5-turbo 1106+ supports it.
@@ -115,11 +115,11 @@ export function inferToolDialect(
 
 	// DeepSeek / Qwen — both expose OpenAI-compatible tools in newer chat variants.
 	if (origin === "deepseek" || /deepseek/.test(id)) {
-		if (/deepseek-(v3|r1|chat|coder-v2)/.test(id)) return "openai-tools";
+		if (/deepseek-(v[3-9]|r1|chat|reasoner|flash|pro|coder-v2)/.test(id)) return "openai-tools";
 		return "none";
 	}
 	if (origin === "alibaba" || origin === "qwen" || /\bqwen/.test(id)) {
-		if (/qwen-?[23]|qwen2\.5|qwen3/.test(id)) return "openai-tools";
+		if (/qwen-?[23]|qwen2\.5|qwen3|qwen-(max|plus|turbo|flash|coder)/.test(id)) return "openai-tools";
 		return "none";
 	}
 
@@ -162,7 +162,7 @@ export function inferStructuredOutputModes(
 	// json_object (json-mode) is broadly available on GPT-4 turbo / GPT-4o / GPT-3.5-turbo-1106+.
 	if (origin === "openai" || /^(gpt-|o[134]|chatgpt)/.test(id)) {
 		const modes: StructuredOutputMode[] = [];
-		if (/gpt-4o|gpt-4\.1|gpt-5|^o1\b|^o3\b|^o4\b|chatgpt-4o/.test(id) || id.startsWith("o1-") || id.startsWith("o3-") || id.startsWith("o4-")) {
+		if (/gpt-4o|gpt-4\.1|gpt-(?:[5-9]|\d{2})|gpt-daybreak|^o1\b|^o3\b|^o4\b|chatgpt-4o/.test(id) || id.startsWith("o1-") || id.startsWith("o3-") || id.startsWith("o4-")) {
 			modes.push("json-schema", "json-mode");
 		} else if (/gpt-4-turbo|gpt-4-1106|gpt-4-0125|gpt-3\.5-turbo-(1106|0125)/.test(id)) {
 			modes.push("json-mode");
@@ -172,7 +172,8 @@ export function inferStructuredOutputModes(
 
 	// Anthropic — native `output_config.format` JSON schema on Claude 4.5+;
 	// tool-choice coercion where forced tool_choice is still accepted; XML
-	// prompt guidance everywhere. Fable / Mythos 5.1 reject forced tool_choice.
+	// prompt guidance everywhere. Fable / Mythos 5.1 and Opus / Sonnet 5.5 reject
+	// forced tool_choice.
 	if (origin === "anthropic" || /claude/.test(id)) {
 		if (/claude-(instant|1|2\.0)/.test(id)) return ["xml"];
 		const modes: StructuredOutputMode[] = [];
@@ -219,11 +220,11 @@ export function inferStructuredOutputModes(
 
 	// DeepSeek / Qwen — OpenAI-compatible response_format on newer chat variants.
 	if (origin === "deepseek" || /deepseek/.test(id)) {
-		if (/deepseek-(v3|r1|chat|coder-v2)/.test(id)) return ["json-mode"];
+		if (/deepseek-(v[3-9]|r1|chat|reasoner|flash|pro|coder-v2)/.test(id)) return ["json-mode"];
 		return [];
 	}
 	if (origin === "alibaba" || origin === "qwen" || /\bqwen/.test(id)) {
-		if (/qwen-?[23]|qwen2\.5|qwen3/.test(id)) return ["json-mode"];
+		if (/qwen-?[23]|qwen2\.5|qwen3|qwen-(max|plus|turbo|flash|coder)/.test(id)) return ["json-mode"];
 		return [];
 	}
 

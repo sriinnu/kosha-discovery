@@ -272,3 +272,31 @@ describe("inferParallelToolCalls", () => {
 		expect(inferParallelToolCalls("openai", "dall-e-3")).toBeUndefined();
 	});
 });
+
+describe("model features — names that postdate the original rules", () => {
+	it("treats GPT-6 as a Responses-API, JSON-schema model", () => {
+		for (const id of ["gpt-6-sol", "gpt-6.1-sol", "gpt-6-astra", "gpt-6-luna", "gpt-daybreak-blue-latest"]) {
+			expect(inferToolDialect("openai", id), id).toBe("openai-responses");
+			expect(inferStructuredOutputModes("openai", id), id).toEqual(["json-schema", "json-mode"]);
+		}
+		// The widened pattern must not swallow the legacy line.
+		expect(inferToolDialect("openai", "gpt-4-turbo")).toBe("openai-tools");
+		expect(inferToolDialect("openai", "gpt-3.5-turbo-0613")).toBe("none");
+	});
+
+	it("recognises DeepSeek V4 and the unversioned Qwen tiers as tool-capable", () => {
+		for (const id of ["deepseek-v4-pro", "deepseek-flash", "deepseek-reasoner"]) {
+			expect(inferToolDialect("deepseek", id), id).toBe("openai-tools");
+			expect(inferStructuredOutputModes("deepseek", id), id).toEqual(["json-mode"]);
+		}
+		for (const id of ["qwen3.8-max", "qwen-max", "qwen-plus"]) {
+			expect(inferToolDialect("alibaba", id), id).toBe("openai-tools");
+		}
+	});
+
+	it("drops tool-choice coercion for Claude models that reject forced tool use", () => {
+		expect(inferStructuredOutputModes("anthropic", "claude-opus-5-5")).toEqual(["json-schema", "xml"]);
+		expect(inferStructuredOutputModes("anthropic", "claude-sonnet-5-5")).toEqual(["json-schema", "xml"]);
+		expect(inferStructuredOutputModes("anthropic", "claude-opus-5")).toEqual(["json-schema", "tool-choice", "xml"]);
+	});
+});

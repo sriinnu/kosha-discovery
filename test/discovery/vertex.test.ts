@@ -8,7 +8,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VertexDiscoverer } from "../../src/discovery/vertex.js";
-import type { CredentialResult } from "../../src/types.js";
+import type { CredentialResult, ModelCard } from "../../src/types.js";
 
 // ---------------------------------------------------------------------------
 // Module mocks — must be hoisted above all imports in vitest
@@ -16,21 +16,31 @@ import type { CredentialResult } from "../../src/types.js";
 
 vi.mock("node:child_process", () => ({
 	execSync: vi.fn(),
+	execFileSync: vi.fn(),
 }));
 
 vi.mock("node:fs", () => ({
 	readFileSync: vi.fn(),
 }));
 
+// The public catalog is a network source; default it to empty so the static
+// fallback tests stay hermetic, and feed it explicitly where it is under test.
+vi.mock("../../src/discovery/public-seed.js", () => ({
+	getPublicSeed: vi.fn(async () => []),
+}));
+
 // ---------------------------------------------------------------------------
 // Import mocked modules so we can configure them per-test
 // ---------------------------------------------------------------------------
 
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { getPublicSeed } from "../../src/discovery/public-seed.js";
 
 const mockedExecSync = vi.mocked(execSync);
+const mockedExecFileSync = vi.mocked(execFileSync);
 const mockedReadFileSync = vi.mocked(readFileSync);
+const mockedGetPublicSeed = vi.mocked(getPublicSeed);
 
 // ---------------------------------------------------------------------------
 // Fixture data
@@ -191,9 +201,9 @@ describe("VertexDiscoverer — static fallback", () => {
 		expect(cards.length).toBeGreaterThanOrEqual(5);
 	});
 
-	it("static fallback: gemini-2.5-pro-preview-05-06 has correct fields", async () => {
+	it("static fallback: gemini-2.5-pro has correct fields", async () => {
 		const cards = await discoverer.discover(noCredential);
-		const pro = cards.find((c) => c.id === "gemini-2.5-pro-preview-05-06");
+		const pro = cards.find((c) => c.id === "gemini-2.5-pro");
 
 		expect(pro).toBeDefined();
 		expect(pro!.provider).toBe("vertex");
@@ -235,6 +245,47 @@ describe("VertexDiscoverer — static fallback", () => {
 		for (const card of cards) {
 			expect(card.projectId).toBe("my-project");
 		}
+	});
+
+	it("static fallback: carries no retired preview IDs", async () => {
+		const cards = await discoverer.discover(noCredential);
+		expect(cards.some((c) => /-preview-\d{2}-\d{2}$/.test(c.id))).toBe(false);
+	});
+
+	it("prefers the public catalog over the static list, with real origins", async () => {
+		const seed = (id: string): ModelCard => ({
+			id,
+			name: id,
+			provider: "vertex",
+			originProvider: "vertex",
+			mode: "chat",
+			capabilities: ["chat"],
+			contextWindow: 1_000_000,
+			maxOutputTokens: 128_000,
+			aliases: [],
+			discoveredAt: 0,
+			source: "litellm",
+		});
+		mockedGetPublicSeed.mockResolvedValueOnce([
+			seed("gemini-3.8-flash"),
+			seed("claude-opus-5-5"),
+			seed("xai/grok-4.6"),
+			seed("zai-org/glm-5.2-maas"),
+		]);
+
+		const cards = await discoverer.discover({ ...noCredential, metadata: { projectId: "my-project" } });
+
+		expect(cards.map((c) => c.id)).toEqual(["gemini-3.8-flash", "claude-opus-5-5", "xai/grok-4.6", "zai-org/glm-5.2-maas"]);
+		expect(cards.map((c) => c.originProvider)).toEqual(["google", "anthropic", "xai", "zai"]);
+		expect(cards.every((c) => c.region === "us-central1" && c.projectId === "my-project")).toBe(true);
+		expect(cards.every((c) => c.source === "litellm")).toBe(true);
+	});
+
+	it("falls back to the static list when the public catalog throws", async () => {
+		mockedGetPublicSeed.mockRejectedValueOnce(new Error("offline"));
+		const cards = await discoverer.discover(noCredential);
+		expect(cards.length).toBeGreaterThanOrEqual(5);
+		expect(cards.every((c) => c.source === "manual")).toBe(true);
 	});
 
 	it("static fallback: propagates custom region from credential metadata", async () => {
@@ -471,9 +522,19 @@ describe("VertexDiscoverer — gcloud CLI fallback", () => {
 			return Buffer.from("");
 		});
 
+		// The model list goes through execFileSync, not execSync. This test used
+		// to mock only the latter, fell through to the static list, and passed
+		// because that list happened to contain the same ID.
+		mockedExecFileSync.mockReturnValueOnce(Buffer.from(gcloudOutput));
+
 		const cards = await discoverer.discover(metadataOnlyCredential);
 
-		expect(cards.length).toBeGreaterThan(0);
+		expect(mockedExecFileSync).toHaveBeenCalledWith(
+			"gcloud",
+			expect.arrayContaining(["ai", "models", "list", "--project=meta-project", "--region=europe-west4"]),
+			expect.anything(),
+		);
+		expect(cards.map((c) => c.id)).toEqual(["gemini-2.0-flash", "text-embedding-005"]);
 		const flash = cards.find((c) => c.id === "gemini-2.0-flash");
 		expect(flash).toBeDefined();
 		expect(flash!.provider).toBe("vertex");
@@ -495,8 +556,11 @@ describe("VertexDiscoverer — gcloud CLI fallback", () => {
 			return Buffer.from("");
 		});
 
+		mockedExecFileSync.mockReturnValueOnce(Buffer.from(gcloudOutput));
+
 		const cards = await discoverer.discover(metadataOnlyCredential);
 
+		expect(cards).toHaveLength(2);
 		for (const card of cards) {
 			expect(card.id).not.toMatch(/^projects\//);
 			expect(card.id).not.toMatch(/^locations\//);
@@ -509,6 +573,9 @@ describe("VertexDiscoverer — gcloud CLI fallback", () => {
 			throw new Error("no ADC");
 		});
 		mockedExecSync.mockImplementation(() => {
+			throw new Error("gcloud: command not found");
+		});
+		mockedExecFileSync.mockImplementationOnce(() => {
 			throw new Error("gcloud: command not found");
 		});
 

@@ -19,7 +19,7 @@
  * defaults when it is absent.
  *
  * Known families returned:
- * - `"o200k_base"` — OpenAI GPT-4o, GPT-4.1, o1/o3/o4 families
+ * - `"o200k_base"` — OpenAI GPT-4o, GPT-4.1, GPT-5 and later, o1/o3/o4 families
  * - `"cl100k_base"` — OpenAI GPT-4, GPT-3.5-turbo, text-embedding-3
  * - `"claude"` — Anthropic Claude family (proprietary tokenizer)
  * - `"gemini"` — Google Gemini family (proprietary tokenizer)
@@ -47,7 +47,7 @@ export function inferTokenizerFamily(
 	// OpenAI — GPT-4o / GPT-4.1 / o1–o4 use o200k_base; older models use cl100k_base.
 	if (origin === "openai" || /^(gpt-|o[134]|text-embedding-|chatgpt)/.test(id)) {
 		if (
-			/gpt-4o|gpt-4\.1|gpt-5|^o1\b|^o3\b|^o4\b|chatgpt-4o/.test(id) ||
+			/gpt-4o|gpt-4\.1|gpt-(?:[5-9]|\d{2})|gpt-daybreak|^o1\b|^o3\b|^o4\b|chatgpt-4o/.test(id) ||
 			id.startsWith("o1-") ||
 			id.startsWith("o3-") ||
 			id.startsWith("o4-")

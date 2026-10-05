@@ -24,6 +24,9 @@ const PREFIX_TO_ORIGIN: Record<string, string> = {
 	mistral: "mistral",
 	cohere: "cohere",
 	deepseek: "deepseek",
+	"deepseek-ai": "deepseek",
+	"zai-org": "zai",
+	moonshotai: "moonshot",
 	qwen: "qwen",
 	"01-ai": "01-ai",
 	"x-ai": "xai",
@@ -43,6 +46,7 @@ const PATTERN_TO_ORIGIN: Array<[RegExp, string]> = [
 	[/^dall-e/i, "openai"],
 	[/^whisper|^tts-/i, "openai"],
 	[/^gemini-/i, "google"],
+	[/^grok-/i, "xai"],
 	[/^llama/i, "meta"],
 	[/^mistral|^codestral|^pixtral/i, "mistral"],
 	[/^command-/i, "cohere"],
@@ -150,7 +154,25 @@ export function normalizeModelId(modelId: string): string {
  * `anthropic/claude-sonnet-4.6`.
  */
 export function matchableModelId(modelId: string): string {
-	return normalizeModelId(modelId).replace(/(\d)[._](\d)/g, "$1-$2");
+	return stripBedrockEnvelope(normalizeModelId(modelId)).replace(/(\d)[._](\d)/g, "$1-$2");
+}
+
+/** Vendors Bedrock namespaces model IDs under (`anthropic.claude-…`). */
+const BEDROCK_VENDOR_PREFIX =
+	/^(?:[a-z]{2,6}(?:-[a-z]+)?\.)?(?:anthropic|amazon|openai|meta|mistral|cohere|ai21|xai|google|deepseek|qwen|nvidia|writer|minimax|moonshot|moonshotai|zai|stability)\./i;
+
+/**
+ * Reduce a Bedrock ID to the model it serves, for matching only:
+ * `us.anthropic.claude-haiku-4-5-20251001-v1` → `claude-haiku-4-5`. Strips the
+ * optional geography, the vendor namespace, the `-vN` revision and any date
+ * the revision was hiding. IDs without a vendor namespace pass through.
+ */
+function stripBedrockEnvelope(id: string): string {
+	if (id.includes("/") || !BEDROCK_VENDOR_PREFIX.test(id)) return id;
+	return id
+		.replace(BEDROCK_VENDOR_PREFIX, "")
+		.replace(/-v\d+$/i, "")
+		.replace(/-\d{8}$/, "");
 }
 
 /**

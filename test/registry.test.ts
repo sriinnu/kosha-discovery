@@ -526,7 +526,7 @@ describe("ModelRegistry", () => {
 	describe("resolve() and alias()", () => {
 		it("delegates to AliasResolver", () => {
 			const registry = new ModelRegistry();
-			expect(registry.resolve("sonnet")).toBe("claude-sonnet-5");
+			expect(registry.resolve("sonnet")).toBe("claude-sonnet-5-5");
 		});
 
 		it("adds custom aliases via alias()", () => {

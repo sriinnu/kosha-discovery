@@ -4,7 +4,8 @@
  * Resolution strategy (in order):
  * 1. REST API with Application Default Credentials (ADC)
  * 2. gcloud CLI fallback (`gcloud ai models list`)
- * 3. Static fallback list of known Vertex AI models
+ * 3. Public catalog (models.dev) — Gemini, Claude and partner models on Vertex
+ * 4. Static fallback list of known Vertex AI models
  *
  * Credentials: Uses the Google ADC chain —
  *   ~/.config/gcloud/application_default_credentials.json,
@@ -19,7 +20,9 @@ import { join } from "node:path";
 import { assertSafeShellArg } from "../shell-safe.js";
 import { assertCleanPayload } from "../security.js";
 import type { CredentialResult, ModelCard, ModelMode } from "../types.js";
+import { extractOriginProvider } from "../normalize.js";
 import { BaseDiscoverer } from "./base.js";
+import { getPublicSeed } from "./public-seed.js";
 
 // ---------------------------------------------------------------------------
 // API / ADC response shapes
@@ -85,10 +88,11 @@ export class VertexDiscoverer extends BaseDiscoverer {
 	readonly baseUrl = "https://{region}-aiplatform.googleapis.com";
 
 	/**
-	 * Discover models from Vertex AI using a three-tier fallback strategy:
+	 * Discover models from Vertex AI using a four-tier fallback strategy:
 	 *   1. Vertex AI REST API (requires an ADC access token + project ID)
 	 *   2. `gcloud ai models list` CLI
-	 *   3. Curated static list
+	 *   3. Public catalog seed (models.dev)
+	 *   4. Curated static list
 	 *
 	 * @param credential - Credential bag; `accessToken` is used when present.
 	 *   `metadata.projectId` and `metadata.region` take precedence over env vars.
@@ -122,11 +126,15 @@ export class VertexDiscoverer extends BaseDiscoverer {
 				const cards = await this.discoverViaCli(projectId, region);
 				if (cards.length > 0) return cards;
 			} catch {
-				// Fall through to static list
+				// Fall through to the public catalog
 			}
 		}
 
-		// Attempt 3: Static fallback
+		// Attempt 3: Public catalog
+		const seeds = await this.publicCatalogFallback(region, projectId);
+		if (seeds.length > 0) return seeds;
+
+		// Attempt 4: Static fallback
 		return this.staticFallback(region, projectId);
 	}
 
@@ -320,13 +328,39 @@ export class VertexDiscoverer extends BaseDiscoverer {
 	}
 
 	// -------------------------------------------------------------------------
+	// Private: public catalog
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Source the Vertex listing from the public seed pipeline.
+	 *
+	 * Vertex serves Claude and a set of partner models next to Gemini, so the
+	 * seed's blanket `originProvider: "vertex"` is replaced with the model's
+	 * actual creator; anything unrecognised with no publisher prefix is Google's.
+	 */
+	private async publicCatalogFallback(region: string, projectId: string | undefined): Promise<ModelCard[]> {
+		try {
+			const seeds = await getPublicSeed(this.providerId);
+			return seeds.map((seed) => ({
+				...seed,
+				originProvider: extractOriginProvider(seed.id) ?? (seed.id.includes("/") ? seed.id.slice(0, seed.id.indexOf("/")) : "google"),
+				region,
+				projectId,
+			}));
+		} catch {
+			return [];
+		}
+	}
+
+	// -------------------------------------------------------------------------
 	// Private: static fallback
 	// -------------------------------------------------------------------------
 
 	/**
-	 * Return a curated list of well-known Vertex AI models (Feb 2026).
+	 * Return a curated list of well-known Vertex AI models (Oct 2026).
 	 *
-	 * Used when neither the REST API nor the gcloud CLI is accessible.
+	 * Used when the REST API, the gcloud CLI and the public catalog are all
+	 * inaccessible.
 	 * All entries carry `source: "manual"` so consumers can distinguish them
 	 * from live API data.
 	 *
@@ -339,9 +373,9 @@ export class VertexDiscoverer extends BaseDiscoverer {
 			this.makeCard({ ...base, id, name, mode: "chat", capabilities: ["chat", "vision", "function_calling", "code", "nlu"], contextWindow: ctx, maxOutputTokens: out });
 
 		return [
-			geminiChat("gemini-2.5-pro-preview-05-06", "Gemini 2.5 Pro Preview", 1_048_576, 65_536),
-			geminiChat("gemini-2.5-flash-preview-04-17", "Gemini 2.5 Flash Preview", 1_048_576, 8_192),
-			geminiChat("gemini-2.0-flash", "Gemini 2.0 Flash", 1_048_576, 8_192),
+			geminiChat("gemini-2.5-pro", "Gemini 2.5 Pro", 1_048_576, 65_536),
+			geminiChat("gemini-3.8-flash", "Gemini 3.8 Flash", 1_048_576, 65_536),
+			geminiChat("gemini-2.5-flash", "Gemini 2.5 Flash", 1_048_576, 65_536),
 			this.makeCard({ ...base, id: "text-embedding-005", name: "Text Embedding 005", mode: "embedding", capabilities: ["embedding"], contextWindow: 2_048, maxOutputTokens: 0 }),
 			this.makeCard({ ...base, id: "imagen-3.0-generate-002", name: "Imagen 3.0", mode: "image", capabilities: ["image_generation"], contextWindow: 0, maxOutputTokens: 0 }),
 		];

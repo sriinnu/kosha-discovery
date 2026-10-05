@@ -63,7 +63,8 @@ export AWS_PROFILE=my-profile
 # Option D: SSO / IAM role
 # kosha detects sso_start_url or role_arn in ~/.aws/config
 
-# Optional: install the AWS SDK for live model listing (otherwise uses static fallback)
+# Optional: install the AWS SDK for live, region-accurate model listing
+# (otherwise the Bedrock catalog comes from models.dev)
 npm install @aws-sdk/client-bedrock
 ```
 
@@ -245,6 +246,7 @@ Config priority: `~/.kosharc.json` < `kosha.config.json` < programmatic config.
 | `inception` | `INCEPTION_API_KEY` | Mercury diffusion LLMs. |
 | `ai21` | `AI21_API_KEY` | Jamba. |
 | `upstage` | `UPSTAGE_API_KEY` | Solar. |
+| `meta` | `META_MODEL_API_KEY`, `META_API_KEY` | Muse Spark (`api.meta.ai`). |
 | `baseten` | `BASETEN_API_KEY` | |
 | `nebius` | `NEBIUS_API_KEY` | Token Factory. |
 | `novita` | `NOVITA_API_KEY` | |

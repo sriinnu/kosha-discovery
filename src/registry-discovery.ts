@@ -278,6 +278,7 @@ export function registrySerializeModel(state: RegistryState, model: ModelCard): 
 		status: model.status ?? null,
 		deprecationDate: model.deprecationDate ?? null,
 		replacedBy: model.replacedBy ?? null,
+		releaseDate: model.releaseDate ?? null,
 	};
 }
 

@@ -15,14 +15,14 @@ Every fact below is checked against `src/`; where behaviour depends on configura
 | Anthropic | `GET https://api.anthropic.com/v1/models` — `max_input_tokens`, `max_tokens`, `capabilities` are read from the response | `ANTHROPIC_API_KEY`; `~/.claude.json`, `~/.config/claude/settings.json`, `~/.claude/credentials.json` (Claude CLI); `~/.codex/auth.json` (Codex CLI) |
 | OpenAI | `GET https://api.openai.com/v1/models` | `OPENAI_API_KEY`; `~/.config/github-copilot/hosts.json` (`%LOCALAPPDATA%` on Windows) |
 | Google (Gemini) | `GET https://generativelanguage.googleapis.com/v1beta/models` | `GOOGLE_API_KEY` or `GEMINI_API_KEY`; `~/.gemini/oauth_creds.json`; gcloud ADC |
-| AWS Bedrock | `@aws-sdk/client-bedrock` if installed → `aws bedrock list-foundation-models` → static list | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`; `~/.aws/credentials`; `~/.aws/config` (SSO, `role_arn`); `AWS_PROFILE`. Region: `AWS_DEFAULT_REGION` → `AWS_REGION` → `~/.aws/config` → `us-east-1`. IDs look like `anthropic.claude-opus-4-8-v1:0` |
-| Vertex AI | API + `gcloud auth print-access-token` (5 s timeout) | `GOOGLE_APPLICATION_CREDENTIALS`, ADC; project from `GOOGLE_CLOUD_PROJECT` → `GCLOUD_PROJECT` → `gcloud config get-value project` |
+| AWS Bedrock | `@aws-sdk/client-bedrock` if installed → `aws bedrock list-foundation-models` → public catalog (models.dev) → static list | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`; `~/.aws/credentials`; `~/.aws/config` (SSO, `role_arn`); `AWS_PROFILE`. Region: `AWS_DEFAULT_REGION` → `AWS_REGION` → `~/.aws/config` → `us-east-1`. IDs look like `anthropic.claude-opus-5-5`, or `us.anthropic.claude-opus-5-5` for a cross-region inference profile; `routes` / `modelRoutes` match both to `claude-opus-5-5` |
+| Vertex AI | API + `gcloud auth print-access-token` (5 s timeout) → `gcloud ai models list` → public catalog (models.dev) → static list | `GOOGLE_APPLICATION_CREDENTIALS`, ADC; project from `GOOGLE_CLOUD_PROJECT` → `GCLOUD_PROJECT` → `gcloud config get-value project` |
 | OpenRouter | `GET https://openrouter.ai/api/v1/models` | `OPENROUTER_API_KEY` (optional; unauthenticated works, rate-limited). `originProvider` from the ID prefix (`openai/gpt-4o` → `openai`) |
 | Vercel AI Gateway | `GET /v1/models` | `AI_GATEWAY_API_KEY` or `VERCEL_OIDC_TOKEN`; discovery works without, the proxy needs one |
 | Ollama / llama.cpp / LM Studio / vLLM | local HTTP (`localhost:11434/api/tags` for Ollama, etc.) | none; base URL overridable in config |
 | NVIDIA, Together, Fireworks, Groq, Cerebras, Cohere, DeepInfra, Perplexity, DeepSeek, Mistral, Moonshot, GLM, Z.AI, MiniMax | provider `/models` endpoint (OpenAI-compatible) | `NVIDIA_API_KEY`, `TOGETHER_API_KEY`, `FIREWORKS_API_KEY`, `GROQ_API_KEY`, `CEREBRAS_API_KEY`, `CO_API_KEY`, `DEEPINFRA_API_KEY`, `PERPLEXITY_API_KEY`, `DEEPSEEK_API_KEY`, `MOONSHOT_API_KEY` / `KIMI_API_KEY`, `GLM_API_KEY` / `ZHIPUAI_API_KEY`, `ZAI_API_KEY`, `MINIMAX_API_KEY` |
 
-Without a key, direct providers fall back to the public models.dev + LiteLLM catalog, then to a curated static list (`src/discovery/static-direct.ts`). `provider.authenticated` and `provider.credentialSource` (`env` / `cli` / `config` / `oauth` / `none`) tell you which path ran.
+Without a key, direct providers fall back to the public models.dev + LiteLLM catalog, then to a curated static list (`src/discovery/static-direct.ts`). `provider.authenticated` and `provider.credentialSource` (`env` / `cli` / `config` / `oauth` / `none`) tell you which path ran. A key that is present but rejected takes the same keyless path: the provider stays listed with `authenticated: false`, and the failure is in `discoveryErrors()`.
 
 ---
 
@@ -162,8 +162,8 @@ Tool execution failures come back as `isError: true` results; unknown tools or b
 
 ```typescript
 ModelCard {
-  id: string;                    // "claude-sonnet-5"
-  name: string;                  // "Claude Sonnet 5"
+  id: string;                    // "claude-sonnet-5-5"
+  name: string;                  // "Claude Sonnet 5.5"
   provider: string;              // serving layer: "anthropic", "openrouter", "bedrock", …
   originProvider?: string;       // model creator; differs from provider on proxied routes
   mode: ModelMode;               // "chat" | "embedding" | "image" | "video" | "audio" | "moderation" | "rerank"
@@ -172,12 +172,14 @@ ModelCard {
   maxOutputTokens: number;       // 128000
   pricing?: ModelPricing;        // { inputPerMillion, outputPerMillion, cacheReadPerMillion?, cacheWritePerMillion?, batchInputPerMillion?, longContextInputPerMillion?, … } — USD per 1M tokens
   pricingSource?: "provider-live" | "litellm" | "static-seed" | "missing";
-  aliases: string[];             // ["sonnet", "sonnet-5"]
+  aliases: string[];             // ["sonnet", "sonnet-5.5"]
   status?: "active" | "preview" | "deprecated" | "retired";
   deprecationDate?: string; replacedBy?: string;
+  releaseDate?: string;          // "2026-09-28", or "2026-09" when only the month is published
+  catalogSource?: "models.dev" | "litellm";  // which public catalog a keyless card came from
   source: "api" | "litellm" | "local" | "manual";
   toolDialect?: ToolDialect;                     // "anthropic-tools" | "openai-tools" | "openai-responses" | "gemini-functions" | …
-  structuredOutputModes?: StructuredOutputMode[]; // ["json-schema", "tool-choice", "xml"] etc.
+  structuredOutputModes?: StructuredOutputMode[]; // ["json-schema", "xml"]; "tool-choice" only where forced tool use is accepted
   supportsParallelToolCalls?: boolean;
   tokenizerFamily?: string;      // "claude" | "o200k_base" | "gemini" | …
   region?: string;               // Bedrock
@@ -241,7 +243,7 @@ Normalized in every query (`kosha.normalizeRoleToken()`):
 | `prompt_cache` | `prompt_caching` |
 | `completion`, `completions` | `chat` |
 
-Built-in model aliases (`src/aliases.ts`): a bare family name tracks the newest GA model — `fable` → `claude-fable-5-1`, `opus` → `claude-opus-5`, `sonnet` → `claude-sonnet-5`, `haiku` → `claude-haiku-4-5`, `gpt5` → `gpt-5`, `gemini-pro` → `gemini-2.5-pro`; suffixed forms (`opus-4.8`, `sonnet-4`) pin a generation. Full table: `docs/configuration.md`.
+Built-in model aliases (`src/aliases.ts`): a bare family name tracks the newest GA model — `fable` → `claude-fable-5-1`, `opus` → `claude-opus-5-5`, `sonnet` → `claude-sonnet-5-5`, `haiku` → `claude-haiku-4-5`, `gpt6` → `gpt-6.1-sol`, `grok` → `grok-4.7`, `gemini-flash` → `gemini-3.8-flash`, `gemini-pro` → `gemini-2.5-pro`; suffixed forms (`opus-4.8`, `sonnet-4`) pin a generation. Full table: `docs/configuration.md`.
 
 ---
 

@@ -26,22 +26,25 @@ Built-in aliases for common models:
 | `fable` | `claude-fable-5-1` | Latest Anthropic Fable (most capable tier) |
 | `fable-5` | `claude-fable-5` | Pinned Fable 5 |
 | `mythos` | `claude-mythos-5-1` | Project Glasswing counterpart of Fable 5.1 |
-| `opus` | `claude-opus-5` | Latest Anthropic Opus |
+| `opus` / `opus-5.5` | `claude-opus-5-5` | Latest Anthropic Opus |
 | `opus-5` | `claude-opus-5` | Pinned Opus 5 |
 | `opus-4` / `opus-4.8` | `claude-opus-4-8` | Pinned Opus 4.8 |
 | `opus-4.7` | `claude-opus-4-7` | Pinned Opus 4.7 |
-| `sonnet` | `claude-sonnet-5` | Latest Anthropic Sonnet |
+| `sonnet` / `sonnet-5.5` | `claude-sonnet-5-5` | Latest Anthropic Sonnet |
 | `sonnet-5` | `claude-sonnet-5` | Pinned Sonnet 5 |
 | `sonnet-4` / `sonnet-4.6` | `claude-sonnet-4-6` | Pinned Sonnet 4.6 |
 | `haiku` / `haiku-4.5` | `claude-haiku-4-5` | Latest Anthropic Haiku (bare ID, not date-suffixed) |
 | `kimi` | `kimi-k3` | Latest Moonshot Kimi |
+| `gpt6` / `gpt6-sol` | `gpt-6.1-sol` | OpenAI GPT-6 mid tier (`gpt6-astra`, `gpt6-luna` also) |
+| `grok` | `grok-4.7` | Latest xAI Grok (`grok-4.6`, `grok-4.5`, `grok-4.3` pin) |
 | `gpt5` | `gpt-5` | OpenAI GPT-5 (`gpt5-mini`, `gpt5-nano`, `gpt5-pro` also) |
 | `gpt4.1` | `gpt-4.1` | OpenAI GPT-4.1 |
 | `gpt4o` | `gpt-4o` | OpenAI GPT-4o |
 | `o3` | `o3` | OpenAI reasoning |
-| `gemini-pro` | `gemini-2.5-pro` | Google Gemini 2.5 Pro (GA ID) |
-| `gemini-flash` | `gemini-2.5-flash` | Google Gemini 2.5 Flash (GA ID) |
-| `gemini-flash-lite` | `gemini-2.5-flash-lite` | Google Gemini 2.5 Flash-Lite (GA ID) |
+| `gemini-pro` | `gemini-2.5-pro` | Newest GA Gemini Pro (3.1 Pro is preview-only, so not aliased) |
+| `gemini-flash` | `gemini-3.8-flash` | Newest GA Gemini Flash (`gemini-flash-2.5` pins 2.5) |
+| `gemini-flash-lite` | `gemini-3.5-flash-lite` | Newest GA Gemini Flash-Lite (`gemini-flash-lite-2.5` pins 2.5) |
+| `qwen-max` / `qwen-plus` | `qwen3.8-max` / `qwen3.7-plus` | Latest Alibaba Qwen tiers |
 | `nemotron-ultra` | `nvidia/llama-3.1-nemotron-ultra-253b-v1` | NVIDIA Nemotron |
 | `mistral-large` | `mistral-large-latest` | Mistral Large |
 | `groq-llama` | `llama-3.3-70b-versatile` | Groq-hosted Llama |

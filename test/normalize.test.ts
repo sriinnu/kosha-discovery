@@ -208,3 +208,24 @@ describe("extractModelVersion", () => {
 		expect(extractModelVersion("")).toBeUndefined();
 	});
 });
+
+describe("matchableModelId — Bedrock envelope", () => {
+	it("matches Bedrock IDs to the model they serve", async () => {
+		const { matchableModelId } = await import("../src/normalize.js");
+		const target = matchableModelId("claude-opus-5-5");
+		expect(matchableModelId("anthropic.claude-opus-5-5")).toBe(target);
+		expect(matchableModelId("us.anthropic.claude-opus-5-5")).toBe(target);
+		expect(matchableModelId("us-gov.anthropic.claude-opus-5-5")).toBe(target);
+		expect(matchableModelId("anthropic/claude-opus-5.5")).toBe(target);
+		expect(matchableModelId("anthropic.claude-haiku-4-5-20251001-v1:0")).toBe(matchableModelId("claude-haiku-4-5"));
+		expect(matchableModelId("global.openai.gpt-6-sol")).toBe(matchableModelId("gpt-6-sol"));
+	});
+
+	it("leaves IDs without a vendor namespace alone", async () => {
+		const { matchableModelId } = await import("../src/normalize.js");
+		expect(matchableModelId("gpt-4.1")).toBe("gpt-4-1");
+		expect(matchableModelId("llama-3.3-70b-versatile")).toBe("llama-3-3-70b-versatile");
+		expect(matchableModelId("nvidia/llama-3.1-nemotron-ultra-253b-v1")).toBe("llama-3-1-nemotron-ultra-253b-v1");
+		expect(matchableModelId("jev-1.13.0")).toBe("jev-1-13-0");
+	});
+});

@@ -397,6 +397,20 @@ export interface ModelCard {
 	 * automatic-migration suggestions.
 	 */
 	replacedBy?: string;
+	/**
+	 * Date the model was first released, as published by the public catalog:
+	 * `YYYY-MM-DD`, or `YYYY-MM` when only the month is known.
+	 *
+	 * Lets consumers order a family by recency instead of parsing version
+	 * numbers out of IDs. Absent for models no catalog dates.
+	 */
+	releaseDate?: string;
+	/**
+	 * Which public catalog a keyless card was built from. `source` reports
+	 * both as `"litellm"` for contract stability; this tells them apart when
+	 * the two disagree on a price or a limit. Absent on live-API cards.
+	 */
+	catalogSource?: "models.dev" | "litellm";
 }
 
 /**
