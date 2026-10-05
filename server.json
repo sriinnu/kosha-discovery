@@ -2,19 +2,19 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.sriinnu/kosha-discovery",
   "title": "Kosha Model Discovery",
-  "description": "Tells your agent which model to use and what it costs, across 45 providers and local runtimes.",
+  "description": "Tells your agent which model to use and what it costs, across 46 providers and local runtimes.",
   "websiteUrl": "https://github.com/sriinnu/kosha-discovery",
   "repository": {
     "url": "https://github.com/sriinnu/kosha-discovery",
     "source": "github"
   },
-  "version": "1.6.2",
+  "version": "1.7.0",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@sriinnu/kosha-discovery",
-      "version": "1.6.2",
+      "version": "1.7.0",
       "transport": {
         "type": "stdio"
       },
