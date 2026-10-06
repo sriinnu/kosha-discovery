@@ -13,6 +13,23 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
+## [1.8.0] — 2026-10-06
+
+### Added
+
+- **`kosha doctor --model a,b`** scopes the lifecycle check to the models you
+  actually use: aliases resolve, every provider route is checked, and a model
+  no provider lists any more is reported as `missing`. Under `--ci` the gate
+  trips on a missing model, a finding on the model's direct route, or a model
+  whose every route is going away; a reseller retiring one regional copy is
+  reported but does not fail the build. Without `--model`, `doctor` still
+  reports the whole registry — which in CI, against the keyless catalog's
+  249 deprecated models, always failed.
+- **A GitHub Action** (`sriinnu/kosha-discovery@v1`, `action.yml` at the repo
+  root) that runs that check on a list of models, writes a table to the job
+  summary and annotates each failing model. This repository dogfoods it weekly
+  on the aliases the README leads with.
+
 ### Added
 
 - **The docs are mirrored to the GitHub wiki.** `docs/` stays the source of

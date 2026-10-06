@@ -87,7 +87,7 @@ kosha cheapest [--role x] [--capability x] [--provider x] [--limit n] [--price-m
 kosha latest [--provider x]             # force-fetch the newest provider details and print them
 kosha refresh [--provider x]            # alias: update
 kosha enrich                            # re-run pricing enrichment on the cache
-kosha doctor [--ci]                     # deprecations + breaker state; --ci exits non-zero on findings
+kosha doctor [--ci] [--model a,b]       # deprecations + breaker state; --ci exits 2 on findings; --model scopes to IDs/aliases, "missing" if no provider lists one
 kosha spend [--since iso] [--until iso] [--tenant x] [--ledger path]
 kosha serve [--port 3000] [--host 127.0.0.1]
 ```
