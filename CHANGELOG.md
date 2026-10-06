@@ -13,6 +13,17 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
+### Added
+
+- **kosha's own weekly snapshot is the fallback when the public catalogs are
+  down.** Keyless discovery reads models.dev and LiteLLM; if one is unreachable
+  and nothing came back, the `snapshot-latest` release asset — at most a week
+  old, with prices, limits and lifecycle — stands in before the hand-written
+  static lists. Two catalogs that loaded fine and simply do not list a
+  provider is still an honest empty answer. Cards from this path carry
+  `catalogSource: "snapshot"`; `KOSHA_SNAPSHOT_URL` points forks and
+  air-gapped mirrors at their own copy.
+
 ## [1.8.1] — 2026-10-06
 
 ### Fixed

@@ -410,7 +410,7 @@ export interface ModelCard {
 	 * both as `"litellm"` for contract stability; this tells them apart when
 	 * the two disagree on a price or a limit. Absent on live-API cards.
 	 */
-	catalogSource?: "models.dev" | "litellm";
+	catalogSource?: "models.dev" | "litellm" | "snapshot";
 }
 
 /**

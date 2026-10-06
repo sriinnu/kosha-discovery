@@ -20,6 +20,10 @@ const seed = (provider: string, id: string, extra: Partial<ModelCard> = {}): Mod
 	...extra,
 });
 
+vi.mock("../../src/discovery/snapshot-catalog.js", () => ({
+	getSnapshotSeed: vi.fn(async (provider: string) => [seed(provider, "claude-opus-5-5", { catalogSource: "snapshot" })]),
+}));
+
 vi.mock("../../src/discovery/modelsdev-seed.js", () => ({
 	getModelsDevSeed: vi.fn(async (provider: string) => [
 		seed(provider, "claude-opus-5-5", { catalogSource: "models.dev" }),
@@ -37,6 +41,9 @@ vi.mock("../../src/discovery/litellm-seed.js", () => ({
 }));
 
 import { getPublicSeed } from "../../src/discovery/public-seed.js";
+import { getLiteLLMSeed } from "../../src/discovery/litellm-seed.js";
+import { getModelsDevSeed } from "../../src/discovery/modelsdev-seed.js";
+import { getSnapshotSeed } from "../../src/discovery/snapshot-catalog.js";
 
 describe("getPublicSeed", () => {
 	it("attributes a reseller's rows to whoever built the model", async () => {
@@ -64,5 +71,49 @@ describe("getPublicSeed", () => {
 		const cards = await getPublicSeed("perplexity");
 		expect(cards.filter((c) => c.id === "claude-opus-5-5")).toHaveLength(1);
 		expect(cards.find((c) => c.id === "claude-opus-5-5")?.catalogSource).toBe("models.dev");
+	});
+});
+
+describe("getPublicSeed — when both catalogs are down", () => {
+	const down = () => new Error("fetch failed");
+
+	it("falls back to the published snapshot only when both loaders failed", async () => {
+		vi.mocked(getModelsDevSeed).mockRejectedValueOnce(down());
+		vi.mocked(getLiteLLMSeed).mockRejectedValueOnce(down());
+		const cards = await getPublicSeed("perplexity");
+		expect(cards.map((c) => c.catalogSource)).toEqual(["snapshot"]);
+		// The creator is still recovered from the ID on the snapshot path.
+		expect(cards[0].originProvider).toBe("anthropic");
+		expect(getSnapshotSeed).toHaveBeenCalledWith("perplexity");
+	});
+
+	it("uses the snapshot when the only catalog that maps the provider is down", async () => {
+		// Bedrock is mapped in models.dev alone; LiteLLM's empty answer is honest.
+		vi.mocked(getModelsDevSeed).mockRejectedValueOnce(down());
+		vi.mocked(getLiteLLMSeed).mockResolvedValueOnce([]);
+		expect((await getPublicSeed("bedrock")).map((c) => c.catalogSource)).toEqual(["snapshot"]);
+	});
+
+	it("does not touch the snapshot when a catalog answered with something", async () => {
+		vi.mocked(getSnapshotSeed).mockClear();
+		vi.mocked(getModelsDevSeed).mockRejectedValueOnce(down());
+		const cards = await getPublicSeed("anthropic");
+		expect(cards.map((c) => c.catalogSource)).toEqual(["litellm", "litellm"]);
+		expect(getSnapshotSeed).not.toHaveBeenCalled();
+	});
+
+	it("does not touch the snapshot when both catalogs loaded and have nothing", async () => {
+		vi.mocked(getSnapshotSeed).mockClear();
+		vi.mocked(getModelsDevSeed).mockResolvedValueOnce([]);
+		vi.mocked(getLiteLLMSeed).mockResolvedValueOnce([]);
+		expect(await getPublicSeed("typesafe")).toEqual([]);
+		expect(getSnapshotSeed).not.toHaveBeenCalled();
+	});
+
+	it("returns nothing, not an error, when the snapshot is down too", async () => {
+		vi.mocked(getModelsDevSeed).mockRejectedValueOnce(down());
+		vi.mocked(getLiteLLMSeed).mockRejectedValueOnce(down());
+		vi.mocked(getSnapshotSeed).mockRejectedValueOnce(down());
+		expect(await getPublicSeed("anthropic")).toEqual([]);
 	});
 });
