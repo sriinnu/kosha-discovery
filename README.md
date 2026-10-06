@@ -320,6 +320,8 @@ Write a discoverer class only when classification genuinely needs code — per-r
 | [Security](docs/security.md) | Threat catalogue, runtime scanning, pre-commit hook |
 | [Discovery Plane v1](docs/discovery-plane-v1.md) | Stable daemon contract (deltas, SSE watch, binding hints) |
 
+The same pages are mirrored to the [wiki](https://github.com/sriinnu/kosha-discovery/wiki), alongside guides that only live there (troubleshooting, the release runbook). `docs/` is the source: the mirror is regenerated on every push to `main`, so edit here, not there.
+
 ## Release
 
 1. Bump `version` in `package.json` and `server.json` (both places), and date the `[Unreleased]` section in `CHANGELOG.md`; merge that as a PR.

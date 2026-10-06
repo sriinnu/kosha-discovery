@@ -88,6 +88,7 @@
 		"autofetch:once": "node scripts/auto-fetch-latest.mjs --once",
 		"aliases:check": "node scripts/check-alias-freshness.mjs",
 		"snapshot:diff": "node scripts/snapshot-diff.mjs",
+		"wiki:build": "node scripts/build-wiki.mjs",
 		"prepare": "cp hooks/pre-commit .git/hooks/pre-commit 2>/dev/null && chmod +x .git/hooks/pre-commit || true"
 	},
 	"files": [

@@ -13,6 +13,14 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
+### Added
+
+- **The docs are mirrored to the GitHub wiki.** `docs/` stays the source of
+  truth; `scripts/build-wiki.mjs` regenerates the wiki's reference pages from
+  it on every push to `main`, with links between docs rewritten to wiki links.
+  Pages created in the wiki itself (troubleshooting, the release runbook) are
+  seeded once and never overwritten or removed by the sync.
+
 ## [1.7.0] — 2026-10-05
 
 ### Fixed
