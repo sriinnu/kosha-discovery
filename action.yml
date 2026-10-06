@@ -43,7 +43,7 @@ runs:
         WINDOW: ${{ inputs.deprecation-window }}
         VERSION: ${{ inputs.version }}
       run: |
-        set -uo pipefail
+        set -euo pipefail
         # Discovery needs no provider keys: with none, kosha reads the public
         # models.dev and LiteLLM catalogs, which carry the lifecycle data.
         SCOPE="$(printf '%s' "$MODELS" | tr '\n' ',' | tr -s ', ' ',' | sed 's/^,//; s/,$//')"
@@ -52,9 +52,16 @@ runs:
           exit 1
         fi
         REPORT="$RUNNER_TEMP/kosha-doctor.json"
-        npx --yes "@sriinnu/kosha-discovery@${VERSION}" doctor --ci --json \
-          --model "$SCOPE" --deprecation-window "$WINDOW" > "$REPORT"
-        STATUS=$?
+        # The package ships two bins (kosha, kosha-mcp), so npx needs told
+        # which one. GitHub runs this step with `bash -e`; the `|| STATUS=$?`
+        # keeps a failing gate (exit 2) from aborting before it is reported.
+        STATUS=0
+        npx --yes --package "@sriinnu/kosha-discovery@${VERSION}" kosha doctor --ci --json \
+          --model "$SCOPE" --deprecation-window "$WINDOW" > "$REPORT" || STATUS=$?
+        if [[ ! -s "$REPORT" ]]; then
+          echo "::error::kosha doctor produced no report (exit $STATUS)."
+          exit 1
+        fi
 
         STATUS="$STATUS" node - "$REPORT" "$SCOPE" >> "$GITHUB_STEP_SUMMARY" <<'NODE'
         const { readFileSync } = require("node:fs");
