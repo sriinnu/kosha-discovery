@@ -13,6 +13,18 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
+## [1.8.1] — 2026-10-06
+
+### Fixed
+
+- **The GitHub Action's step could not start in 1.8.0.** The package ships two
+  bins (`kosha`, `kosha-mcp`), so `npx @sriinnu/kosha-discovery` could not pick
+  one; and composite `bash` steps run with `-e`, so a failing gate would have
+  aborted before it was reported. Both fixed in #62. The Marketplace listing
+  points at the repository's latest release, and `v1.8.0`'s tag carries the
+  broken step, so this release exists to put a working `action.yml` under
+  "latest". No package code changed.
+
 ## [1.8.0] — 2026-10-06
 
 ### Added
