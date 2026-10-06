@@ -228,3 +228,17 @@ Provider     Origin     Base URL                     Direct  Preferred
 openai       openai     https://api.openai.com       ✓       ✓
 openrouter   openai     https://openrouter.ai        —       —
 ```
+
+### `kosha doctor --ci --model opus,gpt6`
+
+```
+Model lifecycle
+  sunsets in 9d  bedrock/eu.anthropic.claude-haiku-4-5-20251001-v1:0
+
+Provider health
+  ok  anthropic      reliability=100%  p95=412ms
+  ok  bedrock        reliability=100%  p95=no samples
+  …
+```
+
+`--model` scopes the check to those IDs or aliases; every provider route for each is checked, and a model no provider lists any more is reported as `missing`. With `--ci` the exit code is 2 when the gate trips: a missing model, a finding on the model's direct route, or a model whose every route is going away. A reseller retiring one regional copy, like the Bedrock row above, is reported but does not fail the run while the model's own provider still serves it. `--deprecation-window <days>` (default 30) sets how far ahead a sunset counts. Without `--model`, `doctor` reports the whole registry, which is for reading, not for gating.

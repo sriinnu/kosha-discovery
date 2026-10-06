@@ -283,3 +283,88 @@ describe("kosha doctor --ci (CI gate)", () => {
 		expect(exit).toHaveBeenCalledWith(DOCTOR_CI_EXIT_CODE);
 	});
 });
+
+describe("kosha doctor --model (scoped gate)", () => {
+	function scopedRegistry() {
+		const registry = ModelRegistry.fromJSON({
+			providers: [
+				provider("anthropic", [
+					makeModel({ id: "claude-opus-5-5", provider: "anthropic" }),
+					makeModel({ id: "claude-opus-4-6", provider: "anthropic", status: "deprecated" }),
+				]),
+				provider("openrouter", [
+					makeModel({ id: "anthropic/claude-opus-5.5", provider: "openrouter", originProvider: "anthropic" }),
+					makeModel({ id: "openai/o4-mini", provider: "openrouter", originProvider: "openai", status: "deprecated" }),
+				]),
+				provider("bedrock", [
+					makeModel({ id: "us.anthropic.claude-opus-5-5", provider: "bedrock", originProvider: "anthropic", status: "deprecated" }),
+				]),
+			],
+			aliases: { opus: "claude-opus-5-5" },
+			discoveredAt: Date.now(),
+		});
+		vi.spyOn(registry, "discover").mockResolvedValue([]);
+		vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+		return registry;
+	}
+
+	async function doctorJson(registry: ModelRegistry, flags: Record<string, string | boolean>) {
+		let out = "";
+		vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+			out += String(chunk);
+			return true;
+		});
+		const exit = stubExit();
+		let exitCode: number | null = null;
+		try {
+			await cmdDoctor(registry, { json: true, ...flags });
+		} catch (error) {
+			exitCode = Number((error as Error).message.replace("process.exit:", ""));
+		}
+		return { result: JSON.parse(out) as { deprecations: Array<{ modelId: string; provider: string; status: string | null }> }, exit, exitCode };
+	}
+
+	it("ignores deprecated models outside the scope, and does not fail over one reseller route", async () => {
+		const { result, exitCode } = await doctorJson(scopedRegistry(), { model: "claude-opus-5-5", ci: true });
+		// o4-mini and opus-4-6 are deprecated but not asked about. The Bedrock
+		// route of the requested model is reported, but Anthropic still serves
+		// it directly, so the build does not fail.
+		expect(result.deprecations.map((f) => `${f.provider}/${f.modelId}`)).toEqual(["bedrock/us.anthropic.claude-opus-5-5"]);
+		expect(exitCode).toBeNull();
+	});
+
+	it("fails when the model's direct route is deprecated", async () => {
+		const { exitCode } = await doctorJson(scopedRegistry(), { model: "claude-opus-4-6", ci: true });
+		expect(exitCode).toBe(DOCTOR_CI_EXIT_CODE);
+	});
+
+	it("fails when every route of a proxied-only model is deprecated", async () => {
+		const { exitCode } = await doctorJson(scopedRegistry(), { model: "openai/o4-mini", ci: true });
+		expect(exitCode).toBe(DOCTOR_CI_EXIT_CODE);
+	});
+
+	it("resolves aliases and checks every provider route", async () => {
+		const registry = scopedRegistry();
+		const { result } = await doctorJson(registry, { model: "opus" });
+		expect(result.deprecations.map((f) => f.provider)).toEqual(["bedrock"]);
+	});
+
+	it("reports a model no provider lists as missing and fails the gate", async () => {
+		const { result, exitCode } = await doctorJson(scopedRegistry(), { model: "claude-opus-5-5, gpt-3", ci: true });
+		const missing = result.deprecations.find((f) => f.status === "missing");
+		expect(missing).toEqual({ modelId: "gpt-3", provider: "-", status: "missing", deprecationDate: null, daysUntilSunset: null, replacedBy: null });
+		expect(exitCode).toBe(DOCTOR_CI_EXIT_CODE);
+	});
+
+	it("passes when every route of every requested model is healthy", async () => {
+		const registry = ModelRegistry.fromJSON({
+			providers: [provider("anthropic", [makeModel({ id: "claude-sonnet-5-5", provider: "anthropic" })])],
+			aliases: { sonnet: "claude-sonnet-5-5" },
+			discoveredAt: Date.now(),
+		});
+		vi.spyOn(registry, "discover").mockResolvedValue([]);
+		const { result, exitCode } = await doctorJson(registry, { model: "sonnet,claude-sonnet-5-5", ci: true });
+		expect(result.deprecations).toEqual([]);
+		expect(exitCode).toBeNull();
+	});
+});

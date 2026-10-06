@@ -48,7 +48,7 @@ kosha list --provider anthropic      # read from the local cache
 kosha model sonnet                   # one model, alias-aware
 kosha routes claude-opus-5-5         # every serving route for a model (direct, OpenRouter, Bedrock, …)
 kosha cheapest --role embeddings     # rank by price for a role
-kosha doctor --ci                    # deprecations + provider health; non-zero exit for CI
+kosha doctor --ci --model opus,gpt6  # fail CI if a model you pin is deprecated, retiring, or gone
 kosha spend --since 2026-09-01       # roll up the proxy's spend ledger
 kosha refresh                        # bypass the cache and re-discover
 kosha serve --port 3000              # HTTP API + proxy; binds 127.0.0.1 (see Proxy below)
@@ -61,6 +61,26 @@ After each discovery, a stable v1 manifest lands at `~/.kosha/registry.json`:
 ```bash
 jq '.models[] | select(.pricing.inputPerMillion < 0.1) | .modelId' ~/.kosha/registry.json
 ```
+
+### GitHub Action
+
+Fail a build when a model your code pins is deprecated, about to be retired,
+or listed by no provider any more:
+
+```yaml
+- uses: sriinnu/kosha-discovery@v1
+  with:
+    models: |
+      claude-opus-5-5
+      gpt-6-sol
+      sonnet
+```
+
+It runs `kosha doctor --ci --model …` against the public catalogs (no provider
+keys needed), writes a table to the job summary, and annotates each failing
+model. A reseller retiring one of its routes is reported but does not fail the
+build while the model's own provider still serves it; `deprecation-window`
+(default 30 days) sets how far ahead a sunset counts.
 
 ### Public snapshot
 

@@ -1,0 +1,94 @@
+name: "kosha model check"
+description: "Fail the build when a model your code pins is deprecated, about to be retired, or gone from every provider catalog."
+author: "sriinnu"
+
+branding:
+  icon: "activity"
+  color: "purple"
+
+inputs:
+  models:
+    description: >-
+      Model IDs or kosha aliases to check, separated by commas or newlines
+      (for example `claude-opus-5-5, gpt-6-sol, sonnet`). Every provider route
+      for each model is checked.
+    required: true
+  deprecation-window:
+    description: "Fail when a model's announced retirement is within this many days."
+    required: false
+    default: "30"
+  version:
+    description: "Version of @sriinnu/kosha-discovery to run (an npm dist-tag or version)."
+    required: false
+    default: "latest"
+
+outputs:
+  findings:
+    description: "JSON array of lifecycle findings (empty when everything is healthy)."
+    value: ${{ steps.doctor.outputs.findings }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      with:
+        node-version: 22
+
+    - name: kosha doctor
+      id: doctor
+      shell: bash
+      env:
+        MODELS: ${{ inputs.models }}
+        WINDOW: ${{ inputs.deprecation-window }}
+        VERSION: ${{ inputs.version }}
+      run: |
+        set -uo pipefail
+        # Discovery needs no provider keys: with none, kosha reads the public
+        # models.dev and LiteLLM catalogs, which carry the lifecycle data.
+        SCOPE="$(printf '%s' "$MODELS" | tr '\n' ',' | tr -s ', ' ',' | sed 's/^,//; s/,$//')"
+        if [[ -z "$SCOPE" ]]; then
+          echo "::error::The 'models' input is empty."
+          exit 1
+        fi
+        REPORT="$RUNNER_TEMP/kosha-doctor.json"
+        npx --yes "@sriinnu/kosha-discovery@${VERSION}" doctor --ci --json \
+          --model "$SCOPE" --deprecation-window "$WINDOW" > "$REPORT"
+        STATUS=$?
+
+        STATUS="$STATUS" node - "$REPORT" "$SCOPE" >> "$GITHUB_STEP_SUMMARY" <<'NODE'
+        const { readFileSync } = require("node:fs");
+        const [report, scope] = process.argv.slice(2);
+        const { deprecations } = JSON.parse(readFileSync(report, "utf8"));
+        console.log(`## kosha model check\n\nChecked: ${scope.split(",").map((m) => `\`${m}\``).join(", ")}\n`);
+        if (deprecations.length === 0) {
+          console.log("All routes healthy.");
+        } else {
+          if (process.env.STATUS === "0") console.log("Advisory only: a reseller route is retiring, but every model is still served directly.\n");
+          console.log("| Model | Provider | Status | Sunset | Replacement |\n|---|---|---|---|---|");
+          for (const f of deprecations) {
+            const sunset = f.deprecationDate ? `${f.deprecationDate} (${f.daysUntilSunset}d)` : "—";
+            console.log(`| \`${f.modelId}\` | ${f.provider} | ${f.status ?? "—"} | ${sunset} | ${f.replacedBy ?? "—"} |`);
+          }
+        }
+        NODE
+
+        {
+          echo "findings<<EOF"
+          node -e 'process.stdout.write(JSON.stringify(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).deprecations))' "$REPORT"
+          echo
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+
+        if [[ "$STATUS" -ne 0 ]]; then
+          node -e '
+            const { deprecations } = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            for (const f of deprecations) {
+              const why = f.status === "missing" ? "is listed by no provider"
+                : f.deprecationDate ? `retires ${f.deprecationDate}` : f.status;
+              const where = f.provider === "-" ? f.modelId : `${f.provider}/${f.modelId}`;
+              console.log(`::error title=kosha model check::${where} ${why}${f.replacedBy ? ` (use ${f.replacedBy})` : ""}`);
+            }
+          ' "$REPORT"
+          exit "$STATUS"
+        fi

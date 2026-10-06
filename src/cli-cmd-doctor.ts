@@ -10,6 +10,7 @@
  */
 
 import { c, CYAN, DIM, GREEN, RED, YELLOW } from "./cli-format.js";
+import { extractOriginProvider, matchableModelId } from "./normalize.js";
 import type { ModelRegistry } from "./registry.js";
 import type { ModelCard } from "./types.js";
 
@@ -21,6 +22,12 @@ interface DoctorFlags {
 	"fail-on-warning"?: string | boolean;
 	/** Days lookahead for the deprecation window (default 30). */
 	"deprecation-window"?: string | boolean;
+	/**
+	 * Scope to these model IDs or aliases (comma-separated). Every provider
+	 * route for each model is checked, and a model no provider lists at all
+	 * is itself a finding. Without this, `doctor` reports the whole registry.
+	 */
+	model?: string | boolean;
 }
 
 /** Exit code `doctor` uses to fail a CI run without looking like a crash. */
@@ -61,8 +68,15 @@ export async function cmdDoctor(registry: ModelRegistry, flags: Record<string, s
 		// registry holds — that's the point of `doctor`.
 	}
 
-	const models = registry.models();
-	const deprecations = collectDeprecations(models);
+	const scope = parseModelScope(f.model);
+	const scoped = scope ? resolveScope(registry, scope) : undefined;
+	const models = scoped ? scopeModels(registry, scoped) : registry.models();
+	const deprecations = scoped
+		? [...collectDeprecations(models), ...collectMissing(scoped, models)]
+		: collectDeprecations(models);
+	// In scoped mode a reseller retiring one of its routes is advisory; the
+	// gate is about whether the model itself is going away.
+	const gated = scoped ? gatedFindings(deprecations, models) : deprecations;
 	const providers = uniqueProviderIds(models);
 	const healthFindings = providers
 		.map((providerId) => projectHealth(registry, providerId))
@@ -79,7 +93,7 @@ export async function cmdDoctor(registry: ModelRegistry, flags: Record<string, s
 	// process if any finding trips the gate. Off by default so `doctor` stays
 	// advisory for interactive use. The decision reuses the same deprecation
 	// data rendered above — no second source of truth.
-	const ciFailures = collectCiFailures(f, deprecations);
+	const ciFailures = collectCiFailures(f, gated);
 	if (ciFailures.length > 0) {
 		const windowDays = parseDeprecationWindow(f["deprecation-window"]);
 		console.error(
@@ -114,7 +128,7 @@ function ciEnabled(f: DoctorFlags): boolean {
  * an otherwise healthy model stays advisory.
  */
 function tripsCiGate(finding: DeprecationFinding, windowDays: number): boolean {
-	if (finding.status === "deprecated" || finding.status === "retired") return true;
+	if (finding.status === "deprecated" || finding.status === "retired" || finding.status === "missing") return true;
 	if (finding.daysUntilSunset !== null && finding.daysUntilSunset <= windowDays) return true;
 	return false;
 }
@@ -131,6 +145,83 @@ function parseDeprecationWindow(raw: string | boolean | undefined): number {
 	const parsed = Number.parseInt(String(raw), 10);
 	if (!Number.isFinite(parsed) || parsed < 0) return DOCTOR_DEFAULT_DEPRECATION_WINDOW;
 	return parsed;
+}
+
+/** One requested model, as typed and as the registry resolves it. */
+interface ScopedModel {
+	requested: string;
+	resolved: string;
+}
+
+/** `--model a,b` → the trimmed, de-duplicated list; `undefined` when unset. */
+function parseModelScope(raw: string | boolean | undefined): string[] | undefined {
+	if (typeof raw !== "string") return undefined;
+	const ids = Array.from(new Set(raw.split(",").map((id) => id.trim()).filter(Boolean)));
+	return ids.length > 0 ? ids : undefined;
+}
+
+/**
+ * Every provider route for each requested model. Aliases resolve first, then
+ * routes match on the loose cross-provider form, so `--model opus` covers
+ * `claude-opus-5-5` at Anthropic, `anthropic/claude-opus-5.5` at OpenRouter
+ * and `us.anthropic.claude-opus-5-5` at Bedrock alike.
+ */
+function scopeModels(registry: ModelRegistry, scoped: ScopedModel[]): ModelCard[] {
+	const seen = new Set<ModelCard>();
+	for (const { resolved } of scoped) {
+		for (const route of registry.modelRoutes(resolved)) seen.add(route);
+	}
+	return Array.from(seen);
+}
+
+function resolveScope(registry: ModelRegistry, scope: string[]): ScopedModel[] {
+	return scope.map((requested) => ({ requested, resolved: registry.resolve(requested) }));
+}
+
+/**
+ * A requested model that no provider lists is the strongest lifecycle signal
+ * there is — it has gone past deprecated — so it is reported as `missing`
+ * and trips the CI gate.
+ */
+function collectMissing(scoped: ScopedModel[], models: ModelCard[]): DeprecationFinding[] {
+	const present = new Set(models.map((model) => matchableModelId(model.id).toLowerCase()));
+	return scoped
+		.filter(({ resolved }) => !present.has(matchableModelId(resolved).toLowerCase()))
+		.map(({ requested, resolved }) => ({
+			modelId: requested === resolved ? requested : `${requested} (${resolved})`,
+			provider: "-",
+			status: "missing",
+			deprecationDate: null,
+			daysUntilSunset: null,
+			replacedBy: null,
+		}));
+}
+
+/**
+ * The findings that may fail a scoped run: a model listed nowhere, a finding
+ * on the model's direct route (served by its own creator), or a model whose
+ * every route has a finding. A reseller sunsetting one regional copy while the
+ * origin still serves the model is reported but does not fail the build.
+ */
+function gatedFindings(findings: DeprecationFinding[], models: ModelCard[]): DeprecationFinding[] {
+	const family = (id: string): string => matchableModelId(id).toLowerCase();
+	const routesByFamily = new Map<string, ModelCard[]>();
+	for (const model of models) {
+		const key = family(model.id);
+		routesByFamily.set(key, [...(routesByFamily.get(key) ?? []), model]);
+	}
+	const isDirect = (model: ModelCard): boolean =>
+		model.provider === (model.originProvider ?? extractOriginProvider(model.id) ?? model.provider);
+	const flagged = new Set(findings.map((finding) => `${finding.provider}\u0000${finding.modelId}`));
+
+	return findings.filter((finding) => {
+		if (finding.status === "missing") return true;
+		const routes = routesByFamily.get(family(finding.modelId)) ?? [];
+		const route = routes.find((model) => model.provider === finding.provider && model.id === finding.modelId);
+		if (!route) return true;
+		if (isDirect(route)) return true;
+		return routes.every((model) => flagged.has(`${model.provider}\u0000${model.id}`));
+	});
 }
 
 function collectDeprecations(models: ModelCard[]): DeprecationFinding[] {
@@ -193,6 +284,7 @@ function renderDeprecations(findings: DeprecationFinding[]): void {
 		const days = f.daysUntilSunset;
 		let tag: string;
 		if (f.status === "retired") tag = c(RED, "retired");
+		else if (f.status === "missing") tag = c(RED, "missing");
 		else if (days !== null && days <= 14) tag = c(RED, `sunsets in ${days}d`);
 		else if (days !== null && days <= 60) tag = c(YELLOW, `sunsets in ${days}d`);
 		else if (f.status === "deprecated") tag = c(YELLOW, "deprecated");
