@@ -6,6 +6,9 @@
 
 **Tells your agent — or your code — which model to use and what it costs.**
 
+[![Sponsor](https://img.shields.io/badge/sponsor-%E2%9D%A4-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/sriinnu)
+[![Buy Me a Coffee](https://img.shields.io/badge/buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/sriinnu)
+
 kosha discovers models across 46 providers and local runtimes, finds your API keys
 wherever they already live (env vars, Claude CLI, Codex, gcloud ADC, AWS SSO), fills
 in pricing and context limits, and answers questions like *the cheapest model with
@@ -353,6 +356,13 @@ gh workflow run release-npm.yml -f tag=vX.Y.Z
 ```
 
 The workflow checks that the tag matches `package.json`, runs lint / build / test, publishes to npm with provenance, and creates the GitHub Release. Publishing authenticates through npm trusted publishing (OIDC) when a trusted publisher is configured for this repo and workflow on npmjs.com, or through an `NPM_TOKEN` repository secret.
+
+## Support
+
+kosha is free and open source. If it helps you pick cheaper models, consider sponsoring its upkeep:
+
+- [GitHub Sponsors](https://github.com/sponsors/sriinnu)
+- [Buy Me a Coffee](https://buymeacoffee.com/sriinnu)
 
 ## License
 
