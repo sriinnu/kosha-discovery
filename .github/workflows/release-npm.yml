@@ -30,6 +30,10 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # The environment limits this job to `v*` tags and waits for a reviewer.
+    # npm's trusted publisher for the package is bound to this environment too,
+    # so a run outside it cannot publish even with the workflow file edited.
+    environment: npm-release
     steps:
       - name: Checkout tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -42,6 +46,37 @@ jobs:
         run: |
           set -euo pipefail
           git rev-parse "${{ github.event.inputs.tag }}^{tag}" >/dev/null
+
+      # The tag must be signed by one of the pinned hardware keys and sit on
+      # main's history. The signers file is read from main, not from the tag
+      # under release, so a tag cannot bring its own key, and main itself only
+      # accepts signed commits. A stolen token can push a tag; it cannot sign
+      # one.
+      - name: Verify the release tag is signed by a release key
+        shell: bash
+        env:
+          TAG: ${{ github.event.inputs.tag }}
+          RELEASE_KEY_FINGERPRINTS: >-
+            SHA256:jWV8C3RG95sm64vjVhs1vQj48aFBAsgmlPsCm/5zezw
+            SHA256:i+fYPHVViUQmJuoUZtX80b2CZ2WOSO0Z1NNnZZO7cH4
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --quiet origin main
+          SIGNERS="$RUNNER_TEMP/allowed_signers"
+          git show origin/main:.github/allowed_signers > "$SIGNERS"
+          while read -r principal keytype key _comment; do
+            [[ -z "$principal" || "$principal" == \#* ]] && continue
+            fpr="$(printf '%s %s\n' "$keytype" "$key" | ssh-keygen -lf - | awk '{print $2}')"
+            if [[ " $RELEASE_KEY_FINGERPRINTS " != *" $fpr "* ]]; then
+              echo "::error::allowed_signers carries a key that is not pinned in this workflow ($fpr)"
+              exit 1
+            fi
+          done < "$SIGNERS"
+          git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile="$SIGNERS" verify-tag "$TAG"
+          if ! git merge-base --is-ancestor "$TAG^{commit}" origin/main; then
+            echo "::error::$TAG does not point at a commit on main"
+            exit 1
+          fi
 
       - name: Setup pnpm
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413  # v6.1.0
@@ -80,18 +115,18 @@ jobs:
         run: pnpm test
 
       # npm trusted publishing (OIDC) needs npm >= 11.5; Node 22 bundles 10.x.
-      # With a trusted publisher configured on npmjs.com for this repo +
-      # workflow file, `npm publish` authenticates via the job's id-token and
-      # NPM_TOKEN is not needed at all. A still-valid NPM_TOKEN keeps working
-      # as before; an expired one is ignored when unset.
+      # The package's trusted publisher on npmjs.com is this repo, this
+      # workflow file and the `npm-release` environment, so `npm publish`
+      # authenticates with the job's id-token. There is no NPM_TOKEN any more:
+      # a long-lived publish token is exactly what the LiteLLM 1.107.0 stealer
+      # harvested, and a run that is not this workflow in this environment has
+      # nothing to publish with.
       - name: Upgrade npm for trusted publishing
         if: ${{ github.event.inputs.publish_npm == 'true' }}
         run: npm install -g npm@latest && npm --version
 
       - name: Publish to npm
         if: ${{ github.event.inputs.publish_npm == 'true' }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public --provenance
 
       # The MCP registry verifies npm ownership by reading `mcpName` out of the

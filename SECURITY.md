@@ -6,8 +6,8 @@ Only the latest minor release line on npm receives security fixes. Older lines m
 
 | Version | Supported |
 | ------- | --------- |
-| 1.2.x   | Yes       |
-| < 1.2   | No        |
+| 1.8.x   | Yes       |
+| < 1.8   | No        |
 
 ## Reporting a Vulnerability
 
@@ -29,8 +29,9 @@ I'll acknowledge receipt within 72 hours, share an initial assessment within 7 d
 In scope:
 
 - The published `@sriinnu/kosha-discovery` package on npm.
-- The MCP server (`kosha-mcp`) and CLI (`kosha-discovery`) entrypoints.
-- Any code in this repository under `src/`, `bin/`, or shipped as part of the package.
+- The MCP server (`kosha-mcp`) and CLI (`kosha`) entrypoints.
+- The GitHub Action (`action.yml`) and the release workflow.
+- Any code in this repository under `src/` or shipped as part of the package.
 
 Out of scope:
 
@@ -40,10 +41,38 @@ Out of scope:
 
 ## Supply Chain
 
-Published npm packages from `1.2.1` onwards include [npm provenance](https://docs.npmjs.com/generating-provenance-statements) — a cryptographic attestation linking the published tarball to the GitHub commit and workflow that built it. Verify with:
+kosha reads provider API keys from the environment. A compromised kosha release
+would hold exactly the credentials a stealer wants, so the release path is built
+on the assumption that a maintainer token will one day be stolen, as happened
+to LiteLLM on October 21, 2026 (`litellm==1.107.0`).
 
-```
-npm view @sriinnu/kosha-discovery --json | jq '.dist.attestations'
-```
+**What a release has to pass.**
 
-All git commits and release tags in this repository are GPG-signed.
+- Release tags (`v*`) are signed with a hardware key (FIDO2 ECDSA-SK over SSH).
+  A repository ruleset requires signed commits on those tags and forbids
+  deleting them; version tags (`v*.*`) cannot be moved.
+- The release workflow verifies the tag signature against
+  `.github/allowed_signers` read from `main`, checks every key in that file
+  against fingerprints pinned in the workflow, and requires the tagged commit
+  to be on `main`'s history. `main` only accepts signed commits.
+- The publish job runs in the `npm-release` environment, which only admits
+  `v*` tags and waits for a reviewer.
+- npm publishing uses [trusted publishing](https://docs.npmjs.com/trusted-publishers)
+  (OIDC) bound to this repository, workflow file and environment. There is no
+  long-lived npm token in CI or on a maintainer machine.
+- Every published version carries [npm provenance](https://docs.npmjs.com/generating-provenance-statements)
+  linking the tarball to the commit and workflow that built it. Verify with:
+
+  ```
+  npm view @sriinnu/kosha-discovery --json | jq '.dist.attestations'
+  ```
+
+**What kosha does not do.**
+
+- The GitHub Action runs the kosha version it was released with, not `latest`,
+  and installs it with `--ignore-scripts`. Pin the action to a commit SHA.
+- Dependencies (two at runtime) install with a frozen lockfile, lifecycle
+  scripts off, and a seven-day minimum release age (`pnpm-workspace.yaml`).
+- Provider keys are read at discovery time and are not written to the cache or
+  the pricing manifest. Every external payload, cache read included, goes
+  through the scan in `src/security.ts` (see `docs/security.md`).

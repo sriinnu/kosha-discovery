@@ -10,6 +10,33 @@ NC='\033[0m' # No Color
 
 BLOCKED=0
 
+# ── 0. Allowlist ────────────────────────────────────────────────────────────
+# .secret-allowlist at the repo root: one extended regex per line, `#` comments.
+# A hit from sections 2 or 3 that matches any allowlisted pattern is dropped.
+# Keep it for things that look like secrets and are not: SSH key fingerprints
+# pinned in a workflow, documented fake test keys.
+ALLOWLIST_FILE="$(git rev-parse --show-toplevel)/.secret-allowlist"
+ALLOW_PATTERNS=()
+if [ -f "$ALLOWLIST_FILE" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in ''|'#'*) continue ;; esac
+        ALLOW_PATTERNS+=("$line")
+    done < "$ALLOWLIST_FILE"
+fi
+
+# stdin: candidate hit lines; stdout: the ones no allowlist pattern matches.
+# The `${arr[@]+...}` form keeps bash 3.2 (macOS) happy with an empty array
+# under `set -u`.
+filter_allowed() {
+    local out
+    out="$(cat)"
+    for p in ${ALLOW_PATTERNS[@]+"${ALLOW_PATTERNS[@]}"}; do
+        [ -z "$out" ] && break
+        out="$(printf '%s\n' "$out" | grep -vE "$p" || true)"
+    done
+    printf '%s' "$out"
+}
+
 # ── 1. Forbidden file patterns ──────────────────────────────────────────────
 # These must NEVER be committed, regardless of .gitignore state (handles -f).
 FORBIDDEN_PATTERNS=(
@@ -75,7 +102,7 @@ CREDENTIAL_PATTERNS=(
 STAGED_DIFF=$(git diff --cached --diff-filter=ACMR -U0 2>/dev/null || true)
 
 for pattern in "${CREDENTIAL_PATTERNS[@]}"; do
-    hits=$(echo "$STAGED_DIFF" | grep -nE "^\+.*$pattern" 2>/dev/null || true)
+    hits=$(echo "$STAGED_DIFF" | grep -nE "^\+.*$pattern" 2>/dev/null | filter_allowed || true)
     if [ -n "$hits" ]; then
         echo -e "${RED}BLOCKED:${NC} Potential secret/credential detected in staged changes:"
         echo -e "  Pattern: ${YELLOW}${pattern}${NC}"
@@ -115,10 +142,17 @@ if [ -n "$CONFIG_FILES" ]; then
         [ -z "$f" ] && continue
         # Get staged content (not working tree) and look for base64 blobs (40+ chars,
         # mixed case to filter URL paths and snake_case identifiers).
+        # A line is a hit only if one of ITS 40+ char blobs has upper, lower
+        # and digit. Judging the whole line let an uppercase env var elsewhere
+        # on the line convict a plain lowercase URL path.
         b64hits=$(git show ":$f" 2>/dev/null \
             | grep -nE '[A-Za-z0-9+/]{40,}={0,2}' \
-            | grep -E '[A-Z]' \
-            | grep -E '[a-z]' \
+            | while IFS= read -r line; do
+                printf '%s\n' "$line" | grep -oE '[A-Za-z0-9+/]{40,}={0,2}' \
+                    | grep -E '[A-Z]' | grep -E '[a-z]' | grep -qE '[0-9]' \
+                    && printf '%s\n' "$line"
+              done \
+            | filter_allowed \
             || true)
         if [ -n "$b64hits" ]; then
             echo -e "${RED}BLOCKED:${NC} Possible base64-encoded secret in config file:"

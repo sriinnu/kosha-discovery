@@ -24,6 +24,31 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
   `catalogSource: "snapshot"`; `KOSHA_SNAPSHOT_URL` points forks and
   air-gapped mirrors at their own copy.
 
+### Changed
+
+- **The GitHub Action runs the kosha version it was released with.** `version`
+  defaulted to `latest`, so every CI job using the action picked up a new npm
+  publish within minutes, the blast radius LiteLLM `1.107.0` had on
+  October 21, 2026. It now defaults to the version the action tag shipped with,
+  and `npx` installs it with `--ignore-scripts`. Pass `version: latest` to opt
+  back in.
+
+### Security
+
+- **Release tags are verified before anything is built.** The release
+  workflow checks the tag's hardware-key signature against
+  `.github/allowed_signers` read from `main`, checks every key in that file
+  against fingerprints pinned in the workflow, and requires the tagged commit
+  to be on `main`. Tag rulesets require signed commits on `v*`, forbid deleting
+  them and forbid moving `v*.*`. The publish job runs in the `npm-release`
+  environment: `v*` tags only, reviewer required.
+- **No npm token anywhere.** Publishing is npm trusted publishing (OIDC) bound
+  to this repository, workflow file and environment; the `NPM_TOKEN` secret and
+  the maintainer's local token are gone. A long-lived publish token is what
+  the LiteLLM stealer harvested.
+- **Seven-day minimum release age for dependencies** (`pnpm-workspace.yaml`).
+  A package published an hour ago is not installed.
+
 ## [1.8.1] — 2026-10-06
 
 ### Fixed

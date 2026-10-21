@@ -1,0 +1,6 @@
+# A package published to npm less than seven days ago is not installed. The
+# LiteLLM 1.107.0 compromise lived on PyPI for under two hours and the
+# backdoor ran at install time; a release that is a week old has been looked
+# at. `--frozen-lockfile` installs are unaffected; this applies when the
+# lockfile is resolved.
+minimumReleaseAge: 10080

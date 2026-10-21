@@ -101,9 +101,11 @@ A git pre-commit hook (`hooks/pre-commit`) provides 3-layer commit-time defense:
 
 1. **Forbidden files** -- blocks `.env*`, `*.pem`, `*.key`, `*.p12`, `credentials.json`, `service-account*.json`
 2. **Credential scan** -- scans staged diffs for 15+ secret patterns (OpenAI, AWS, GitHub, Slack, Google, GitLab, npm, PyPI, Hugging Face, etc.)
-3. **Base64 in configs** -- scans staged `.json`/`.yaml`/`.toml` files for encoded blobs
+3. **Base64 in configs** -- scans staged `.json`/`.yaml`/`.toml` files for encoded blobs (a blob is 40+ base64 characters with upper, lower and digit; the test is on the blob, not the line)
 
-Auto-installed on `npm install` via the `prepare` script. Bypass with `--no-verify` for legitimate cases (e.g. test fixtures with fake credentials).
+Hits that match a pattern in `.secret-allowlist` (one extended regex per line) are dropped. It holds SSH key fingerprints, which the release workflow pins on purpose.
+
+Auto-installed on `pnpm install` via the `prepare` script (`prepare` does not run for consumers of the package). Bypass with `--no-verify` for legitimate cases (e.g. test fixtures with fake credentials).
 
 ## .gitignore
 
@@ -114,6 +116,35 @@ Hardened to block:
 - `credentials.json`, `service-account*.json`, `service_account*.json`
 - `.npmrc`, `.pypirc`
 - Local config overrides (`*.local.json`, `*.local.yaml`, etc.)
+
+## Release Integrity
+
+LiteLLM's `1.107.0` (October 21, 2026) was not a bug in LiteLLM's code. Stolen
+GitHub CLI tokens from three engineers modified the release workflow, built from
+a lookalike repository, approved the production gate and deleted the logs; PyPI
+and Docker Hub shipped a credential stealer for two hours. kosha's data feed
+from LiteLLM was never affected (kosha reads one JSON file from `main`, which
+was untouched, through the scan above), but kosha has the same shape of release
+path, and a kosha release holds the same loot: provider keys in the environment.
+
+So the release path assumes a maintainer token will be stolen, and asks for the
+one thing a token cannot produce: a hardware signature.
+
+| Layer | What it stops |
+| --- | --- |
+| Release tags signed with a FIDO2 key; `.github/allowed_signers` pins the keys | A pushed tag with no touch on the key |
+| Workflow verifies the tag against signers read from `main`, fingerprints pinned in the workflow, and requires the commit to be on `main` | A tag at a commit that never went through `main`'s signed-commit rule |
+| Tag rulesets: signed commits and no deletion on `v*`, no moving `v*.*` | Retagging a shipped version, erasing the trail |
+| `npm-release` environment: only `v*` tags, reviewer required | A dispatch from a side branch with an edited workflow |
+| npm trusted publishing bound to repo + workflow + environment; no npm token anywhere | The token a stealer would take; publishing from any other run |
+| npm provenance on every version | Verifying after the fact what built the tarball |
+| Action pinned to its own release version, `--ignore-scripts` | Every consumer's CI pulling a fresh publish within minutes |
+| `minimumReleaseAge: 10080` for dependencies | Installing a package poisoned an hour ago |
+
+The ceiling is honest: a token with administration scope can edit the rulesets
+and the environment. That is why the maintainer's CLI token is a fine-grained
+token without `workflow`, `actions` or `administration` permissions, and
+releases are dispatched and approved from a browser session behind a passkey.
 
 ## Background
 

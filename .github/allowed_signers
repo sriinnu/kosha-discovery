@@ -1,0 +1,6 @@
+# Keys allowed to sign a release tag. Read by the release workflow from main,
+# never from the tag under release, so a tag cannot bring its own key.
+# Each key's fingerprint is also pinned in .github/workflows/release-npm.yml.
+# Both are hardware keys (FIDO2 ECDSA-SK): a stolen token cannot sign.
+hello@srinivas.dev sk-ecdsa-sha2-nistp256@openssh.com AAAAInNrLWVjZHNhLXNoYTItbmlzdHAyNTZAb3BlbnNzaC5jb20AAAAIbmlzdHAyNTYAAABBBPtM/7CP0XHbz7KprpEcA34O3I89t19Xi4gf2RmYlsdt7Dpljtx6LKifk2U94lz7NlhO2qE3iw2YfYWth8YXNkQAAAAEc3NoOg== titan-mac
+hello@srinivas.dev sk-ecdsa-sha2-nistp256@openssh.com AAAAInNrLWVjZHNhLXNoYTItbmlzdHAyNTZAb3BlbnNzaC5jb20AAAAIbmlzdHAyNTYAAABBBLKWhsT/svFnM9MpFXUemdCfjGglDJTyZJ+XtoEknA7pEOOoWq0zffPhCr1jMYaM1I7pTWNK7nOGQ1nOTdGANv0AAAAEc3NoOg== titan-office

@@ -18,9 +18,12 @@ inputs:
     required: false
     default: "30"
   version:
-    description: "Version of @sriinnu/kosha-discovery to run (an npm dist-tag or version)."
+    description: >-
+      Version of @sriinnu/kosha-discovery to run. Defaults to the version this
+      action was released with, so a new npm publish does not change what your
+      CI runs until you move the action tag. Set `latest` to opt back in.
     required: false
-    default: "latest"
+    default: "1.8.1"
 
 outputs:
   findings:
@@ -56,7 +59,7 @@ runs:
         # which one. GitHub runs this step with `bash -e`; the `|| STATUS=$?`
         # keeps a failing gate (exit 2) from aborting before it is reported.
         STATUS=0
-        npx --yes --package "@sriinnu/kosha-discovery@${VERSION}" kosha doctor --ci --json \
+        npx --yes --ignore-scripts --package "@sriinnu/kosha-discovery@${VERSION}" kosha doctor --ci --json \
           --model "$SCOPE" --deprecation-window "$WINDOW" > "$REPORT" || STATUS=$?
         if [[ ! -s "$REPORT" ]]; then
           echo "::error::kosha doctor produced no report (exit $STATUS)."

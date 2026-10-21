@@ -76,6 +76,10 @@ or listed by no provider any more:
       sonnet
 ```
 
+Pin it to a commit SHA rather than a moving tag, as you would any action. The
+action runs the kosha version it was released with, not `latest`, so a new npm
+publish does not change what your CI runs until you move the pin.
+
 It runs `kosha doctor --ci --model …` against the public catalogs (no provider
 keys needed), writes a table to the job summary, and annotates each failing
 model. A reseller retiring one of its routes is reported but does not fail the
