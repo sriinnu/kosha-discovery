@@ -1,0 +1,59 @@
+name: Bug report
+description: kosha crashes, errors, or does something it shouldn't.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Wrong prices, missing models, or stale context windows? Use **Wrong or missing model data** instead.
+        Never paste API keys. `kosha doctor` output is safe to share; it doesn't print key values.
+  - type: input
+    id: version
+    attributes:
+      label: kosha version
+      description: Output of `kosha --version`, or the version in your lockfile.
+      placeholder: 1.8.1
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where did it happen?
+      options:
+        - Library (import from @sriinnu/kosha-discovery)
+        - CLI (kosha)
+        - HTTP server
+        - MCP server (kosha-mcp)
+        - GitHub Action
+    validations:
+      required: true
+  - type: input
+    id: provider
+    attributes:
+      label: Provider(s) involved
+      placeholder: openrouter, ollama, bedrock, ...
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The exact command or a minimal code snippet.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: kosha doctor output
+      description: Optional, but it usually saves a round trip.
+      render: text
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      placeholder: Node 24, macOS 15 / Ubuntu 24.04

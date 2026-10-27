@@ -1,0 +1,55 @@
+name: Wrong or missing model data
+description: A price, context window, capability, or alias is wrong, or a model is missing.
+labels: [data]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        kosha merges live provider APIs with models.dev and LiteLLM. If the public catalog is wrong too,
+        say so below; the fix may belong upstream as well as here.
+  - type: input
+    id: model
+    attributes:
+      label: Model ID and provider
+      placeholder: claude-opus-5-5 on bedrock
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What's wrong?
+      multiple: true
+      options:
+        - Price
+        - Context window / max output
+        - Capabilities (vision, tools, reasoning, ...)
+        - Alias resolves to the wrong model
+        - Model missing
+        - Model listed but retired
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: shown
+    attributes:
+      label: What kosha shows
+      description: Output of `kosha model <id> --json` or the relevant fields.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: correct
+    attributes:
+      label: Correct value and source
+      description: Link the provider's pricing page or docs. A source is what makes this fixable.
+    validations:
+      required: true
+  - type: dropdown
+    id: keyed
+    attributes:
+      label: Was a provider API key set?
+      description: Without a key, data comes from the public catalog or kosha's snapshot.
+      options:
+        - "Yes"
+        - "No"
+        - Not sure

@@ -1,0 +1,30 @@
+name: Feature request
+description: A new command, query, routing option, or API.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The problem first. What does your agent or tool need from kosha that it can't get today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like kosha to do?
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where should it live?
+      multiple: true
+      options:
+        - Library
+        - CLI
+        - HTTP server
+        - MCP server
+        - GitHub Action
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Workarounds you've tried

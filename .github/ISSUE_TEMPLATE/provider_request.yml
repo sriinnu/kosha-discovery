@@ -1,0 +1,44 @@
+name: New provider
+description: Ask for a provider or local runtime kosha doesn't discover yet.
+labels: [provider]
+body:
+  - type: input
+    id: name
+    attributes:
+      label: Provider
+      placeholder: Example AI
+    validations:
+      required: true
+  - type: input
+    id: docs
+    attributes:
+      label: API docs link
+    validations:
+      required: true
+  - type: dropdown
+    id: compat
+    attributes:
+      label: Is the models endpoint OpenAI-compatible?
+      description: If yes, it's usually two table entries. See "Adding a provider" in the README.
+      options:
+        - "Yes (GET /v1/models)"
+        - "No, custom API"
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: auth
+    attributes:
+      label: Auth
+      placeholder: API key in EXAMPLE_API_KEY, OAuth, cloud credentials, ...
+  - type: input
+    id: slug
+    attributes:
+      label: models.dev / LiteLLM slug, if listed
+      description: Needed for keyless discovery.
+  - type: checkboxes
+    id: pr
+    attributes:
+      label: Contributing
+      options:
+        - label: I'd like to open the PR myself
