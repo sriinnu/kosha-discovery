@@ -25,7 +25,7 @@ Useful while working:
 | `pnpm typecheck` | `tsc --noEmit` |
 | `pnpm lint:all` | Biome with warnings, not just errors |
 | `pnpm kosha <cmd>` | run the built CLI, e.g. `pnpm kosha list` |
-| `pnpm aliases:check` | check `src/aliases.ts` against the live catalogs |
+| `pnpm aliases:check <snapshot.json>` | check `src/aliases.ts` against a discovery snapshot |
 
 ## Making a change
 
