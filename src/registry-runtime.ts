@@ -462,7 +462,7 @@ export async function exportRegistryManifest(state: RegistryState): Promise<void
 		// silently overwrote the user's manifest with an empty one because
 		// every test instance triggered an export against the hardcoded path.
 		manifestPath = resolveManifestPath(state);
-		await mkdir(dirname(manifestPath), { recursive: true });
+		await mkdir(dirname(manifestPath), { recursive: true, mode: 0o700 });
 
 		// Sweep stale tmp files left over from prior runs that were SIGKILLed
 		// mid-write. Each crashed run leaks a `<manifest>.<rand>.tmp` file;
@@ -522,7 +522,7 @@ export async function exportRegistryManifest(state: RegistryState): Promise<void
 		// collide on the staging name.
 		const tmpPath = `${manifestPath}.${randomBytes(4).toString("hex")}.tmp`;
 		try {
-			await writeFile(tmpPath, JSON.stringify(merged, null, 2), "utf-8");
+			await writeFile(tmpPath, JSON.stringify(merged, null, 2), { encoding: "utf-8", mode: 0o600 });
 			// Snapshot rollback ring: rotate the existing manifest into a
 			// dated `.bak` slot before the rename overwrites it. Keeps the
 			// last 7 snapshots so a bad publish (provider returns garbage,
@@ -636,7 +636,7 @@ async function rotateBackup(manifestPath: string): Promise<void> {
 		}
 		const tmp = `${todayBak}.${randomBytes(4).toString("hex")}.tmp`;
 		try {
-			await writeFile(tmp, data);
+			await writeFile(tmp, data, { mode: 0o600 });
 			await rename(tmp, todayBak);
 		} catch (err) {
 			await unlink(tmp).catch(() => {});
@@ -989,7 +989,7 @@ async function appendAnomalies(manifestDir: string, fresh: PricingAnomaly[]): Pr
 	const all = [...existing, ...fresh].filter((a) => a.ts >= cutoff).slice(-ANOMALY_MAX_ENTRIES);
 	const tmp = `${path}.${randomBytes(4).toString("hex")}.tmp`;
 	try {
-		await writeFile(tmp, JSON.stringify({ schemaVersion: 1, anomalies: all }, null, 2), "utf-8");
+		await writeFile(tmp, JSON.stringify({ schemaVersion: 1, anomalies: all }, null, 2), { encoding: "utf-8", mode: 0o600 });
 		await rename(tmp, path);
 	} catch (err) {
 		await unlink(tmp).catch(() => {});

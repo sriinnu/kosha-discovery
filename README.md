@@ -209,7 +209,7 @@ rather than a hand-written class.
 | Provider | Discovery | Credential sources |
 |----------|-----------|--------------------|
 | Anthropic | `GET /v1/models` (context, output cap, capabilities read from the API) | `ANTHROPIC_API_KEY`, Claude CLI, Codex CLI |
-| OpenAI | `GET /v1/models` | `OPENAI_API_KEY`, GitHub Copilot tokens |
+| OpenAI | `GET /v1/models` | `OPENAI_API_KEY` |
 | Google | `GET /v1beta/models` | `GOOGLE_API_KEY`, `GEMINI_API_KEY`, Gemini CLI, gcloud |
 | AWS Bedrock | SDK → CLI → public catalog → static list | `AWS_ACCESS_KEY_ID`, `~/.aws/credentials`, SSO, IAM |
 | Vertex AI | API → gcloud → public catalog → static list | `GOOGLE_APPLICATION_CREDENTIALS`, ADC |

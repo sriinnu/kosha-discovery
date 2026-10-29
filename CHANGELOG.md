@@ -48,6 +48,51 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
   the LiteLLM stealer harvested.
 - **Seven-day minimum release age for dependencies** (`pnpm-workspace.yaml`).
   A package published an hour ago is not installed.
+- **Web pages can no longer drive the local server.** A page in any browser
+  could POST to the default token-less `kosha serve` on 127.0.0.1 (a
+  `text/plain` body needs no CORS preflight) and spend your provider keys;
+  with DNS rebinding it could read the replies too. The server now refuses a
+  `Host` that is not loopback or listed in the new `KOSHA_ALLOWED_HOSTS`, an
+  `Origin` that does not match `Host`, and `Sec-Fetch-Site: cross-site`.
+  curl and SDKs send none of these and are unaffected. A server bound to a
+  network interface skips the `Host` check unless `KOSHA_ALLOWED_HOSTS` is
+  set.
+- **Request bodies are bounded**: 32 MiB on `/proxy/*`, 64 KiB on
+  `/api/refresh` (413 beyond that). The proxy's `model` field is capped at
+  256 characters, and the `kosha:` selector parser no longer uses a regex
+  that was quadratic on unclosed `[`.
+- **The ingestion scan rejects oversized strings before its pattern tests**,
+  two of which were quadratic on hostile catalog data.
+- **With a spend budget set, the proxy refuses remote models that have no
+  price** (422). They never wrote a ledger row, so the budget could not see
+  them. Local runtimes are still allowed.
+- **A GitHub Copilot token is no longer sent to OpenAI.** It was tried as an
+  OpenAI credential when `OPENAI_API_KEY` was unset, and only ever got a 401.
+  Likewise the gcloud ADC refresh token is no longer sent to the Gemini API
+  as a key.
+- **`gcloud` and `aws` run from the home directory.** On Windows, cmd.exe
+  looked for them in the working directory first, so a `gcloud.cmd` in a
+  cloned repo would have run with your provider keys in its environment.
+- **`cacheDir` in a project's `kosha.config.json` is ignored**; refresh
+  deletes `*.json` in the cache directory, so a cloned repo must not choose
+  it. Set it in `~/.kosharc.json` or in code.
+- **New cache, ledger and manifest files are owner-only** (0600, directories
+  0700). Existing `~/.kosha` keeps its mode; `chmod -R go-rwx ~/.kosha` to
+  tighten it.
+- Response headers built from catalog model ids are sanitized; the ledger
+  read error and `/api/refresh` failures no longer echo local paths to the
+  caller.
+- **Release workflow:** the tag is checked out as `refs/tags/<tag>` (an
+  unqualified ref let a same-named branch be built under a genuine signed
+  tag) and HEAD is asserted to be the tag's commit. The tag input is
+  validated and reaches the shell only through env. Build and test run in a
+  job with no `id-token`; only the publish job, which runs no repository code,
+  can mint an npm token. npm and the MCP publisher are pinned (the latter by
+  sha256), and the release no longer restores a dependency cache.
+- Every workflow checkout sets `persist-credentials: false`, the snapshot
+  workflow validates its `output` input before writing it to `GITHUB_ENV`, and
+  Dependabot now proposes action and dependency updates with the same
+  seven-day cooldown.
 
 ## [1.8.1] — 2026-10-06
 

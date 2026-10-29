@@ -34,12 +34,16 @@
  *   - When `KOSHA_PROXY_TOKEN` is set, every `/proxy/*` route and
  *     `POST /api/refresh` require `Authorization: Bearer <token>` (or an
  *     `x-kosha-token` header). Unset → open, which is only safe on loopback.
+ *   - Every route refuses a non-loopback `Host` (unless in `KOSHA_ALLOWED_HOSTS`),
+ *     a mismatched `Origin` and `Sec-Fetch-Site: cross-site`, so a web page
+ *     cannot drive the server through the browser (see `browserGuard`).
  * @module
  */
 
 import { timingSafeEqual } from "node:crypto";
 import { Hono, type MiddlewareHandler } from "hono";
 import { serve } from "@hono/node-server";
+import { bodyLimit } from "hono/body-limit";
 import type { CheapestModelOptions, ModelMode, RoleQueryOptions } from "./types.js";
 import { readMonthlyBudgetUsd, readSpendForMonth } from "./cost.js";
 import { registerDiscoveryRoutes } from "./discovery-routes.js";
@@ -79,6 +83,87 @@ export function resolveBindHost(explicit?: string): string {
 /** True when `host` is a loopback-only bind. */
 export function isLoopbackHost(host: string): boolean {
 	return LOOPBACK_HOSTS.has(host.trim().toLowerCase());
+}
+
+/** Options for {@link createServer}. */
+export interface CreateServerOptions {
+	/**
+	 * Host names (without port) a request may name in its `Host` header.
+	 * Defaults to the loopback names plus `KOSHA_ALLOWED_HOSTS`
+	 * (comma-separated, `*` for any). `"any"` turns the check off, which is
+	 * what a deliberately exposed server behind its own token wants.
+	 */
+	allowedHosts?: readonly string[] | "any";
+}
+
+/** Proxy bodies carry base64 images; 32 MiB matches Anthropic's own request cap. */
+const PROXY_BODY_LIMIT_BYTES = 32 * 1024 * 1024;
+const REFRESH_BODY_LIMIT_BYTES = 64 * 1024;
+
+/** `KOSHA_ALLOWED_HOSTS` as a list, or "any" for `*`. */
+function allowedHostsFromEnv(): string[] | "any" {
+	const names = (process.env.KOSHA_ALLOWED_HOSTS ?? "")
+		.split(",")
+		.map((name) => name.trim().toLowerCase())
+		.filter(Boolean);
+	return names.includes("*") ? "any" : names;
+}
+
+/** The host part of a `Host` header: `[::1]:3000` → `[::1]`, `localhost:3000` → `localhost`. */
+function hostNameOf(hostHeader: string): string {
+	const value = hostHeader.trim().toLowerCase();
+	if (value.startsWith("[")) {
+		const end = value.indexOf("]");
+		return end === -1 ? value : value.slice(0, end + 1);
+	}
+	const colon = value.indexOf(":");
+	return colon === -1 ? value : value.slice(0, colon);
+}
+
+/**
+ * Refuse requests a browser sent on behalf of another site.
+ *
+ * The default server holds the operator's provider keys and, on loopback,
+ * needs no token. Any web page can POST to `http://127.0.0.1:3000` (a
+ * `text/plain` body needs no CORS preflight, and the proxy parses it as
+ * JSON), and a DNS-rebinding page can also read the replies. So:
+ *   - the `Host` header must name an allowed host (stops rebinding, where the
+ *     browser sends the attacker's domain);
+ *   - an `Origin` must match `Host`, and `Sec-Fetch-Site: cross-site` is
+ *     refused (stops cross-site requests).
+ * Non-browser clients send neither header and a loopback Host, so curl and
+ * SDKs are unaffected.
+ */
+function browserGuard(allowedHosts: readonly string[] | "any"): MiddlewareHandler {
+	const allowed = allowedHosts === "any" ? null : new Set([...LOOPBACK_HOSTS, ...allowedHosts.map((h) => h.toLowerCase())]);
+	const forbidden = (ctx: Parameters<MiddlewareHandler>[0], message: string) =>
+		ctx.json({ error: { message, type: "forbidden", code: "403" } }, 403);
+	return async (ctx, next) => {
+		const host = ctx.req.header("host");
+		if (allowed && host !== undefined && !allowed.has(hostNameOf(host))) {
+			return forbidden(ctx, "host not allowed; add it to KOSHA_ALLOWED_HOSTS to serve it");
+		}
+		if (ctx.req.header("sec-fetch-site") === "cross-site") {
+			return forbidden(ctx, "cross-site requests are not allowed");
+		}
+		const origin = ctx.req.header("origin");
+		if (origin !== undefined) {
+			let originHost: string | null = null;
+			try {
+				originHost = new URL(origin).host;
+			} catch {
+				// `Origin: null` (sandboxed frames, file://) and junk land here.
+			}
+			if (!originHost || !host || originHost !== host.trim().toLowerCase()) {
+				return forbidden(ctx, "cross-origin requests are not allowed");
+			}
+		}
+		await next();
+	};
+}
+
+function bodyTooLarge(ctx: Parameters<MiddlewareHandler>[0]) {
+	return ctx.json({ error: { message: "request body too large", type: "invalid_request_error", code: "413" } }, 413);
 }
 
 /**
@@ -160,8 +245,13 @@ function parsePriceMetric(value: string | undefined): CheapestModelOptions["pric
  * @param registry - A pre-populated (or lazy) ModelRegistry instance.
  * @returns A configured Hono app with all kosha REST routes.
  */
-export function createServer(registry: ModelRegistry, shutdownSignal?: AbortSignal): Hono {
+export function createServer(registry: ModelRegistry, shutdownSignal?: AbortSignal, options: CreateServerOptions = {}): Hono {
 	const app = new Hono();
+
+	app.use("*", browserGuard(options.allowedHosts ?? allowedHostsFromEnv()));
+	// Bounded before any route buffers a body: `req.json()` reads it whole.
+	app.use("/proxy/*", bodyLimit({ maxSize: PROXY_BODY_LIMIT_BYTES, onError: bodyTooLarge }));
+	app.use("/api/refresh", bodyLimit({ maxSize: REFRESH_BODY_LIMIT_BYTES, onError: bodyTooLarge }));
 
 	// ── Operator token gate (opt-in via KOSHA_PROXY_TOKEN) ──────────────
 	// Registered before the routes it protects so it runs first. Covers the
@@ -440,11 +530,9 @@ export function createServer(registry: ModelRegistry, shutdownSignal?: AbortSign
 				refreshedAt: Date.now(),
 			});
 		} catch (err: unknown) {
-			const message = err instanceof Error ? err.message : String(err);
-			return ctx.json(
-				{ error: "Refresh failed", message },
-				500,
-			);
+			// Details stay in the operator's log: they can carry local paths.
+			console.error("kosha: /api/refresh failed:", err instanceof Error ? err.message : String(err));
+			return ctx.json({ error: "Refresh failed", message: "see the kosha server log" }, 500);
 		}
 	});
 
@@ -655,7 +743,12 @@ export async function startServer(port = 3000, host?: string): Promise<void> {
 	// dropping streams mid-response; the proxy threads this signal into every
 	// upstream fetch alongside its per-request timeout.
 	const shutdownController = new AbortController();
-	const app = createServer(registry, shutdownController.signal);
+	// DNS rebinding is an attack on loopback servers. A server bound to a
+	// network interface is reached under names kosha can't know (LAN IP,
+	// reverse proxy), so it skips the Host check unless KOSHA_ALLOWED_HOSTS
+	// lists them; the Origin check still applies.
+	const allowedHosts = isLoopbackHost(bindHost) || process.env.KOSHA_ALLOWED_HOSTS ? allowedHostsFromEnv() : "any";
+	const app = createServer(registry, shutdownController.signal, { allowedHosts });
 
 	// IPv6 literals need brackets in a URL; everything else prints as-is.
 	const urlHost = bindHost.includes(":") && !bindHost.startsWith("[") ? `[${bindHost}]` : bindHost;

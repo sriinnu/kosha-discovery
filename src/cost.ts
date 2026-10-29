@@ -421,11 +421,11 @@ export async function trimLedgerPartitions(
  * best-effort retention trim so old partitions age out without a cron job.
  */
 export async function appendLedgerEntry(entry: LedgerEntry, ledgerPath = DEFAULT_LEDGER_PATH): Promise<void> {
-	await mkdir(dirname(ledgerPath), { recursive: true });
+	await mkdir(dirname(ledgerPath), { recursive: true, mode: 0o700 });
 	const partPath = partitionPathFor(ledgerPath, entry.ts);
 	const line = `${JSON.stringify(sanitizeEntry(entry))}\n`;
 	try {
-		await appendFile(partPath, line, "utf-8");
+		await appendFile(partPath, line, { encoding: "utf-8", mode: 0o600 });
 	} catch (err: unknown) {
 		// If append fails (e.g. permissions) we just swallow — ledger is
 		// observability, not load-bearing routing state. A best-effort
@@ -433,7 +433,7 @@ export async function appendLedgerEntry(entry: LedgerEntry, ledgerPath = DEFAULT
 		if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
 			const tmp = `${partPath}.${randomBytes(4).toString("hex")}.tmp`;
 			try {
-				await writeFile(tmp, line, "utf-8");
+				await writeFile(tmp, line, { encoding: "utf-8", mode: 0o600 });
 				await rename(tmp, partPath);
 			} catch {
 				// give up silently

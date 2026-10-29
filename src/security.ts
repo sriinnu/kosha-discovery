@@ -227,6 +227,12 @@ const MAX_SCAN_DEPTH = 64;
 // API key (which is also valid base64) reports "credential_leak" rather than
 // the generic "base64" catch-all.
 const VALUE_THREATS: Threat[] = [
+	// Except this one: some pattern tests below are quadratic in the worst
+	// case, so a hostile multi-megabyte string must be rejected before them.
+	{
+		name: "oversized_string",
+		test: (v) => v.length > MAX_STRING_LENGTH,
+	},
 	{
 		name: "null_byte",
 		test: (v) => NULL_BYTE_PATTERN.test(v),
@@ -254,10 +260,6 @@ const VALUE_THREATS: Threat[] = [
 	{
 		name: "data_uri",
 		test: (v) => DATA_URI_PATTERN.test(v),
-	},
-	{
-		name: "oversized_string",
-		test: (v) => v.length > MAX_STRING_LENGTH,
 	},
 	{
 		name: "hex_payload",
@@ -373,7 +375,7 @@ export function assertCleanPayload(data: unknown, source: string): void {
 	const hit = scanPayload(data);
 	if (hit) {
 		throw new Error(
-			`Rejected ${source} data: ${hit.threat} detected at "${hit.path}" — refusing to load potentially compromised payload`,
+			`Rejected ${source} data: ${hit.threat} detected at ${JSON.stringify(hit.path)} — refusing to load potentially compromised payload`,
 		);
 	}
 }
@@ -438,7 +440,7 @@ export function quarantineEntries(data: unknown, source: string): QuarantineResu
 		for (const threat of KEY_THREATS) {
 			if (threat.test(key)) {
 				throw new Error(
-					`Rejected ${source} data: ${threat.name} detected in top-level key "${key}" — refusing to load potentially compromised payload`,
+					`Rejected ${source} data: ${threat.name} detected in top-level key ${JSON.stringify(key)} — refusing to load potentially compromised payload`,
 				);
 			}
 		}

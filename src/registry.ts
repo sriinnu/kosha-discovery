@@ -435,7 +435,14 @@ export class ModelRegistry {
 		const projectConfig = await ModelRegistry.readJsonFile<KoshaConfig>(join(process.cwd(), "kosha.config.json"));
 
 		if (globalConfig) layers.push(globalConfig);
-		if (projectConfig) layers.push(projectConfig);
+		if (projectConfig) {
+			// kosha.config.json comes with whatever directory kosha runs in,
+			// cloned repos included. `cacheDir` there would aim refresh's
+			// `*.json` cleanup at any directory, so only ~/.kosharc.json and
+			// programmatic config may set it.
+			const { cacheDir: _ignored, ...projectLayer } = projectConfig;
+			layers.push(projectLayer);
+		}
 		if (overrides) layers.push(overrides);
 		if (layers.length === 0) return {};
 

@@ -109,7 +109,7 @@ export class KoshaCache {
 		const filePath = this.keyToPath(key);
 		const tmpPath = `${filePath}.${randomBytes(4).toString("hex")}.tmp`;
 		try {
-			await writeFile(tmpPath, JSON.stringify(entry, null, "\t"), "utf-8");
+			await writeFile(tmpPath, JSON.stringify(entry, null, "\t"), { encoding: "utf-8", mode: 0o600 });
 			await rename(tmpPath, filePath);
 		} catch (err) {
 			await unlink(tmpPath).catch(() => {});
@@ -166,8 +166,10 @@ export class KoshaCache {
 
 	/**
 	 * Ensure the cache directory exists, creating it recursively if needed.
+	 * Owner-only: the cache and its siblings (ledger, manifest) say which
+	 * providers you use and what you spend. Existing directories keep their mode.
 	 */
 	private async ensureDir(): Promise<void> {
-		await mkdir(this.cacheDir, { recursive: true });
+		await mkdir(this.cacheDir, { recursive: true, mode: 0o700 });
 	}
 }

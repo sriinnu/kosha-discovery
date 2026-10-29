@@ -17,7 +17,7 @@ import { execFileSync, execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { assertSafeShellArg } from "../shell-safe.js";
+import { assertSafeShellArg, cliSpawnOptions } from "../shell-safe.js";
 import { assertCleanPayload } from "../security.js";
 import type { CredentialResult, ModelCard, ModelMode } from "../types.js";
 import { extractOriginProvider } from "../normalize.js";
@@ -264,6 +264,7 @@ export class VertexDiscoverer extends BaseDiscoverer {
 	private tokenFromGcloudCli(): string | undefined {
 		try {
 			const out = execSync("gcloud auth print-access-token", {
+				...cliSpawnOptions(),
 				stdio: ["pipe", "pipe", "pipe"],
 				timeout: 8_000,
 			})
@@ -293,7 +294,7 @@ export class VertexDiscoverer extends BaseDiscoverer {
 			const raw = execFileSync(
 				"gcloud",
 				["ai", "models", "list", `--project=${projectId}`, `--region=${region}`, "--format=json"],
-				{ stdio: ["pipe", "pipe", "pipe"], timeout: 15_000 },
+				{ ...cliSpawnOptions(), stdio: ["pipe", "pipe", "pipe"], timeout: 15_000 },
 			).toString();
 
 			const models = JSON.parse(raw) as GcloudModel[];
@@ -315,6 +316,7 @@ export class VertexDiscoverer extends BaseDiscoverer {
 	private resolveProjectFromCli(): string | undefined {
 		try {
 			const out = execSync("gcloud config get-value project", {
+				...cliSpawnOptions(),
 				stdio: ["pipe", "pipe", "pipe"],
 				timeout: 5_000,
 			})

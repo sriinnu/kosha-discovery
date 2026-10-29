@@ -6,7 +6,7 @@
  *
  *   1. **Explicit config** — key passed directly via `KoshaConfig.providers`
  *   2. **Environment variables** — e.g. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
- *   3. **CLI tool credential files** — Claude CLI, Copilot, Codex, Gemini CLI
+ *   3. **CLI tool credential files** — Claude CLI, Codex, Gemini CLI
  *   4. **Config / OAuth files** — `~/.config/*`, gcloud ADC, `~/.aws/*`
  *   5. **CLI subprocess** — `gcloud auth print-access-token` etc.
  *
@@ -21,6 +21,7 @@ import { homedir, platform } from "os";
 import { join } from "path";
 import type { CredentialResult } from "../types.js";
 import { getProviderDescriptor, normalizeProviderId } from "../provider-catalog.js";
+import { cliSpawnOptions } from "../shell-safe.js";
 
 /**
  * Multi-source credential resolver for AI providers.
@@ -28,7 +29,7 @@ import { getProviderDescriptor, normalizeProviderId } from "../provider-catalog.
  * Resolution priority per provider:
  *   1. Explicit config key (passed programmatically)
  *   2. Environment variables
- *   3. CLI tool credential files (Claude CLI, Copilot, Gemini CLI, etc.)
+ *   3. CLI tool credential files (Claude CLI, Gemini CLI, etc.)
  *   4. Config / OAuth files (~/.config/*)
  *
  * Always returns a {@link CredentialResult}; never throws.
@@ -216,8 +217,6 @@ export class CredentialResolver {
 	 * Search hierarchy for OpenAI credentials:
 	 *   1. Explicit config key
 	 *   2. `OPENAI_API_KEY` env var
-	 *   3. GitHub Copilot `hosts.json` (contains an OAuth token usable with OpenAI-compatible APIs)
-	 *   4. GitHub Copilot `apps.json` (alternative credential location)
 	 */
 	private async resolveOpenAI(explicitKey?: string): Promise<CredentialResult> {
 		// 1. Explicit config key
@@ -231,29 +230,9 @@ export class CredentialResolver {
 			return { apiKey: envKey, source: "env" };
 		}
 
-		// 3. GitHub Copilot hosts.json
-		const copilotPaths = this.getCopilotPaths("hosts.json");
-		for (const p of copilotPaths) {
-			const hosts = await this.readJson<Record<string, { oauth_token?: string }>>(p);
-			if (hosts) {
-				const token = this.extractCopilotToken(hosts);
-				if (token) {
-					return { accessToken: token, source: "cli", path: p };
-				}
-			}
-		}
-
-		// 4. GitHub Copilot apps.json
-		const appsPaths = this.getCopilotPaths("apps.json");
-		for (const p of appsPaths) {
-			const apps = await this.readJson<Record<string, { oauth_token?: string }>>(p);
-			if (apps) {
-				const token = this.extractCopilotToken(apps);
-				if (token) {
-					return { accessToken: token, source: "cli", path: p };
-				}
-			}
-		}
+		// GitHub Copilot's oauth_token used to be tried here. It is a GitHub
+		// credential, not an OpenAI one: sending it to api.openai.com only ever
+		// got a 401, and handed a GitHub token to a third party on every pass.
 
 		return { source: "none" };
 	}
@@ -297,12 +276,9 @@ export class CredentialResolver {
 		// 4. gcloud application default credentials
 		const gcloudPaths = this.getGcloudPaths();
 		for (const p of gcloudPaths) {
-			const gcloud = await this.readJson<{ access_token?: string; refresh_token?: string }>(p);
+			const gcloud = await this.readJson<{ access_token?: string }>(p);
 			if (gcloud?.access_token) {
 				return { accessToken: gcloud.access_token, source: "config", path: p };
-			}
-			if (gcloud?.refresh_token) {
-				return { accessToken: gcloud.refresh_token, source: "config", path: p };
 			}
 		}
 
@@ -622,6 +598,7 @@ export class CredentialResolver {
 	private execGcloudToken(): string | null {
 		try {
 			const output = execSync("gcloud auth print-access-token", {
+				...cliSpawnOptions(),
 				timeout: 5_000,
 				stdio: ["pipe", "pipe", "pipe"],
 			});
@@ -639,6 +616,7 @@ export class CredentialResolver {
 	private execGcloudProject(): string | null {
 		try {
 			const output = execSync("gcloud config get-value project", {
+				...cliSpawnOptions(),
 				timeout: 5_000,
 				stdio: ["pipe", "pipe", "pipe"],
 			});
@@ -713,24 +691,6 @@ export class CredentialResolver {
 		}
 	}
 
-	/** Return candidate paths for GitHub Copilot config files. */
-	private getCopilotPaths(filename: string): string[] {
-		const paths: string[] = [join(this.home, ".config", "github-copilot", filename)];
-
-		if (this.isWindows) {
-			const appData = process.env.APPDATA;
-			if (appData) {
-				paths.push(join(appData, "github-copilot", filename));
-			}
-			const localAppData = process.env.LOCALAPPDATA;
-			if (localAppData) {
-				paths.push(join(localAppData, "github-copilot", filename));
-			}
-		}
-
-		return paths;
-	}
-
 	/** Return candidate paths for gcloud ADC. */
 	private getGcloudPaths(): string[] {
 		const paths: string[] = [
@@ -746,15 +706,4 @@ export class CredentialResolver {
 
 		return paths;
 	}
-
-	/** Extract the first OAuth token from a Copilot hosts/apps JSON structure. */
-	private extractCopilotToken(data: Record<string, { oauth_token?: string }>): string | undefined {
-		for (const value of Object.values(data)) {
-			if (value?.oauth_token) {
-				return value.oauth_token;
-			}
-		}
-		return undefined;
-	}
-
 }

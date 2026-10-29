@@ -37,7 +37,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup pnpm
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413  # v6.1.0
@@ -89,6 +89,12 @@ jobs:
           set -euo pipefail
           mkdir -p "$OBS_DIR"
           OUTPUT_PATH="${OUTPUT_INPUT:-data/kosha-latest.json}"
+          # It goes into GITHUB_ENV below: a newline would set arbitrary env
+          # vars (NODE_OPTIONS) for every later step.
+          if [[ ! "$OUTPUT_PATH" =~ ^[A-Za-z0-9._/-]+\.json$ || "$OUTPUT_PATH" == *..* || "$OUTPUT_PATH" == /* ]]; then
+            echo "::error::output must be a relative .json path inside the repo: $OUTPUT_PATH"
+            exit 1
+          fi
           CHECKSUM_PATH="${OUTPUT_PATH%.json}.sha256"
           echo "OUTPUT_PATH=$OUTPUT_PATH" >> "$GITHUB_ENV"
           echo "CHECKSUM_PATH=$CHECKSUM_PATH" >> "$GITHUB_ENV"

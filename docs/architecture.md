@@ -96,7 +96,7 @@ Explicit Key --> Env Var --> CLI Token --> Config File --> None (skip provider)
 | Provider | Env Var | CLI Token Path | Config Path |
 |----------|---------|----------------|-------------|
 | Anthropic | `ANTHROPIC_API_KEY` | `~/.claude/credentials.json` | `~/.config/claude/settings.json` |
-| OpenAI | `OPENAI_API_KEY` | `~/.config/github-copilot/hosts.json` | `~/.config/openai/auth.json` |
+| OpenAI | `OPENAI_API_KEY` | — | `~/.config/openai/auth.json` |
 | Google | `GOOGLE_API_KEY` / `GEMINI_API_KEY` | `~/.config/gemini/credentials.json` | `~/.config/gcloud/application_default_credentials.json` |
 | OpenRouter | `OPENROUTER_API_KEY` | -- | -- |
 | Vercel AI Gateway | `AI_GATEWAY_API_KEY` / `VERCEL_OIDC_TOKEN` | -- | -- |

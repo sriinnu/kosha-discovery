@@ -10,7 +10,9 @@ PORT=3000 node dist/server.js
 
 The server binds `127.0.0.1` by default. To expose it, pass `--host 0.0.0.0` (or set
 `KOSHA_HOST`) **and** set `KOSHA_PROXY_TOKEN`; the proxy routes and `POST /api/refresh`
-then require `Authorization: Bearer <token>` or `x-kosha-token: <token>`. See
+then require `Authorization: Bearer <token>` or `x-kosha-token: <token>`. Browser
+requests from other sites are refused; to serve the API under a host name other than
+loopback, list it in `KOSHA_ALLOWED_HOSTS`. See
 [security.md](security.md#server-exposure-defaults).
 
 ## Endpoints

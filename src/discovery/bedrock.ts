@@ -17,7 +17,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { assertSafeShellArg } from "../shell-safe.js";
+import { assertSafeShellArg, cliSpawnOptions } from "../shell-safe.js";
 import { assertCleanPayload } from "../security.js";
 import type { CredentialResult, ModelCard, ModelMode } from "../types.js";
 import { BaseDiscoverer } from "./base.js";
@@ -266,6 +266,7 @@ export class BedrockDiscoverer extends BaseDiscoverer {
 				"aws",
 				["bedrock", "list-foundation-models", "--region", region, "--output", "json"],
 				{
+					...cliSpawnOptions(),
 					timeout: timeoutMs,
 					encoding: "utf8",
 					// Suppress stderr — credential errors print there, not on stdout

@@ -160,7 +160,7 @@ Discovered: 2026-02-26T10:30:00Z
 Provider     Status          Models  Credential Source
 ──────────── ─────────────── ─────── ─────────────────
 anthropic    ✓ authenticated     12  env (ANTHROPIC_API_KEY)
-openai       ✓ authenticated      8  cli (~/.config/github-copilot)
+openai       ✓ authenticated      8  env (OPENAI_API_KEY)
 google       ✓ authenticated     15  env (GOOGLE_API_KEY)
 ollama       ✓ local              6  none (local)
 openrouter   ✗ no credentials     0  —

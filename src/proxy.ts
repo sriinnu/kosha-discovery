@@ -201,6 +201,9 @@ interface KoshaHint {
 
 const KOSHA_PREFIX = "kosha:";
 
+/** Longest `model` the proxy accepts; real ids and selectors are far shorter. */
+const MAX_MODEL_FIELD_LENGTH = 256;
+
 /**
  * Parse a `kosha:<strategy>[filters]` selector. Returns null when the model
  * string is not a kosha selector or names an unknown strategy (the caller
@@ -212,14 +215,18 @@ const KOSHA_PREFIX = "kosha:";
 function parseKoshaHint(model: string): KoshaHint | null {
 	if (!model.startsWith(KOSHA_PREFIX)) return null;
 	const rest = model.slice(KOSHA_PREFIX.length);
-	const bracket = /\[([^\]]*)\]/.exec(rest);
-	const head = (bracket ? rest.slice(0, bracket.index) : rest).trim();
+	// indexOf, not /\[([^\]]*)\]/: that regex rescans the tail from every `[`
+	// when no `]` follows, which is quadratic on a caller-supplied string.
+	const open = rest.indexOf("[");
+	const close = open === -1 ? -1 : rest.indexOf("]", open + 1);
+	const filters = close === -1 ? null : rest.slice(open + 1, close);
+	const head = (filters !== null ? rest.slice(0, open) : rest).trim();
 	const strategy = parseRouteStrategy(head);
 	if (!strategy) return null;
 
 	const hint: KoshaHint = { strategy };
-	if (!bracket) return hint;
-	for (const part of bracket[1].split(",").map((s) => s.trim()).filter(Boolean)) {
+	if (filters === null) return hint;
+	for (const part of filters.split(",").map((s) => s.trim()).filter(Boolean)) {
 		if (part.startsWith("provider:")) {
 			hint.provider = part.slice("provider:".length);
 		} else if (/^\d+k$/i.test(part)) {
@@ -484,6 +491,9 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 		if (!requested) {
 			return ctx.json({ error: "missing required field: model" }, 400);
 		}
+		if (requested.length > MAX_MODEL_FIELD_LENGTH) {
+			return ctx.json({ error: `model must be at most ${MAX_MODEL_FIELD_LENGTH} characters` }, 400);
+		}
 
 		// ── Resolve candidate routes (failover order) ──────────────────
 		const candidates = resolveProxyCandidates(registry, requested);
@@ -534,11 +544,12 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 				if (budget !== null) spent = await readSpendForMonth(Date.now());
 				if (tenantBudget !== null) tenantSpent = await readSpendForMonth(Date.now(), tenant);
 			} catch (err) {
-				const message = err instanceof Error ? err.message : String(err);
+				// The reason (e.g. an EACCES with the ledger's home-directory
+				// path) goes to the operator's log, not to the caller.
+				console.error("kosha: ledger read failed:", err instanceof Error ? err.message : String(err));
 				return ctx.json(
 					{
 						error: "budget enforcement unavailable — ledger could not be read",
-						detail: message,
 						budgetUsd: budget ?? tenantBudget,
 					},
 					503,
@@ -584,6 +595,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 		let lastNoCred: { provider: string; envHint: string | undefined } | null = null;
 		let sawCredentialedRoute = false;
 		let lastUnsupportedWire: string | null = null;
+		let skippedUnpriced = false;
 		const wantsStream = body.stream === true;
 		const includeUsage =
 			wantsStream && (body.stream_options as { include_usage?: unknown } | undefined)?.include_usage === true;
@@ -614,6 +626,13 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			const safeUrl = safeUpstreamUrl(upstreamUrl, descriptor?.isLocal === true);
 			if (!safeUrl) {
 				attemptChain.push(`${model.provider}:untrusted-host`);
+				continue;
+			}
+			// With no price kosha writes no ledger row, so a budget would never
+			// see this spend. Local runtimes cost nothing and stay allowed.
+			if ((budget !== null || tenantBudget !== null) && descriptor?.isLocal !== true && !estimateRequestCost(model, body)) {
+				attemptChain.push(`${model.provider}:unpriced`);
+				skippedUnpriced = true;
 				continue;
 			}
 			const usesAnthropicWire = model.provider === "anthropic";
@@ -741,9 +760,12 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			// audit before paying. When the upstream returns a usage block we
 			// also reconcile the actual cost and record both on the ledger.
 			const estimate = estimateRequestCost(model, body);
+			// Catalog ids come from provider APIs and public catalogs; the scan
+			// allows newlines and non-Latin-1 text, either of which makes
+			// Headers throw after the upstream has already been paid.
 			const responseHeaders = new Headers({
-				"x-kosha-model": model.id,
-				"x-kosha-provider": model.provider,
+				"x-kosha-model": headerSafe(model.id, 200),
+				"x-kosha-provider": headerSafe(model.provider, 100),
 				"x-kosha-requested": safeRequested,
 				"x-kosha-attempt-chain": headerSafe(attemptChain.join(",")),
 			});
@@ -949,6 +971,15 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			return ctx.json(
 				{
 					error: `request uses content the Anthropic wire translator cannot carry and no native OpenAI-compatible route was available: ${lastUnsupportedWire}`,
+					attemptChain,
+				},
+				422,
+			);
+		}
+		if (skippedUnpriced && fetchAttempts === 0) {
+			return ctx.json(
+				{
+					error: "no priced route for this model; with a spend budget set, kosha only forwards models it can charge to the ledger",
 					attemptChain,
 				},
 				422,

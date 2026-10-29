@@ -267,7 +267,7 @@ describe("CredentialResolver", () => {
 			expect(result.path).toContain("auth.json");
 		});
 
-		it("reads OpenAI token from GitHub Copilot hosts.json", async () => {
+		it("never sends a GitHub Copilot token to OpenAI", async () => {
 			delete process.env.OPENAI_API_KEY;
 			mockFile("hosts.json", {
 				"github.com": { oauth_token: "gho_copilot_token" },
@@ -275,9 +275,9 @@ describe("CredentialResolver", () => {
 
 			const result = await resolver.resolve("openai");
 
-			expect(result.accessToken).toBe("gho_copilot_token");
-			expect(result.source).toBe("cli");
-			expect(result.path).toContain("hosts.json");
+			expect(result.accessToken).toBeUndefined();
+			expect(result.apiKey).toBeUndefined();
+			expect(result.source).toBe("none");
 		});
 
 		it("reads Google key from Gemini CLI ~/.gemini/credentials.json", async () => {

@@ -23,12 +23,10 @@ export ANTHROPIC_API_KEY=sk-ant-...
 ```bash
 # Option A: Environment variable
 export OPENAI_API_KEY=sk-...
-
-# Option B: Auto-detected from GitHub Copilot
-# If you've authenticated with Copilot, kosha reads tokens from:
-#   ~/.config/github-copilot/hosts.json (Linux/macOS)
-#   %LOCALAPPDATA%/github-copilot/hosts.json (Windows)
 ```
+
+GitHub Copilot's token is not read: it is a GitHub credential, and kosha no
+longer sends it to OpenAI.
 
 ## Google (Gemini)
 
