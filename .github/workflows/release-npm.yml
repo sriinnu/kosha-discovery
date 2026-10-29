@@ -202,7 +202,9 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s failglob
-          npm publish release/*.tgz --access public --provenance
+          # The ./ matters: npm reads a bare `release/x.tgz` as GitHub shorthand
+          # (owner/repo) and tries to git-clone it. That sank v1.9.0.
+          npm publish ./release/*.tgz --access public --provenance
 
   # Outside the npm-release environment on purpose: its OIDC token carries no
   # environment claim, so the MCP publisher binary cannot publish to npm. It

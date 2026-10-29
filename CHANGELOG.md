@@ -13,7 +13,17 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
-## [1.9.0] — 2026-10-29
+## [1.9.1] — 2026-10-29
+
+### Fixed
+
+- **The release workflow could not publish.** `npm publish release/*.tgz` reads a
+  bare `dir/file.tgz` as GitHub shorthand and tries to git-clone it, so the
+  v1.9.0 run failed before reaching the registry. It now publishes
+  `./release/*.tgz`. v1.9.0 was tagged but never published; 1.9.1 carries
+  everything listed under 1.9.0.
+
+## [1.9.0] — 2026-10-29 (tagged, not published)
 
 ### Added
 

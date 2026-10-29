@@ -23,7 +23,7 @@ inputs:
       action was released with, so a new npm publish does not change what your
       CI runs until you move the action tag. Set `latest` to opt back in.
     required: false
-    default: "1.9.0"
+    default: "1.9.1"
 
 outputs:
   findings:
