@@ -13,6 +13,8 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
+## [1.9.0] — 2026-10-29
+
 ### Added
 
 - **kosha's own weekly snapshot is the fallback when the public catalogs are
