@@ -154,6 +154,18 @@ jobs:
           npm pack --pack-destination "$RUNNER_TEMP/release"
           cp server.json "$RUNNER_TEMP/release/"
 
+      # Runs the publish job's exact command on the exact tarball, minus the
+      # upload, so a broken publish line fails here instead of after the
+      # npm-release approval. v1.9.0 died that way: `release/*.tgz` without the
+      # ./ was read as GitHub shorthand. No auth is needed for a dry run.
+      - name: Rehearse the npm publish
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          shopt -s failglob
+          npm publish ./release/*.tgz --access public --dry-run
+
       - name: Upload release files
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:

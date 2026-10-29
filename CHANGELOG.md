@@ -13,6 +13,12 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
+### Changed
+
+- **The release workflow rehearses `npm publish` before asking for approval.**
+  `verify` dry-runs the publish job's exact command on the exact tarball, so a
+  broken publish line fails before the `npm-release` gate, not after it.
+
 ## [1.9.1] — 2026-10-29
 
 ### Fixed
