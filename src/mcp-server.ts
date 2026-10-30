@@ -236,7 +236,7 @@ let registryInstance: ModelRegistry | null = null;
 let registryReady: Promise<ModelRegistry> | null = null;
 
 async function loadRegistry(): Promise<ModelRegistry> {
-	const reg = new ModelRegistry();
+	const reg = new ModelRegistry(await ModelRegistry.loadConfigFile());
 	await reg.discover();
 	registryInstance = reg;
 	return reg;
@@ -258,7 +258,11 @@ class ToolInputError extends Error {}
 // Tool handlers
 // ---------------------------------------------------------------------------
 
-export async function callTool(name: string, args: Record<string, unknown>, deps: McpDeps = defaultDeps): Promise<unknown> {
+export async function callTool(
+	name: string,
+	args: Record<string, unknown>,
+	deps: McpDeps = defaultDeps,
+): Promise<unknown> {
 	const reg = await deps.registry();
 
 	switch (name) {
@@ -281,17 +285,14 @@ export async function callTool(name: string, args: Record<string, unknown>, deps
 		}
 
 		case "kosha_cheapest_model": {
-			const minContext =
-				typeof args.min_context_k === "number" ? args.min_context_k * 1_000 : undefined;
+			const minContext = typeof args.min_context_k === "number" ? args.min_context_k * 1_000 : undefined;
 			const result = reg.cheapestModels({
 				mode: "chat",
 				capability: args.capability as string | undefined,
 				provider: args.provider as string | undefined,
 				limit: typeof args.limit === "number" ? args.limit : 5,
 			});
-			const matches = minContext
-				? result.matches.filter((m) => m.model.contextWindow >= minContext)
-				: result.matches;
+			const matches = minContext ? result.matches.filter((m) => m.model.contextWindow >= minContext) : result.matches;
 			return {
 				matches: matches.map((m) => ({
 					id: m.model.id,
@@ -390,9 +391,7 @@ export async function callTool(name: string, args: Record<string, unknown>, deps
 			const providers = reg.providers_list();
 			const errors = reg.discoveryErrors();
 			const errorByProvider = new Map(errors.map((e) => [e.providerId, e.error]));
-			const list = args.provider
-				? providers.filter((p) => p.id === args.provider)
-				: providers;
+			const list = args.provider ? providers.filter((p) => p.id === args.provider) : providers;
 			return list.map((p) => ({
 				id: p.id,
 				name: p.name,
@@ -414,17 +413,14 @@ export async function callTool(name: string, args: Record<string, unknown>, deps
 			const model = reg.model(modelId);
 			if (!model) return { error: `model '${modelId}' not found` };
 
-			const candidates = reg
-				.cheapestModels({ mode: "chat", limit: 20 })
-				.matches.map((m) => m.model);
+			const candidates = reg.cheapestModels({ mode: "chat", limit: 20 }).matches.map((m) => m.model);
 
 			return computeContextStrategy({
 				model,
 				currentTokens,
 				expectedRemainingTurns:
 					typeof args.expected_remaining_turns === "number" ? args.expected_remaining_turns : undefined,
-				expectedOutputTokens:
-					typeof args.expected_output_tokens === "number" ? args.expected_output_tokens : undefined,
+				expectedOutputTokens: typeof args.expected_output_tokens === "number" ? args.expected_output_tokens : undefined,
 				candidateAlternatives: candidates,
 			});
 		}

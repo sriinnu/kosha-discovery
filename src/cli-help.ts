@@ -6,11 +6,8 @@
  * @module cli-help
  */
 
-import {
-	BOLD, CYAN, DIM, GREEN, MAGENTA, RED, YELLOW,
-	c,
-} from "./cli-format.js";
 import { createRequire } from "node:module";
+import { BOLD, CYAN, c, DIM, GREEN, MAGENTA, RED, YELLOW } from "./cli-format.js";
 
 const _require = createRequire(import.meta.url);
 const VERSION = (_require("../package.json") as { version: string }).version;
@@ -19,7 +16,8 @@ const VERSION = (_require("../package.json") as { version: string }).version;
 
 /** Print the full CLI usage / help text to stdout. */
 export function showHelp(): void {
-	console.log(`
+	console.log(
+		`
 ${c(BOLD, "kosha")} ${c(DIM, "\u2014 AI Model & Provider Discovery Registry")}
 
 ${c(BOLD, "USAGE")}
@@ -72,8 +70,17 @@ ${c(BOLD, "COMMANDS")}
     --until <iso-date>            End of the window
     --tenant <name>               Only rows tagged with this tenant
     --ledger <path>               Ledger file (default ~/.kosha/ledger.jsonl + monthly partitions)
+  ${c(CYAN, "registry export")}               Write the catalog in snapshot format (for local mode)
+    --output <file>               Write to a file instead of stdout
+    --provider <name>             Export only one provider
   ${c(CYAN, "serve")} [--port 3000]           Start HTTP API server (binds 127.0.0.1)
     --host <address>              Bind address; set KOSHA_PROXY_TOKEN before exposing
+
+${c(BOLD, "CATALOG SOURCE")}
+  Without a key, model data comes from models.dev and LiteLLM (${c(CYAN, "community")}).
+  ${c(CYAN, "KOSHA_CATALOG_SOURCE=pinned")}   kosha's published snapshot only
+  ${c(CYAN, "KOSHA_CATALOG_SOURCE=local")}    a file from ${c(CYAN, "kosha registry export")}, no network;
+                                set ${c(CYAN, "KOSHA_CATALOG_FILE")} (or catalogFile in ~/.kosharc.json)
 
 ${c(BOLD, "CACHING & OUTPUT")}
   Results are cached at ${c(CYAN, "~/.kosha/cache")} for 24h by default.
@@ -115,7 +122,8 @@ ${c(BOLD, "EXAMPLES")}
   ${c(DIM, "$")} kosha spend --since 2026-09-01 --json
   ${c(DIM, "$")} kosha serve --port 8080
   ${c(DIM, "$")} KOSHA_PROXY_TOKEN=s3cret kosha serve --host 0.0.0.0
-`.trim());
+`.trim(),
+	);
 }
 
 /** Print the CLI version string to stdout. */
@@ -130,8 +138,7 @@ export function showVersion(): void {
  * Uses MAGENTA branding with a clean, minimal layout.
  */
 export function showSplash(): void {
-	const brandWord =
-		`${c(CYAN, "k")}${c(GREEN, "o")}${c(YELLOW, "s")}${c(MAGENTA, "h")}${c(RED, "a")}`;
+	const brandWord = `${c(CYAN, "k")}${c(GREEN, "o")}${c(YELLOW, "s")}${c(MAGENTA, "h")}${c(RED, "a")}`;
 	const mascot1 = `${c(CYAN, " /\\_/\\ ")} ${c(DIM, "assistant mascot")}`;
 	const mascot2 = `${c(CYAN, "( o.o )")} ${c(DIM, "ready to route")}`;
 	const mascot3 = `${c(CYAN, " > ^ < ")} ${c(DIM, "providers + models")}`;

@@ -41,16 +41,16 @@
  */
 
 import { timingSafeEqual } from "node:crypto";
-import { Hono, type MiddlewareHandler } from "hono";
 import { serve } from "@hono/node-server";
+import { Hono, type MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import type { CheapestModelOptions, ModelMode, RoleQueryOptions } from "./types.js";
 import { readMonthlyBudgetUsd, readSpendForMonth } from "./cost.js";
 import { registerDiscoveryRoutes } from "./discovery-routes.js";
-import { registerProxyRoutes, snapshotProxyMetrics } from "./proxy.js";
-import { ModelRegistry } from "./registry.js";
 import { isMainModule } from "./entry.js";
 import { extractModelVersion, normalizeModelId } from "./normalize.js";
+import { registerProxyRoutes, snapshotProxyMetrics } from "./proxy.js";
+import { ModelRegistry } from "./registry.js";
+import type { CheapestModelOptions, ModelMode, RoleQueryOptions } from "./types.js";
 
 const MODEL_MODES: readonly ModelMode[] = ["chat", "embedding", "image", "video", "audio", "moderation", "rerank"];
 const PRICE_METRICS: readonly NonNullable<CheapestModelOptions["priceMetric"]>[] = ["input", "output", "blended"];
@@ -135,7 +135,8 @@ function hostNameOf(hostHeader: string): string {
  * SDKs are unaffected.
  */
 function browserGuard(allowedHosts: readonly string[] | "any"): MiddlewareHandler {
-	const allowed = allowedHosts === "any" ? null : new Set([...LOOPBACK_HOSTS, ...allowedHosts.map((h) => h.toLowerCase())]);
+	const allowed =
+		allowedHosts === "any" ? null : new Set([...LOOPBACK_HOSTS, ...allowedHosts.map((h) => h.toLowerCase())]);
 	const forbidden = (ctx: Parameters<MiddlewareHandler>[0], message: string) =>
 		ctx.json({ error: { message, type: "forbidden", code: "403" } }, 403);
 	return async (ctx, next) => {
@@ -245,7 +246,11 @@ function parsePriceMetric(value: string | undefined): CheapestModelOptions["pric
  * @param registry - A pre-populated (or lazy) ModelRegistry instance.
  * @returns A configured Hono app with all kosha REST routes.
  */
-export function createServer(registry: ModelRegistry, shutdownSignal?: AbortSignal, options: CreateServerOptions = {}): Hono {
+export function createServer(
+	registry: ModelRegistry,
+	shutdownSignal?: AbortSignal,
+	options: CreateServerOptions = {},
+): Hono {
 	const app = new Hono();
 
 	app.use("*", browserGuard(options.allowedHosts ?? allowedHostsFromEnv()));
@@ -333,7 +338,12 @@ export function createServer(registry: ModelRegistry, shutdownSignal?: AbortSign
 		const priceMetric = parsePriceMetric(priceMetricRaw);
 		if (priceMetricRaw !== undefined && priceMetric === undefined) {
 			return ctx.json(
-				{ error: "invalid query parameter", param: "priceMetric", received: priceMetricRaw, allowedValues: PRICE_METRICS },
+				{
+					error: "invalid query parameter",
+					param: "priceMetric",
+					received: priceMetricRaw,
+					allowedValues: PRICE_METRICS,
+				},
 				400,
 			);
 		}
@@ -350,7 +360,12 @@ export function createServer(registry: ModelRegistry, shutdownSignal?: AbortSign
 		const includeUnpricedRaw = ctx.req.query("includeUnpriced");
 		if (includeUnpricedRaw !== undefined && includeUnpricedRaw !== "true" && includeUnpricedRaw !== "false") {
 			return ctx.json(
-				{ error: "invalid query parameter", param: "includeUnpriced", received: includeUnpricedRaw, allowedValues: ["true", "false"] },
+				{
+					error: "invalid query parameter",
+					param: "includeUnpriced",
+					received: includeUnpricedRaw,
+					allowedValues: ["true", "false"],
+				},
 				400,
 			);
 		}
@@ -369,11 +384,12 @@ export function createServer(registry: ModelRegistry, shutdownSignal?: AbortSign
 		};
 
 		const result = registry.cheapestModels(options);
-		const message = result.matches.length > 0
-			? undefined
-			: result.missingCredentials.length > 0
-				? "No priced models found. Add credentials for one of the missing providers."
-				: "No priced models found for the requested filters.";
+		const message =
+			result.matches.length > 0
+				? undefined
+				: result.missingCredentials.length > 0
+					? "No priced models found. Add credentials for one of the missing providers."
+					: "No priced models found for the requested filters.";
 
 		return ctx.json({
 			...result,
@@ -413,9 +429,7 @@ export function createServer(registry: ModelRegistry, shutdownSignal?: AbortSign
 	app.get("/api/capabilities", (ctx) => {
 		const provider = ctx.req.query("provider") ?? undefined;
 		const caps = registry.capabilities({ provider });
-		const providerIds = provider
-			? [provider]
-			: registry.providers_list().map((p) => p.id);
+		const providerIds = provider ? [provider] : registry.providers_list().map((p) => p.id);
 
 		return ctx.json({
 			capabilities: caps,
@@ -515,7 +529,7 @@ export function createServer(registry: ModelRegistry, shutdownSignal?: AbortSign
 	// POST /api/refresh triggers a fresh discovery pass. Optionally
 	// accepts { provider: "anthropic" } to refresh only one provider.
 	app.post("/api/refresh", async (ctx) => {
-		const body = await ctx.req.json().catch(() => ({})) as Record<string, string | undefined>;
+		const body = (await ctx.req.json().catch(() => ({}))) as Record<string, string | undefined>;
 		const providerId = body.provider;
 
 		try {
@@ -581,11 +595,7 @@ export function createServer(registry: ModelRegistry, shutdownSignal?: AbortSign
 	// plain quote-strip is not sufficient and could let a crafted id break
 	// the exposition format. https://prometheus.io/docs/instrumenting/exposition_formats/
 	const escapePrometheusLabel = (value: string): string =>
-		value
-			.replace(/\\/g, "\\\\")
-			.replace(/"/g, '\\"')
-			.replace(/\n/g, "\\n")
-			.replace(/\r/g, "");
+		value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\r/g, "");
 
 	// ── Prometheus metrics ───────────────────────────────────────────
 	// Plain-text exposition format. Operators can scrape this directly with
@@ -612,7 +622,9 @@ export function createServer(registry: ModelRegistry, shutdownSignal?: AbortSign
 		lines.push("# TYPE kosha_providers_total gauge");
 		lines.push(`kosha_providers_total ${providers.length}`);
 
-		lines.push("# HELP kosha_discovery_degraded 1 when boot discovery failed and the server is serving cached/partial state.");
+		lines.push(
+			"# HELP kosha_discovery_degraded 1 when boot discovery failed and the server is serving cached/partial state.",
+		);
 		lines.push("# TYPE kosha_discovery_degraded gauge");
 		lines.push(`kosha_discovery_degraded ${registryBootDegraded ? 1 : 0}`);
 
@@ -681,7 +693,9 @@ export function createServer(registry: ModelRegistry, shutdownSignal?: AbortSign
 		// pricing source is unreachable/stale — the registry's headline value
 		// (pricing) is silently degrading.
 		const priced = registry.models().filter((m) => m.pricing);
-		const livePriced = priced.filter((m) => m.pricingSource === "provider-live" || m.pricingSource === "litellm").length;
+		const livePriced = priced.filter(
+			(m) => m.pricingSource === "provider-live" || m.pricingSource === "litellm",
+		).length;
 		const coverage = priced.length > 0 ? livePriced / priced.length : 0;
 		lines.push("# HELP kosha_pricing_coverage Fraction of priced models with provider-live or litellm pricing.");
 		lines.push("# TYPE kosha_pricing_coverage gauge");
@@ -716,7 +730,7 @@ export async function startServer(port = 3000, host?: string): Promise<void> {
 				"your provider API keys and are open to anyone who can reach this port. Set KOSHA_PROXY_TOKEN or bind 127.0.0.1.",
 		);
 	}
-	const registry = new ModelRegistry();
+	const registry = new ModelRegistry(await ModelRegistry.loadConfigFile());
 
 	console.log("Discovering providers and models...");
 	// Boot is fault-tolerant: if discovery throws (network outage on this host,
@@ -737,7 +751,9 @@ export async function startServer(port = 3000, host?: string): Promise<void> {
 	}
 
 	const totalModels = registry.models().length;
-	console.log(`Found ${totalModels} models from ${providers.length} providers${registryBootDegraded ? " (degraded)" : ""}`);
+	console.log(
+		`Found ${totalModels} models from ${providers.length} providers${registryBootDegraded ? " (degraded)" : ""}`,
+	);
 
 	// Abort in-flight proxy fetches on shutdown so the server drains instead of
 	// dropping streams mid-response; the proxy threads this signal into every
@@ -753,7 +769,9 @@ export async function startServer(port = 3000, host?: string): Promise<void> {
 	// IPv6 literals need brackets in a URL; everything else prints as-is.
 	const urlHost = bindHost.includes(":") && !bindHost.startsWith("[") ? `[${bindHost}]` : bindHost;
 	const base = `http://${urlHost}:${port}`;
-	console.log(`\nKosha API server listening on ${base}${process.env.KOSHA_PROXY_TOKEN ? " (proxy token required)" : ""}`);
+	console.log(
+		`\nKosha API server listening on ${base}${process.env.KOSHA_PROXY_TOKEN ? " (proxy token required)" : ""}`,
+	);
 	console.log(`  GET  ${base}/api/models`);
 	console.log(`  GET  ${base}/api/models/cheapest`);
 	console.log(`  GET  ${base}/api/models/:id/routes`);

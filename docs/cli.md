@@ -43,6 +43,9 @@ COMMANDS
     --provider <name>             Scope latest fetch to one provider
   refresh (update)              Force re-discover all providers (bypass cache)
     --provider <name>             Refresh only one provider
+  registry export               Write the catalog in snapshot format (for local mode)
+    --output <file>               Write to a file instead of stdout
+    --provider <name>             Export only one provider
   serve [--port 3000]           Start HTTP API server (binds 127.0.0.1)
     --host <address>              Bind address; set KOSHA_PROXY_TOKEN before exposing
 

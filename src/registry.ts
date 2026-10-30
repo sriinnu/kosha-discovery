@@ -9,8 +9,16 @@
 import { readFile } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
-import { normalizeProviderId } from "./provider-catalog.js";
+import { assertCatalogReady, configureCatalogSource } from "./catalog-source.js";
+import type {
+	DiscoveryBindingHintsV1,
+	DiscoveryBindingQuery,
+	DiscoveryCheapestResultV1,
+	DiscoveryDeltaV1,
+	DiscoverySnapshotV1,
+} from "./discovery-contract.js";
 import { normalizeModelId } from "./normalize.js";
+import { normalizeProviderId } from "./provider-catalog.js";
 import {
 	registryBuildSnapshot,
 	registryClassifyError,
@@ -35,38 +43,28 @@ import {
 	registryProviderRoles,
 } from "./registry-query.js";
 import {
-	registryCheapestCandidates,
-	registryExecutionBindingHints,
-} from "./registry-selection.js";
-import {
 	providerRouteHealth,
-	rankCandidatesByStrategy,
 	type RankedRoute,
 	type RouteHealth,
 	type RouteStrategy,
+	rankCandidatesByStrategy,
 } from "./registry-routing.js";
-import { createRegistryState } from "./registry-state.js";
-import type { ProviderObservation, RegistryState, DiscoveryDependencies } from "./registry-state.js";
 import {
-	enrichRegistryModels,
-	registryEnrichOnly,
 	type EnrichOnlyResult,
+	enrichRegistryModels,
 	fallbackRegistryCredential,
 	getRegistryCredentialResolver,
 	loadRegistryDiscoverers,
 	loadRegistryFromCache,
 	populateRegistryModelAliases,
 	registryDiscover,
+	registryEnrichOnly,
 	registryRefresh,
 	saveRegistryToCache,
 } from "./registry-runtime.js";
-import type {
-	DiscoveryBindingHintsV1,
-	DiscoveryBindingQuery,
-	DiscoveryCheapestResultV1,
-	DiscoveryDeltaV1,
-	DiscoverySnapshotV1,
-} from "./discovery-contract.js";
+import { registryCheapestCandidates, registryExecutionBindingHints } from "./registry-selection.js";
+import type { DiscoveryDependencies, ProviderObservation, RegistryState } from "./registry-state.js";
+import { createRegistryState } from "./registry-state.js";
 import type { ProviderHealth } from "./resilience.js";
 import type {
 	CapabilitySummary,
@@ -111,23 +109,44 @@ export class ModelRegistry {
 	private discoverChain: Promise<void> = Promise.resolve();
 
 	constructor(config?: KoshaConfig) {
+		// Only a config that names a catalog source changes it; fromJSON and
+		// other internal constructions pass partial configs and must not reset it.
+		if (config && ("catalogSource" in config || "catalogFile" in config)) configureCatalogSource(config);
 		this.state = createRegistryState(config);
 		this.currentCursor = registryMakeCursor(this.state);
 	}
 
 	/** Compatibility accessor retained for existing tests and debug hooks. */
-	private get providerMap(): Map<string, ProviderInfo> { return this.state.providerMap; }
+	private get providerMap(): Map<string, ProviderInfo> {
+		return this.state.providerMap;
+	}
 	/** Compatibility accessor retained for existing tests and debug hooks. */
-	private get aliasResolver() { return this.state.aliasResolver; }
+	private get aliasResolver() {
+		return this.state.aliasResolver;
+	}
 	/** Compatibility accessor retained for existing tests and debug hooks. */
-	private get discoveredAt(): number { return this.state.discoveredAt; }
-	private set discoveredAt(value: number) { this.state.discoveredAt = value; }
+	private get discoveredAt(): number {
+		return this.state.discoveredAt;
+	}
+	private set discoveredAt(value: number) {
+		this.state.discoveredAt = value;
+	}
 	/** Compatibility accessor retained for existing tests and debug hooks. */
-	private get healthTracker() { return this.state.healthTracker; }
-	private get currentCursor(): string { return this.state.currentCursor; }
-	private set currentCursor(value: string) { this.state.currentCursor = value; }
-	private get lastSnapshotCache(): DiscoverySnapshotV1 | null { return this.state.lastSnapshotCache; }
-	private set lastSnapshotCache(value: DiscoverySnapshotV1 | null) { this.state.lastSnapshotCache = value; }
+	private get healthTracker() {
+		return this.state.healthTracker;
+	}
+	private get currentCursor(): string {
+		return this.state.currentCursor;
+	}
+	private set currentCursor(value: string) {
+		this.state.currentCursor = value;
+	}
+	private get lastSnapshotCache(): DiscoverySnapshotV1 | null {
+		return this.state.lastSnapshotCache;
+	}
+	private set lastSnapshotCache(value: DiscoverySnapshotV1 | null) {
+		this.state.lastSnapshotCache = value;
+	}
 
 	/**
 	 * Run discovery across all or selected providers.
@@ -138,6 +157,7 @@ export class ModelRegistry {
 	 * a failed pass never blocks the next one.
 	 */
 	async discover(options?: DiscoveryOptions): Promise<ProviderInfo[]> {
+		await assertCatalogReady();
 		const credentialResolver = await getRegistryCredentialResolver();
 		const dependencies = this.dependencies(credentialResolver);
 		// Chain this pass onto the in-flight tail so it runs only after the
@@ -300,10 +320,7 @@ export class ModelRegistry {
 	 * `onError` callback so one bad subscriber can't crash the emitter for
 	 * everyone else.
 	 */
-	onChange(
-		handler: (delta: DiscoveryDeltaV1) => void | Promise<void>,
-		onError?: (err: unknown) => void,
-	): () => void {
+	onChange(handler: (delta: DiscoveryDeltaV1) => void | Promise<void>, onError?: (err: unknown) => void): () => void {
 		const listener = (delta: DiscoveryDeltaV1) => {
 			try {
 				const maybePromise = handler(delta);
@@ -417,7 +434,11 @@ export class ModelRegistry {
 	}
 
 	/** Restore a registry instance from a serialized JSON payload. */
-	static fromJSON(data: { providers: ProviderInfo[]; aliases: Record<string, string>; discoveredAt: number }): ModelRegistry {
+	static fromJSON(data: {
+		providers: ProviderInfo[];
+		aliases: Record<string, string>;
+		discoveredAt: number;
+	}): ModelRegistry {
 		const registry = new ModelRegistry({ aliases: data.aliases });
 		for (const provider of data.providers) {
 			registry.providerMap.set(provider.id, provider);
@@ -440,19 +461,35 @@ export class ModelRegistry {
 			// cloned repos included. `cacheDir` there would aim refresh's
 			// `*.json` cleanup at any directory, so only ~/.kosharc.json and
 			// programmatic config may set it.
-			const { cacheDir: _ignored, ...projectLayer } = projectConfig;
+			// The same goes for the catalog: a repo may tighten `community` to
+			// `pinned`, never loosen `local`, and never name a file of its own.
+			const { cacheDir: _ignored, catalogFile: _file, catalogSource, ...rest } = projectConfig;
+			const projectLayer: KoshaConfig = rest;
+			const tightens = catalogSource === "pinned" && globalConfig?.catalogSource !== "local";
+			if (tightens) projectLayer.catalogSource = catalogSource;
+			// Nor may it supply an API key: kosha would then send your prompts
+			// through an account the repo's author controls.
+			if (projectLayer.providers) {
+				projectLayer.providers = Object.fromEntries(
+					Object.entries(projectLayer.providers).map(([id, { apiKey: _key, ...rest }]) => [id, rest]),
+				);
+			}
 			layers.push(projectLayer);
 		}
 		if (overrides) layers.push(overrides);
 		if (layers.length === 0) return {};
 
 		// I only deep-merge the provider and alias maps; the rest stays shallow.
-		return layers.reduce<KoshaConfig>((merged, layer) => ({
-			...merged,
-			...layer,
-			providers: { ...merged.providers, ...layer.providers },
-			aliases: { ...merged.aliases, ...layer.aliases },
-		}), {});
+		return layers.reduce<KoshaConfig>(
+			(merged, layer) => ({
+				// biome-ignore lint/performance/noAccumulatingSpread: three layers at most
+				...merged,
+				...layer,
+				providers: { ...merged.providers, ...layer.providers },
+				aliases: { ...merged.aliases, ...layer.aliases },
+			}),
+			{},
+		);
 	}
 
 	private dependencies(
@@ -460,7 +497,9 @@ export class ModelRegistry {
 	): DiscoveryDependencies {
 		return {
 			// I bind the loaded resolver once per discovery pass to avoid repeated dynamic imports.
-			resolveCredential: credentialResolver ? (providerId, explicitKey) => credentialResolver.resolve(providerId, explicitKey) : null,
+			resolveCredential: credentialResolver
+				? (providerId, explicitKey) => credentialResolver.resolve(providerId, explicitKey)
+				: null,
 			loadDiscoverers: (providerIds, includeLocal) => loadRegistryDiscoverers(this.state, providerIds, includeLocal),
 			enrichModels: () => enrichRegistryModels(this.state),
 			populateModelAliases: () => populateRegistryModelAliases(this.state),
@@ -475,16 +514,19 @@ export class ModelRegistry {
 	}
 
 	/** Compatibility wrapper retained for tests that probe internal mutation APIs. */
+	// biome-ignore lint/correctness/noUnusedPrivateClassMembers: tests reach it through a cast
 	private snapshotForDelta(): DiscoverySnapshotV1 | null {
 		return registrySnapshotForDelta(this.state);
 	}
 
 	/** Compatibility wrapper retained for tests that probe internal mutation APIs. */
+	// biome-ignore lint/correctness/noUnusedPrivateClassMembers: tests reach it through a cast
 	private recordDiscoveryMutation(previousSnapshot: DiscoverySnapshotV1 | null): void {
 		registryRecordDiscoveryMutation(this.state, previousSnapshot);
 	}
 
 	/** Compatibility wrapper retained for tests that probe internal mutation APIs. */
+	// biome-ignore lint/correctness/noUnusedPrivateClassMembers: tests reach it through a cast
 	private recordObservation(
 		providerId: string,
 		entry: { latencyMs: number; errorType: ProviderObservation["lastErrorType"] },
@@ -493,6 +535,7 @@ export class ModelRegistry {
 	}
 
 	/** Compatibility wrapper retained for internal error classification hooks. */
+	// biome-ignore lint/correctness/noUnusedPrivateClassMembers: tests reach it through a cast
 	private classifyError(errorMessage: string): ProviderObservation["lastErrorType"] {
 		return registryClassifyError(errorMessage);
 	}
@@ -514,13 +557,7 @@ function toLooseLookupKey(value: string): string {
 }
 
 /** Valid provider-observation error classes (mirrors ProviderObservation). */
-const PROXY_ERROR_TYPES: ReadonlySet<string> = new Set([
-	"auth_error",
-	"throttled",
-	"timeout",
-	"transport",
-	"unknown",
-]);
+const PROXY_ERROR_TYPES: ReadonlySet<string> = new Set(["auth_error", "throttled", "timeout", "transport", "unknown"]);
 
 /**
  * Normalize a proxy-supplied `errorType` string into the observation enum.

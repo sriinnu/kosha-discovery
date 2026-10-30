@@ -9,7 +9,8 @@
  * @module
  */
 
-import { c, CYAN, DIM, GREEN, RED, YELLOW } from "./cli-format.js";
+import { type CatalogReport, describeCatalog } from "./catalog-source.js";
+import { CYAN, c, DIM, GREEN, RED, YELLOW } from "./cli-format.js";
 import { extractOriginProvider, matchableModelId } from "./normalize.js";
 import type { ModelRegistry } from "./registry.js";
 import type { ModelCard } from "./types.js";
@@ -68,6 +69,7 @@ export async function cmdDoctor(registry: ModelRegistry, flags: Record<string, s
 		// registry holds — that's the point of `doctor`.
 	}
 
+	const catalog = await describeCatalog();
 	const scope = parseModelScope(f.model);
 	const scoped = scope ? resolveScope(registry, scope) : undefined;
 	const models = scoped ? scopeModels(registry, scoped) : registry.models();
@@ -83,8 +85,9 @@ export async function cmdDoctor(registry: ModelRegistry, flags: Record<string, s
 		.filter((row): row is HealthFinding => row !== null);
 
 	if (f.json) {
-		process.stdout.write(`${JSON.stringify({ deprecations, health: healthFindings }, null, 2)}\n`);
+		process.stdout.write(`${JSON.stringify({ catalog, deprecations, health: healthFindings }, null, 2)}\n`);
 	} else {
+		renderCatalog(catalog);
 		renderDeprecations(deprecations);
 		renderHealth(healthFindings);
 	}
@@ -97,13 +100,29 @@ export async function cmdDoctor(registry: ModelRegistry, flags: Record<string, s
 	if (ciFailures.length > 0) {
 		const windowDays = parseDeprecationWindow(f["deprecation-window"]);
 		console.error(
-			c(
-				RED,
-				`kosha doctor: ${ciFailures.length} lifecycle finding(s) fail the --ci gate (window=${windowDays}d).`,
-			),
+			c(RED, `kosha doctor: ${ciFailures.length} lifecycle finding(s) fail the --ci gate (window=${windowDays}d).`),
 		);
 		process.exit(DOCTOR_CI_EXIT_CODE);
 	}
+}
+
+/** One line on where keyless catalog data comes from, and how old it is. */
+function renderCatalog(report: CatalogReport): void {
+	if (report.error) {
+		console.log(`${c(RED, "Catalog source:")} ${report.mode ?? "invalid"} — ${report.error}`);
+		return;
+	}
+	const detail =
+		report.mode === "community"
+			? "models.dev + LiteLLM, fetched live"
+			: [
+					report.file,
+					report.fetchedAt ? `built ${report.fetchedAt.slice(0, 10)}, ${report.ageDays}d old` : "build date unknown",
+				]
+					.filter(Boolean)
+					.join(", ");
+	const mode = report.mode === "community" ? report.mode : c(GREEN, report.mode ?? "");
+	console.log(`${c(CYAN, "Catalog source:")} ${mode} ${c(DIM, `(${detail}; set by ${report.origin})`)}`);
 }
 
 /**
@@ -156,7 +175,14 @@ interface ScopedModel {
 /** `--model a,b` → the trimmed, de-duplicated list; `undefined` when unset. */
 function parseModelScope(raw: string | boolean | undefined): string[] | undefined {
 	if (typeof raw !== "string") return undefined;
-	const ids = Array.from(new Set(raw.split(",").map((id) => id.trim()).filter(Boolean)));
+	const ids = Array.from(
+		new Set(
+			raw
+				.split(",")
+				.map((id) => id.trim())
+				.filter(Boolean),
+		),
+	);
 	return ids.length > 0 ? ids : undefined;
 }
 
@@ -304,11 +330,7 @@ function renderHealth(findings: HealthFinding[]): void {
 		return;
 	}
 	for (const h of findings) {
-		const tag = h.available
-			? h.reliabilityScore >= 0.95
-				? c(GREEN, "ok")
-				: c(YELLOW, "degraded")
-			: c(RED, "open");
+		const tag = h.available ? (h.reliabilityScore >= 0.95 ? c(GREEN, "ok") : c(YELLOW, "degraded")) : c(RED, "open");
 		const p95 = h.p95LatencyMs !== null ? `${h.p95LatencyMs}ms` : "no samples";
 		const reliability = (h.reliabilityScore * 100).toFixed(0);
 		process.stdout.write(

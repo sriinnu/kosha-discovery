@@ -38,7 +38,14 @@ interface SnapshotProvider {
 	models?: unknown[];
 }
 
-let inflight: Promise<Map<string, ModelCard[]>> | null = null;
+/** A parsed catalog: cards keyed by provider id, plus when it was built. */
+export interface SnapshotCatalog {
+	providers: Map<string, ModelCard[]>;
+	/** The envelope's `fetchedAt`, or null when the file does not say. */
+	fetchedAt: string | null;
+}
+
+let inflight: Promise<SnapshotCatalog> | null = null;
 
 /** Resolve the snapshot URL, honouring the env override when it is sane. */
 export function snapshotCatalogUrl(): string {
@@ -48,7 +55,7 @@ export function snapshotCatalogUrl(): string {
 }
 
 /** Load the snapshot once per process, keyed by provider id. */
-export function loadSnapshotCatalog(): Promise<Map<string, ModelCard[]>> {
+export function loadSnapshotCatalog(): Promise<SnapshotCatalog> {
 	if (inflight) return inflight;
 	inflight = fetchAndValidate().catch((error) => {
 		inflight = null; // let the next caller retry
@@ -70,7 +77,7 @@ export function resetSnapshotCatalogCache(): void {
 export async function getSnapshotSeed(providerId: string): Promise<ModelCard[]> {
 	const catalog = await loadSnapshotCatalog();
 	const now = Date.now();
-	return (catalog.get(providerId) ?? []).map((card) => ({
+	return (catalog.providers.get(providerId) ?? []).map((card) => ({
 		...card,
 		discoveredAt: now,
 		source: "litellm",
@@ -78,7 +85,7 @@ export async function getSnapshotSeed(providerId: string): Promise<ModelCard[]> 
 	}));
 }
 
-async function fetchAndValidate(): Promise<Map<string, ModelCard[]>> {
+async function fetchAndValidate(): Promise<SnapshotCatalog> {
 	const url = snapshotCatalogUrl();
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
@@ -93,20 +100,37 @@ async function fetchAndValidate(): Promise<Map<string, ModelCard[]>> {
 		throw new Error(`Failed to fetch kosha snapshot: ${response.status} ${response.statusText}`);
 	}
 
-	const text = await readBoundedText(response, MAX_PAYLOAD_BYTES);
+	return parseSnapshotCatalog(await readBoundedText(response, MAX_PAYLOAD_BYTES), "kosha snapshot");
+}
 
+/**
+ * Parse and validate a catalog in the snapshot format. Shared by the
+ * published snapshot and the `local` catalog file, so both get the same
+ * caps and the same threat scan. `label` names the source in errors.
+ */
+export function parseSnapshotCatalog(text: string, label: string): SnapshotCatalog {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(text);
 	} catch {
-		throw new Error("Failed to parse kosha snapshot: invalid JSON");
+		throw new Error(`Failed to parse ${label}: invalid JSON`);
+	}
+	// Exports and newer snapshots carry `kind` and `schemaVersion`; older
+	// snapshots have neither. A file that names another kind, or a version
+	// this kosha does not know, is refused rather than half-read.
+	const envelope = parsed as { kind?: unknown; schemaVersion?: unknown } | null;
+	if (envelope?.kind !== undefined && envelope.kind !== "kosha-catalog") {
+		throw new Error(`Failed to parse ${label}: kind "${String(envelope.kind)}" is not a kosha catalog`);
+	}
+	if (envelope?.schemaVersion !== undefined && envelope.schemaVersion !== 1) {
+		throw new Error(`Failed to parse ${label}: unsupported schemaVersion ${String(envelope.schemaVersion)}`);
 	}
 	const providers = (parsed as { providers?: unknown })?.providers;
 	if (!Array.isArray(providers)) {
-		throw new Error("Failed to parse kosha snapshot: expected a providers array");
+		throw new Error(`Failed to parse ${label}: expected a providers array`);
 	}
 	if (providers.length > MAX_PROVIDERS) {
-		throw new Error(`kosha snapshot exceeds provider cap (${providers.length} > ${MAX_PROVIDERS}) — refusing to load`);
+		throw new Error(`${label} exceeds provider cap (${providers.length} > ${MAX_PROVIDERS}) — refusing to load`);
 	}
 
 	// Key by provider id so the threat scan can quarantine one provider's
@@ -117,7 +141,7 @@ async function fetchAndValidate(): Promise<Map<string, ModelCard[]>> {
 		if (!provider || typeof provider !== "object" || typeof provider.id !== "string") continue;
 		byId[provider.id] = Array.isArray(provider.models) ? provider.models : [];
 	}
-	const { clean } = quarantineEntries(byId, "kosha snapshot");
+	const { clean } = quarantineEntries(byId, label);
 
 	const out = new Map<string, ModelCard[]>();
 	for (const [id, models] of Object.entries(clean)) {
@@ -125,7 +149,8 @@ async function fetchAndValidate(): Promise<Map<string, ModelCard[]>> {
 		const cards = models.filter(isModelCardShape).filter((card) => card.provider === id);
 		if (cards.length > 0) out.set(id, cards);
 	}
-	return out;
+	const fetchedAt = (parsed as { fetchedAt?: unknown }).fetchedAt;
+	return { providers: out, fetchedAt: typeof fetchedAt === "string" ? fetchedAt : null };
 }
 
 /** Only the fields every path downstream dereferences; the rest ride along. */

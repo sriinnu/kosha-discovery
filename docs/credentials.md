@@ -206,7 +206,8 @@ ollama serve
 
 ## Config File (optional)
 
-Instead of env vars, you can create `~/.kosharc.json` (global) or `kosha.config.json` (project-level):
+Instead of env vars, you can create `~/.kosharc.json` (global) or `kosha.config.json` (project-level).
+The CLI, the MCP server and `kosha serve` read both, as does `createKosha()`.
 
 ```json
 {
@@ -225,6 +226,15 @@ Instead of env vars, you can create `~/.kosharc.json` (global) or `kosha.config.
 ```
 
 Config priority: `~/.kosharc.json` < `kosha.config.json` < programmatic config.
+
+`kosha.config.json` travels with whatever directory kosha runs in, cloned repos
+included, so it is trusted less. kosha ignores these fields there:
+
+- `providers.<id>.apiKey`: a repo could otherwise route your prompts through
+  an account its author controls. Put keys in env vars or `~/.kosharc.json`.
+- `cacheDir` and `catalogFile`.
+- `catalogSource`, unless it is `pinned` and `~/.kosharc.json` does not already
+  say `local`. A project may tighten the catalog source, never loosen it.
 
 ## New providers (Unreleased)
 
