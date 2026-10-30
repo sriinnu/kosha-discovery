@@ -154,17 +154,24 @@ jobs:
           npm pack --pack-destination "$RUNNER_TEMP/release"
           cp server.json "$RUNNER_TEMP/release/"
 
-      # Runs the publish job's exact command on the exact tarball, minus the
-      # upload, so a broken publish line fails here instead of after the
-      # npm-release approval. v1.9.0 died that way: `release/*.tgz` without the
-      # ./ was read as GitHub shorthand. No auth is needed for a dry run.
-      - name: Rehearse the npm publish
+      # Runs the stage job's exact command, with the same npm, on the same
+      # unpacked tarball, minus the upload, so a broken publish line fails here
+      # instead of after the npm-release approval. v1.9.0 died that way:
+      # `release/*.tgz` without the ./ was read as GitHub shorthand. The dry run
+      # needs no auth but does ask the registry, so an unbumped version fails
+      # here too. Only --provenance is left out: it needs the id-token, and
+      # verify must not have one. Keep in lockstep with "Stage on npm" below.
+      - name: Rehearse the npm stage publish
         shell: bash
         working-directory: ${{ runner.temp }}
         run: |
           set -euo pipefail
           shopt -s failglob
-          npm publish ./release/*.tgz --access public --dry-run
+          npm install -g --ignore-scripts npm@11.21.0
+          mkdir -p rehearse
+          tar -xzf ./release/*.tgz -C rehearse
+          cd rehearse/package
+          npm stage publish --access public --dry-run
 
       - name: Upload release files
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
