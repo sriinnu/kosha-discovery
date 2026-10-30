@@ -359,7 +359,13 @@ git tag -s vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
 gh workflow run release-npm.yml -f tag=vX.Y.Z
 ```
 
-The workflow checks that the tag matches `package.json`, runs lint / build / test, publishes to npm with provenance, and creates the GitHub Release. Publishing authenticates through npm trusted publishing (OIDC) when a trusted publisher is configured for this repo and workflow on npmjs.com, or through an `NPM_TOKEN` repository secret.
+The workflow checks that the tag matches `package.json`, runs lint / build / test, stages the package on npm with provenance, and creates the GitHub Release. Staging authenticates through npm trusted publishing (OIDC); there is no npm token. The version goes live only after a maintainer approves it with 2FA:
+
+```bash
+npm stage list @sriinnu/kosha-discovery
+npm stage approve <id>
+gh workflow run release-npm.yml -f tag=vX.Y.Z -f publish_npm=false -f create_github_release=false   # then publish to the MCP registry
+```
 
 ## Support
 

@@ -145,7 +145,7 @@ one thing a token cannot produce: a hardware signature.
 | Workflow verifies the tag against signers read from `main`, fingerprints pinned in the workflow, and requires the commit to be on `main` | A tag at a commit that never went through `main`'s signed-commit rule |
 | Tag rulesets: signed commits and no deletion on `v*`, no moving `v*.*` | Retagging a shipped version, erasing the trail |
 | `npm-release` environment: only `v*` tags, reviewer required | A dispatch from a side branch with an edited workflow |
-| npm trusted publishing bound to repo + workflow + environment; no npm token anywhere | The token a stealer would take; publishing from any other run |
+| npm trusted publishing bound to repo + workflow + environment, stage-only; no npm token anywhere; each version goes live only after maintainer 2FA approval | The token a stealer would take; publishing from any other run |
 | npm provenance on every version | Verifying after the fact what built the tarball |
 | Action pinned to its own release version, `--ignore-scripts` | Every consumer's CI pulling a fresh publish within minutes |
 | `minimumReleaseAge: 10080` for dependencies | Installing a package poisoned an hour ago |

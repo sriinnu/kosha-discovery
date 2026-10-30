@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       publish_npm:
-        description: "Publish @sriinnu/kosha-discovery to npm"
+        description: "Stage @sriinnu/kosha-discovery on npm (live after 2FA approval)"
         required: false
         default: true
         type: boolean
@@ -18,7 +18,7 @@ on:
         default: true
         type: boolean
       publish_mcp:
-        description: "Publish kosha-mcp to the MCP registry (io.github.sriinnu/kosha-discovery)"
+        description: "Publish kosha-mcp to the MCP registry (needs the npm version live: approve the staged version first, or re-run with publish_npm off)"
         required: false
         default: true
         type: boolean
@@ -195,7 +195,7 @@ jobs:
       # npm trusted publishing (OIDC) needs npm >= 11.5; Node 22 bundles 10.x.
       # Pinned, not @latest: this step runs with the job's id-token in reach.
       # The package's trusted publisher on npmjs.com is this repo, this
-      # workflow file and the `npm-release` environment, so `npm publish`
+      # workflow file and the `npm-release` environment, so `npm stage publish`
       # authenticates with the job's id-token. There is no NPM_TOKEN any more:
       # a long-lived publish token is exactly what the LiteLLM 1.107.0 stealer
       # harvested, and a run that is not this workflow in this environment has
@@ -209,21 +209,29 @@ jobs:
           name: release
           path: release
 
-      - name: Publish to npm
+      # Staged, not published: the version goes live only after a maintainer
+      # runs `npm stage approve <id>` with 2FA. Trust is stage-only:
+      # npm trust github @sriinnu/kosha-discovery --repo sriinnu/kosha-discovery
+      #   --file release-npm.yml --env npm-release --allow-stage-publish
+      # npm stage packs the current directory, so stage from the unpacked tarball.
+      - name: Stage on npm
         shell: bash
         run: |
           set -euo pipefail
           shopt -s failglob
-          # The ./ matters: npm reads a bare `release/x.tgz` as GitHub shorthand
-          # (owner/repo) and tries to git-clone it. That sank v1.9.0.
-          npm publish ./release/*.tgz --access public --provenance
+          mkdir -p "$RUNNER_TEMP/pkg"
+          tar -xzf ./release/*.tgz -C "$RUNNER_TEMP/pkg"
+          cd "$RUNNER_TEMP/pkg/package"
+          npm stage publish --access public --provenance
+          echo "::notice::Staged. Approve: npm stage list @sriinnu/kosha-discovery, then npm stage approve <id>."
 
   # Outside the npm-release environment on purpose: its OIDC token carries no
   # environment claim, so the MCP publisher binary cannot publish to npm. It
-  # only runs once publish-npm, which a reviewer approved, has succeeded.
+  # only runs once publish-npm, which a reviewer approved, has succeeded or was
+  # skipped (re-run after the staged version was approved).
   publish-mcp:
     needs: [verify, publish-npm]
-    if: ${{ inputs.publish_mcp }}
+    if: ${{ !cancelled() && inputs.publish_mcp && needs.verify.result == 'success' && needs.publish-npm.result != 'failure' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -276,7 +284,7 @@ jobs:
               break
             fi
             if [ "$attempt" -eq 30 ]; then
-              echo "::error::${PKG_NAME}@${PKG_VERSION} did not appear on npm within 5 minutes" >&2
+              echo "::error::${PKG_NAME}@${PKG_VERSION} is not live on npm after 5 minutes. If it is staged, approve it (npm stage approve <id>), then re-run this workflow for ${RELEASE_TAG} with publish_npm off and publish_mcp on." >&2
               exit 1
             fi
             sleep 10
