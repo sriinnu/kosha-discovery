@@ -246,6 +246,8 @@ compare prices across them directly.
 
 Without a key, providers fall back to the public models.dev + LiteLLM catalog, then to kosha's own weekly [snapshot](#public-snapshot) if those are unreachable, then to a curated static list, so `kosha list` works on a fresh machine. The same fallback applies when a key is present but rejected: the provider stays listed from the public catalog, shows as unauthenticated, and the error is kept for `kosha doctor`. Exact env var names: [docs/credentials.md](docs/credentials.md).
 
+To take models.dev and LiteLLM out of the loop, set `KOSHA_CATALOG_SOURCE=pinned` (kosha's snapshot only) or `local` (a file from `kosha registry export`, no network). See [Catalog Source](docs/configuration.md#catalog-source).
+
 ### Non-chat modes
 
 Most models are `chat`, but `mode` also covers `embedding`, `image`, `video`,

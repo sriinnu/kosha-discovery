@@ -10,6 +10,7 @@ import { randomBytes } from "crypto";
 import { mkdir, open, readdir, rename, stat, unlink, writeFile } from "fs/promises";
 import { homedir } from "os";
 import { dirname, join } from "path";
+import { catalogCacheKey, loadActiveCatalog } from "./catalog-source.js";
 import { applyPromoOverrides } from "./discovery/promo-overrides.js";
 import type { DiscoverySnapshotV1 } from "./discovery-contract.js";
 import { DISCOVERY_SCHEMA_VERSION } from "./discovery-contract.js";
@@ -143,7 +144,7 @@ export async function registryRefresh(
 ): Promise<void> {
 	if (providerId) {
 		const normalizedProviderId = normalizeProviderId(providerId) ?? providerId;
-		await state.cache.invalidate(`${CACHE_KEY_PREFIX}${normalizedProviderId}`);
+		await state.cache.invalidate(catalogCacheKey(`${CACHE_KEY_PREFIX}${normalizedProviderId}`));
 		await discover({ providers: [normalizedProviderId], force: true });
 		return;
 	}
@@ -228,8 +229,11 @@ export function fallbackRegistryCredential(providerId: string, explicitKey?: str
  */
 export async function enrichRegistryModels(state: RegistryState): Promise<void> {
 	try {
-		const { LiteLLMEnricher } = await import("./enrichment/index.js");
-		const enricher: Enricher = new LiteLLMEnricher();
+		// LiteLLM is a community catalog, so it enriches only in `community`
+		// mode; `pinned` and `local` fill the same gaps from kosha's catalog.
+		const catalog = await loadActiveCatalog();
+		const { CatalogEnricher, LiteLLMEnricher } = await import("./enrichment/index.js");
+		const enricher: Enricher = catalog ? new CatalogEnricher(catalog) : new LiteLLMEnricher();
 
 		for (const [providerId, providerInfo] of state.providerMap) {
 			try {
@@ -263,7 +267,7 @@ export interface EnrichOnlyResult {
  * when no cached data is available.
  */
 export async function registryEnrichOnly(state: RegistryState): Promise<EnrichOnlyResult | null> {
-	const allEntry = await state.cache.get<ProviderInfo[]>("providers_all");
+	const allEntry = await state.cache.get<ProviderInfo[]>(catalogCacheKey("providers_all"));
 	if (!allEntry) return null;
 
 	// Accept stale cache too — enrichment-only shouldn't fail just because
@@ -399,7 +403,7 @@ export async function loadRegistryFromCache(state: RegistryState, providerIds?: 
 	const ttl = state.config.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
 
 	if (!providerIds || providerIds.length === 0) {
-		const allEntry = await state.cache.get<ProviderInfo[]>("providers_all");
+		const allEntry = await state.cache.get<ProviderInfo[]>(catalogCacheKey("providers_all"));
 		if (!allEntry || state.cache.isExpired(allEntry.timestamp, ttl)) {
 			return false;
 		}
@@ -412,7 +416,7 @@ export async function loadRegistryFromCache(state: RegistryState, providerIds?: 
 	}
 
 	for (const providerId of providerIds) {
-		const entry = await state.cache.get<ProviderInfo>(`${CACHE_KEY_PREFIX}${providerId}`);
+		const entry = await state.cache.get<ProviderInfo>(catalogCacheKey(`${CACHE_KEY_PREFIX}${providerId}`));
 		if (!entry || state.cache.isExpired(entry.timestamp, ttl)) {
 			return false;
 		}
@@ -429,8 +433,10 @@ export async function loadRegistryFromCache(state: RegistryState, providerIds?: 
 export async function saveRegistryToCache(state: RegistryState): Promise<void> {
 	try {
 		const providers = Array.from(state.providerMap.values());
-		const saves = providers.map((provider) => state.cache.set(`${CACHE_KEY_PREFIX}${provider.id}`, provider));
-		saves.push(state.cache.set("providers_all", providers));
+		const saves = providers.map((provider) =>
+			state.cache.set(catalogCacheKey(`${CACHE_KEY_PREFIX}${provider.id}`), provider),
+		);
+		saves.push(state.cache.set(catalogCacheKey("providers_all"), providers));
 		await Promise.all(saves);
 	} catch {
 		// I intentionally ignore cache write failures so discovery still succeeds.
@@ -1019,7 +1025,7 @@ async function discoverProvider(
 	if (!breaker.canExecute()) {
 		const stale = await StaleCachePolicy.getWithStale<ProviderInfo>(
 			state.cache,
-			`${CACHE_KEY_PREFIX}${discoverer.providerId}`,
+			catalogCacheKey(`${CACHE_KEY_PREFIX}${discoverer.providerId}`),
 		);
 		return stale?.data ?? null;
 	}
@@ -1056,7 +1062,7 @@ async function discoverProvider(
 
 		const stale = await StaleCachePolicy.getWithStale<ProviderInfo>(
 			state.cache,
-			`${CACHE_KEY_PREFIX}${discoverer.providerId}`,
+			catalogCacheKey(`${CACHE_KEY_PREFIX}${discoverer.providerId}`),
 		);
 		if (stale) {
 			return stale.data;

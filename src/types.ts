@@ -14,15 +14,7 @@
  * text — TypeSafe's System One family (Jev) answers a question with a choice,
  * a probability, or a score, so it is neither `chat` nor `moderation`.
  */
-export type ModelMode =
-	| "chat"
-	| "embedding"
-	| "image"
-	| "video"
-	| "audio"
-	| "moderation"
-	| "rerank"
-	| "judgment";
+export type ModelMode = "chat" | "embedding" | "image" | "video" | "audio" | "moderation" | "rerank" | "judgment";
 
 /** Normalized transport families used by discovery consumers. */
 export type ProviderTransport = "native-http" | "openai-compatible-http" | "cloud-sdk";
@@ -406,11 +398,12 @@ export interface ModelCard {
 	 */
 	releaseDate?: string;
 	/**
-	 * Which public catalog a keyless card was built from. `source` reports
-	 * both as `"litellm"` for contract stability; this tells them apart when
-	 * the two disagree on a price or a limit. Absent on live-API cards.
+	 * Which catalog a keyless card was built from: models.dev, LiteLLM, kosha's
+	 * published snapshot, or a `local` catalog file. `source` reports these as
+	 * `"litellm"` for contract stability; this tells them apart when they
+	 * disagree on a price or a limit. Absent on live-API cards.
 	 */
-	catalogSource?: "models.dev" | "litellm" | "snapshot";
+	catalogSource?: "models.dev" | "litellm" | "snapshot" | "local";
 }
 
 /**
@@ -636,6 +629,18 @@ export interface KoshaConfig {
 	>;
 	/** Custom user-defined alias mappings (merged on top of built-in defaults). */
 	aliases?: Record<string, string>;
+	/**
+	 * Where keyless catalog data comes from: `community` (models.dev +
+	 * LiteLLM, the default), `pinned` (kosha's published snapshot only) or
+	 * `local` (`catalogFile` only, no network). `KOSHA_CATALOG_SOURCE` wins.
+	 * A project's kosha.config.json may only set `pinned`.
+	 */
+	catalogSource?: "community" | "pinned" | "local";
+	/**
+	 * The catalog file for `local` mode, e.g. one written by
+	 * `kosha registry export`. Ignored in kosha.config.json.
+	 */
+	catalogFile?: string;
 }
 
 /**

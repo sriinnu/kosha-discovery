@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 /**
  * cli.ts — Entry point for the kosha CLI.
  *
@@ -12,9 +13,8 @@
  * @module cli
  */
 
-import { ModelRegistry } from "./registry.js";
-import { DIM, RED, c } from "./cli-format.js";
 import { cmdDoctor } from "./cli-cmd-doctor.js";
+import { cmdRegistry } from "./cli-cmd-registry.js";
 import { cmdSpend } from "./cli-cmd-spend.js";
 import {
 	cmdCapabilities,
@@ -36,6 +36,8 @@ import {
 	showSplash,
 	showVersion,
 } from "./cli-commands.js";
+import { c, DIM, RED } from "./cli-format.js";
+import { ModelRegistry } from "./registry.js";
 
 // ---------------------------------------------------------------------------
 //  Argument parsing
@@ -130,7 +132,7 @@ async function main(): Promise<void> {
 	}
 
 	// All remaining commands operate on a shared registry instance
-	const registry = new ModelRegistry();
+	const registry = new ModelRegistry(await ModelRegistry.loadConfigFile());
 
 	switch (command) {
 		case "enrich":
@@ -203,6 +205,10 @@ async function main(): Promise<void> {
 		case "spend":
 		case "usage":
 			await cmdSpend(registry, flags);
+			break;
+
+		case "registry":
+			await cmdRegistry(registry, positional[1], flags);
 			break;
 
 		default:

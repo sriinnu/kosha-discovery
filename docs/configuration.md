@@ -98,6 +98,48 @@ API equivalent:
 curl "http://localhost:3000/api/models/cheapest?role=embeddings&priceMetric=input&limit=1"
 ```
 
+## Catalog Source
+
+Without a key, kosha learns about models from two community catalogs it does
+not control, [models.dev](https://models.dev) and
+[LiteLLM](https://github.com/BerriAI/litellm). If one of them goes away or
+ships bad data, switch them off:
+
+| Mode | Keyless data comes from | Network |
+|---|---|---|
+| `community` (default) | models.dev, LiteLLM to fill gaps and enrich, kosha's weekly snapshot if both are down | yes |
+| `pinned` | kosha's published weekly snapshot only | GitHub releases only |
+| `local` | a catalog file you provide | none, for catalog data |
+
+Provider APIs called with your own key are official sources and run in every
+mode. In `pinned` and `local` the LiteLLM enricher is off; prices and limits
+missing from a provider's API are filled from the active catalog instead.
+
+```bash
+KOSHA_CATALOG_SOURCE=pinned kosha list
+
+kosha registry export --output ~/.kosha/catalog.json
+KOSHA_CATALOG_SOURCE=local KOSHA_CATALOG_FILE=~/.kosha/catalog.json kosha list
+```
+
+Or in `~/.kosharc.json`:
+
+```json
+{ "catalogSource": "local", "catalogFile": "~/.kosha/catalog.json" }
+```
+
+- The env vars override config. An unknown mode is an error, not a fallback.
+- `local` fails closed: a missing or invalid file stops discovery with an
+  error. It never falls back to the network.
+- `kosha registry export` writes the same envelope as the weekly snapshot
+  (`schemaVersion`, `kind: "kosha-catalog"`, `fetchedAt`, `providers`), so a
+  downloaded snapshot works as a local catalog too.
+- Each mode keeps its own disk cache, so switching never serves data cached
+  under another mode.
+- `kosha doctor` shows the mode, where it was set, and how old the catalog is.
+- A project's `kosha.config.json` may only set `pinned`; see
+  [credentials](credentials.md#config-file-optional).
+
 ## Pricing Enrichment
 
 Model pricing is sourced from [litellm's model pricing database](https://github.com/BerriAI/litellm) -- a community-maintained dataset covering 300+ models. Kosha fetches this data and enriches discovered models with:

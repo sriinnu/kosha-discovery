@@ -50,20 +50,18 @@ function sleep(ms) {
 }
 
 async function runOnce(args) {
-	const { ModelRegistry } = await import("../dist/index.js");
+	const { ModelRegistry, buildCatalogEnvelope } = await import("../dist/index.js");
 	const registry = new ModelRegistry();
 	const result = await registry.fetchLatestDetails({
 		providers: args.provider ? [args.provider] : undefined,
 	});
 
-	const payload = {
-		fetchedAt: new Date().toISOString(),
-		providerScope: args.provider ?? "all",
-		modelCount: result.modelCount,
-		providerCount: result.providers.length,
+	// Same envelope as `kosha registry export`, so a downloaded snapshot can
+	// be used as a `local` catalog as-is.
+	const payload = buildCatalogEnvelope(result.providers, {
 		discoveredAt: result.discoveredAt,
-		providers: result.providers,
-	};
+		providerScope: args.provider ?? "all",
+	});
 
 	const outputPath = resolve(args.output);
 	await mkdir(dirname(outputPath), { recursive: true });

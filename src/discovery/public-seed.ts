@@ -25,6 +25,7 @@
  * @module
  */
 
+import { getLocalSeed, resolveCatalogSource } from "../catalog-source.js";
 import { extractOriginProvider } from "../normalize.js";
 import type { ModelCard } from "../types.js";
 import { getLiteLLMSeed } from "./litellm-seed.js";
@@ -37,6 +38,13 @@ import { getSnapshotSeed } from "./snapshot-catalog.js";
  * given kosha provider, sourced from both public catalogs.
  */
 export async function getPublicSeed(providerId: string): Promise<ModelCard[]> {
+	// Outside `community` neither community catalog is fetched. Errors
+	// propagate to the discoverer, which falls back to its bundled static
+	// list; a bad `local` file is caught earlier, by assertCatalogReady.
+	const { mode } = resolveCatalogSource();
+	if (mode === "local") return applyPromoOverrides(attributeCreators(await getLocalSeed(providerId), providerId));
+	if (mode === "pinned") return applyPromoOverrides(attributeCreators(await getSnapshotSeed(providerId), providerId));
+
 	const [modelsDevResult, litellmResult] = await Promise.allSettled([
 		getModelsDevSeed(providerId),
 		getLiteLLMSeed(providerId),
