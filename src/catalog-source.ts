@@ -17,7 +17,7 @@
  * @module
  */
 
-import { readFile, stat } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { loadSnapshotCatalog, parseSnapshotCatalog, type SnapshotCatalog } from "./discovery/snapshot-catalog.js";
@@ -216,13 +216,27 @@ export function resetCatalogSource(): void {
 	localInflight = null;
 }
 
+/**
+ * One handle for the check and the read, so the file can't be swapped in
+ * between, and the read itself stops at the cap in case the file grows.
+ */
 async function readLocalCatalog(file: string): Promise<SnapshotCatalog> {
-	const info = await stat(file).catch(() => null);
-	if (!info?.isFile()) throw new Error(`local catalog not found: ${file}`);
-	if (info.size > MAX_LOCAL_BYTES) {
-		throw new Error(`local catalog too large (${info.size} > ${MAX_LOCAL_BYTES} bytes): ${file}`);
+	const handle = await open(file, "r").catch(() => null);
+	if (!handle) throw new Error(`local catalog not found: ${file}`);
+	try {
+		if (!(await handle.stat()).isFile()) throw new Error(`local catalog is not a file: ${file}`);
+		const buffer = Buffer.alloc(MAX_LOCAL_BYTES + 1);
+		let length = 0;
+		while (length < buffer.length) {
+			const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+			if (bytesRead === 0) break;
+			length += bytesRead;
+		}
+		if (length > MAX_LOCAL_BYTES) throw new Error(`local catalog too large (> ${MAX_LOCAL_BYTES} bytes): ${file}`);
+		return parseSnapshotCatalog(buffer.toString("utf8", 0, length), `local catalog ${file}`);
+	} finally {
+		await handle.close();
 	}
-	return parseSnapshotCatalog(await readFile(file, "utf8"), `local catalog ${file}`);
 }
 
 function expandPath(raw: string): string {

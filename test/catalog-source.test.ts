@@ -136,6 +136,17 @@ describe("local mode", () => {
 		await expect(registry.discover()).rejects.toThrow(/not found/);
 	});
 
+	it("refuses a directory and a file over the size cap", async () => {
+		process.env.KOSHA_CATALOG_SOURCE = "local";
+		process.env.KOSHA_CATALOG_FILE = dir;
+		await expect(assertCatalogReady()).rejects.toThrow(/not a file/);
+		resetCatalogSource();
+		const big = join(dir, "big.json");
+		await writeFile(big, Buffer.alloc(16 * 1024 * 1024 + 1, 0x20));
+		process.env.KOSHA_CATALOG_FILE = big;
+		await expect(assertCatalogReady()).rejects.toThrow(/too large/);
+	});
+
 	it("reports the mode and the catalog's age for doctor", async () => {
 		process.env.KOSHA_CATALOG_SOURCE = "local";
 		process.env.KOSHA_CATALOG_FILE = await writeCatalog("cat.json", [provider("groq", [card("groq", "llama-x")])]);
