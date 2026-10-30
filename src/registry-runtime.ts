@@ -10,15 +10,23 @@ import { randomBytes } from "crypto";
 import { mkdir, open, readdir, rename, stat, unlink, writeFile } from "fs/promises";
 import { homedir } from "os";
 import { dirname, join } from "path";
+import { applyPromoOverrides } from "./discovery/promo-overrides.js";
 import type { DiscoverySnapshotV1 } from "./discovery-contract.js";
 import { DISCOVERY_SCHEMA_VERSION } from "./discovery-contract.js";
 import { getProviderConfig, getProviderDescriptor, isLocalProvider, normalizeProviderId } from "./provider-catalog.js";
 import { registryDiscoverySnapshot } from "./registry-discovery.js";
 import type { DiscoveryDependencies, RegistryState } from "./registry-state.js";
 import { StaleCachePolicy } from "./resilience.js";
-import type { CredentialResult, DiscoveryError, DiscoveryOptions, Enricher, ModelCard, ProviderDiscoverer, ProviderInfo } from "./types.js";
-import { applyPromoOverrides } from "./discovery/promo-overrides.js";
 import { assertCleanPayload } from "./security.js";
+import type {
+	CredentialResult,
+	DiscoveryError,
+	DiscoveryOptions,
+	Enricher,
+	ModelCard,
+	ProviderDiscoverer,
+	ProviderInfo,
+} from "./types.js";
 
 const DEFAULT_CACHE_TTL_MS = 86_400_000;
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -255,7 +263,6 @@ export interface EnrichOnlyResult {
  * when no cached data is available.
  */
 export async function registryEnrichOnly(state: RegistryState): Promise<EnrichOnlyResult | null> {
-	const ttl = state.config.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
 	const allEntry = await state.cache.get<ProviderInfo[]>("providers_all");
 	if (!allEntry) return null;
 
@@ -315,11 +322,7 @@ function countPricingFields(state: RegistryState): { cachePricing: number; batch
  */
 function modelHasUsablePricing(model: ModelCard): boolean {
 	const pricing = model.pricing;
-	return (
-		!!pricing &&
-		pricing.inputPerMillion !== undefined &&
-		pricing.outputPerMillion !== undefined
-	);
+	return !!pricing && pricing.inputPerMillion !== undefined && pricing.outputPerMillion !== undefined;
 }
 
 /** Stable key for a (provider, model) pair used by provenance snapshots. */
@@ -367,11 +370,7 @@ function attributePricingSources(state: RegistryState, preEnrichmentPriced: Set<
 			if (model.pricingSource) continue;
 			if (modelHasUsablePricing(model)) {
 				const fromDiscovery = preEnrichmentPriced.has(modelPricingKey(providerId, model));
-				model.pricingSource = fromDiscovery
-					? model.source === "api"
-						? "provider-live"
-						: "static-seed"
-					: "litellm";
+				model.pricingSource = fromDiscovery ? (model.source === "api" ? "provider-live" : "static-seed") : "litellm";
 			} else {
 				model.pricingSource = "missing";
 			}
@@ -742,10 +741,7 @@ const PRICING_QUARANTINE_THRESHOLD = 0.75;
  *  deprecated SKUs while still riding through transient outages. */
 const MISSING_RUNS_TTL = 14;
 
-export function mergeManifests(
-	previous: DiscoverySnapshotV1 | null,
-	fresh: DiscoverySnapshotV1,
-): DiscoverySnapshotV1 {
+export function mergeManifests(previous: DiscoverySnapshotV1 | null, fresh: DiscoverySnapshotV1): DiscoverySnapshotV1 {
 	if (!previous) return fresh;
 
 	// Index previous entries by key so we can both detect collisions AND
@@ -817,13 +813,16 @@ function quarantinePricingMove(
 	previous: { pricing?: unknown; originPricing?: unknown },
 	fresh: { pricing?: unknown; originPricing?: unknown },
 ): boolean {
-	type Rates = {
-		inputPerMillion?: number;
-		outputPerMillion?: number;
-		cacheReadPerMillion?: number;
-		cacheWritePerMillion?: number;
-		cacheWrite1hPerMillion?: number;
-	} | null | undefined;
+	type Rates =
+		| {
+				inputPerMillion?: number;
+				outputPerMillion?: number;
+				cacheReadPerMillion?: number;
+				cacheWritePerMillion?: number;
+				cacheWrite1hPerMillion?: number;
+		  }
+		| null
+		| undefined;
 	const fields: Array<keyof NonNullable<Rates>> = [
 		"inputPerMillion",
 		"outputPerMillion",
@@ -839,6 +838,11 @@ function quarantinePricingMove(
 			const prev = a[field];
 			const next = b[field];
 			if (typeof prev !== "number" || typeof next !== "number") continue;
+			// A priced model whose billed input or output rate drops to zero is
+			// the cheapest-routing poison case, not a placeholder. originPricing
+			// zeros stay placeholders ("no direct price known").
+			if (side === "pricing" && prev > 0 && next === 0 && (field === "inputPerMillion" || field === "outputPerMillion"))
+				return true;
 			if (prev === 0 || next === 0) continue; // zero on either side is a "not reported" placeholder, not a price move
 			if (prev === next) continue;
 			if (Math.abs((next - prev) / prev) >= PRICING_QUARANTINE_THRESHOLD) return true;
@@ -908,10 +912,7 @@ function hasPromoFlag(entry: { capabilities?: string[]; rawCapabilities?: string
 	return caps.includes("promo_override");
 }
 
-function detectPricingAnomalies(
-	previous: DiscoverySnapshotV1 | null,
-	fresh: DiscoverySnapshotV1,
-): PricingAnomaly[] {
+function detectPricingAnomalies(previous: DiscoverySnapshotV1 | null, fresh: DiscoverySnapshotV1): PricingAnomaly[] {
 	if (!previous?.models) return [];
 	const prevByKey = new Map<string, (typeof previous.models)[number]>();
 	for (const m of previous.models) {
@@ -920,13 +921,15 @@ function detectPricingAnomalies(
 	const ts = Date.now();
 	const anomalies: PricingAnomaly[] = [];
 
-	type RateBlock = {
-		inputPerMillion?: number;
-		outputPerMillion?: number;
-		cacheReadPerMillion?: number;
-		cacheWritePerMillion?: number;
-		cacheWrite1hPerMillion?: number;
-	} | null
+	type RateBlock =
+		| {
+				inputPerMillion?: number;
+				outputPerMillion?: number;
+				cacheReadPerMillion?: number;
+				cacheWritePerMillion?: number;
+				cacheWrite1hPerMillion?: number;
+		  }
+		| null
 		| undefined;
 	const fields: { name: PricingAnomaly["field"]; key: keyof NonNullable<RateBlock> }[] = [
 		{ name: "input", key: "inputPerMillion" },
@@ -935,7 +938,10 @@ function detectPricingAnomalies(
 		{ name: "cacheWrite", key: "cacheWritePerMillion" },
 		{ name: "cacheWrite1h", key: "cacheWrite1hPerMillion" },
 	];
-	const sides: { name: PricingAnomaly["side"]; pick: (m: { pricing?: RateBlock; originPricing?: RateBlock }) => RateBlock }[] = [
+	const sides: {
+		name: PricingAnomaly["side"];
+		pick: (m: { pricing?: RateBlock; originPricing?: RateBlock }) => RateBlock;
+	}[] = [
 		{ name: "origin", pick: (m) => m.originPricing },
 		{ name: "proxy", pick: (m) => m.pricing },
 	];
@@ -989,7 +995,10 @@ async function appendAnomalies(manifestDir: string, fresh: PricingAnomaly[]): Pr
 	const all = [...existing, ...fresh].filter((a) => a.ts >= cutoff).slice(-ANOMALY_MAX_ENTRIES);
 	const tmp = `${path}.${randomBytes(4).toString("hex")}.tmp`;
 	try {
-		await writeFile(tmp, JSON.stringify({ schemaVersion: 1, anomalies: all }, null, 2), { encoding: "utf-8", mode: 0o600 });
+		await writeFile(tmp, JSON.stringify({ schemaVersion: 1, anomalies: all }, null, 2), {
+			encoding: "utf-8",
+			mode: 0o600,
+		});
 		await rename(tmp, path);
 	} catch (err) {
 		await unlink(tmp).catch(() => {});

@@ -10,7 +10,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ModelRegistry } from "../src/registry.js";
-import { createServer, type CreateServerOptions } from "../src/server.js";
+import { type CreateServerOptions, createServer } from "../src/server.js";
 import type { ModelCard, ProviderInfo } from "../src/types.js";
 
 const saved = {
@@ -45,7 +45,10 @@ function makeModel(overrides: Partial<ModelCard> & { id: string; provider: strin
 	};
 }
 
-function appWithGroq(models: ModelCard[] = [makeModel({ id: "llama-cheap", provider: "groq" })], options?: CreateServerOptions) {
+function appWithGroq(
+	models: ModelCard[] = [makeModel({ id: "llama-cheap", provider: "groq" })],
+	options?: CreateServerOptions,
+) {
 	delete process.env.KOSHA_PROXY_TOKEN;
 	process.env.GROQ_API_KEY = "groq-test";
 	const provider: ProviderInfo = {
@@ -132,7 +135,9 @@ describe("browser guard", () => {
 		const app = appWithGroq(undefined, { allowedHosts: "any" });
 		const ok = await app.request("/api/providers", { headers: { host: "10.0.0.5:3000" } });
 		expect(ok.status).toBe(200);
-		const no = await app.request("/api/providers", { headers: { host: "10.0.0.5:3000", origin: "https://evil.example" } });
+		const no = await app.request("/api/providers", {
+			headers: { host: "10.0.0.5:3000", origin: "https://evil.example" },
+		});
 		expect(no.status).toBe(403);
 	});
 });
@@ -140,7 +145,10 @@ describe("browser guard", () => {
 describe("request size bounds", () => {
 	it("rejects a proxy body over the limit with 413", async () => {
 		const app = appWithGroq();
-		const huge = JSON.stringify({ model: "llama-cheap", messages: [{ role: "user", content: "x".repeat(33 * 1024 * 1024) }] });
+		const huge = JSON.stringify({
+			model: "llama-cheap",
+			messages: [{ role: "user", content: "x".repeat(33 * 1024 * 1024) }],
+		});
 		const res = await post(app, { "content-type": "application/json" }, huge);
 		expect(res.status).toBe(413);
 		expect(globalThis.fetch).not.toHaveBeenCalled();
@@ -156,7 +164,11 @@ describe("request size bounds", () => {
 
 	it("still parses a selector with filters", async () => {
 		const app = appWithGroq();
-		const res = await post(app, {}, JSON.stringify({ model: "kosha:cheapest[provider:groq]", messages: [{ role: "user", content: "hi" }] }));
+		const res = await post(
+			app,
+			{},
+			JSON.stringify({ model: "kosha:cheapest[provider:groq]", messages: [{ role: "user", content: "hi" }] }),
+		);
 		expect(res.status).toBe(200);
 	});
 });
@@ -178,5 +190,36 @@ describe("budget and unpriced routes", () => {
 		const app = appWithGroq(unpriced);
 		const res = await post(app, {}, body);
 		expect(res.status).toBe(200);
+	});
+});
+
+describe("$0 prices", () => {
+	const zero = { inputPerMillion: 0, outputPerMillion: 0 };
+
+	it("treats a remote $0/$0 route as unpriced under a budget", async () => {
+		process.env.KOSHA_MONTHLY_BUDGET_USD = "1000000";
+		const app = appWithGroq([makeModel({ id: "llama-poisoned", provider: "groq", pricing: zero })]);
+		const res = await post(
+			app,
+			{},
+			JSON.stringify({ model: "llama-poisoned", messages: [{ role: "user", content: "hi" }] }),
+		);
+		expect(res.status).toBe(422);
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+	});
+
+	it("ranks a catalog-only $0 route after priced routes for kosha:cheapest", async () => {
+		delete process.env.KOSHA_MONTHLY_BUDGET_USD;
+		const app = appWithGroq([
+			makeModel({ id: "llama-poisoned", provider: "groq", pricing: zero }),
+			makeModel({ id: "llama-cheap", provider: "groq", pricing: { inputPerMillion: 0.05, outputPerMillion: 0.1 } }),
+		]);
+		const res = await post(
+			app,
+			{},
+			JSON.stringify({ model: "kosha:cheapest", messages: [{ role: "user", content: "hi" }] }),
+		);
+		expect(res.status).toBe(200);
+		expect(res.headers.get("x-kosha-model")).toBe("llama-cheap");
 	});
 });

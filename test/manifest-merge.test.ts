@@ -5,9 +5,9 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { mergeManifests } from "../src/registry-runtime.js";
-import { DISCOVERY_SCHEMA_VERSION } from "../src/discovery-contract.js";
 import type { DiscoveryModelV1, DiscoverySnapshotV1 } from "../src/discovery-contract.js";
+import { DISCOVERY_SCHEMA_VERSION } from "../src/discovery-contract.js";
+import { mergeManifests } from "../src/registry-runtime.js";
 
 function emptyModel(key: string, overrides: Partial<DiscoveryModelV1> = {}): DiscoveryModelV1 {
 	return {
@@ -62,9 +62,7 @@ function snapshot(models: DiscoveryModelV1[]): DiscoverySnapshotV1 {
 
 describe("mergeManifests: pricing quarantine", () => {
 	it("keeps the previous price when the fresh value moves more than 75%", () => {
-		const prev = snapshot([
-			emptyModel("anthropic:sonnet", { pricing: { inputPerMillion: 3, outputPerMillion: 15 } }),
-		]);
+		const prev = snapshot([emptyModel("anthropic:sonnet", { pricing: { inputPerMillion: 3, outputPerMillion: 15 } })]);
 		const fresh = snapshot([
 			emptyModel("anthropic:sonnet", { pricing: { inputPerMillion: 0.1, outputPerMillion: 15 } }),
 		]);
@@ -75,15 +73,38 @@ describe("mergeManifests: pricing quarantine", () => {
 	});
 
 	it("lets a small price change through without quarantining", () => {
-		const prev = snapshot([
-			emptyModel("anthropic:sonnet", { pricing: { inputPerMillion: 3, outputPerMillion: 15 } }),
-		]);
+		const prev = snapshot([emptyModel("anthropic:sonnet", { pricing: { inputPerMillion: 3, outputPerMillion: 15 } })]);
 		const fresh = snapshot([
 			emptyModel("anthropic:sonnet", { pricing: { inputPerMillion: 3.3, outputPerMillion: 16 } }),
 		]);
 		const merged = mergeManifests(prev, fresh);
 		const row = merged.models.find((m) => m.key === "anthropic:sonnet");
 		expect(row?.pricing?.inputPerMillion).toBe(3.3);
+		expect(row?.rawCapabilities ?? []).not.toContain("pricing_quarantined");
+	});
+
+	it("quarantines a priced model whose rates drop to $0", () => {
+		const prev = snapshot([emptyModel("anthropic:sonnet", { pricing: { inputPerMillion: 3, outputPerMillion: 15 } })]);
+		const fresh = snapshot([emptyModel("anthropic:sonnet", { pricing: { inputPerMillion: 0, outputPerMillion: 0 } })]);
+		const merged = mergeManifests(prev, fresh);
+		const row = merged.models.find((m) => m.key === "anthropic:sonnet");
+		expect(row?.pricing?.inputPerMillion).toBe(3);
+		expect(row?.rawCapabilities).toContain("pricing_quarantined");
+	});
+
+	it("still treats a zero cache rate as not reported", () => {
+		const prev = snapshot([
+			emptyModel("anthropic:sonnet", {
+				pricing: { inputPerMillion: 3, outputPerMillion: 15, cacheReadPerMillion: 0.3 },
+			}),
+		]);
+		const fresh = snapshot([
+			emptyModel("anthropic:sonnet", {
+				pricing: { inputPerMillion: 3, outputPerMillion: 15, cacheReadPerMillion: 0 },
+			}),
+		]);
+		const merged = mergeManifests(prev, fresh);
+		const row = merged.models.find((m) => m.key === "anthropic:sonnet");
 		expect(row?.rawCapabilities ?? []).not.toContain("pricing_quarantined");
 	});
 });

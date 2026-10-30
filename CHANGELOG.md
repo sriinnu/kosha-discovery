@@ -13,6 +13,20 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
+### Security
+
+- **A $0 price from a catalog can no longer win routing or slip past a budget.**
+  The catalogs are the only source for most prices, so a compromised one could
+  set an expensive model to $0. `kosha:cheapest` would then route everything
+  there, and the ledger would record the real spend as free.
+  - Under a budget, the proxy treats a remote $0/$0 price as unpriced.
+  - Selectors try catalog-only $0 routes last.
+  - The manifest's price-move quarantine now catches a priced model dropping to
+    $0, which it used to skip as a placeholder.
+  - Local runtimes and OpenRouter `:free` ids are unaffected. Other genuinely
+    free remote models lose their top ranking until cross-source checks can
+    confirm them.
+
 ### Changed
 
 - **The release workflow rehearses `npm publish` before asking for approval.**

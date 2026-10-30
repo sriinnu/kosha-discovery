@@ -40,11 +40,6 @@
 
 import { randomUUID } from "node:crypto";
 import type { Hono } from "hono";
-import type { ModelCard } from "./types.js";
-import type { ModelRegistry } from "./registry.js";
-import { getProviderDescriptor, listProviderDescriptors, providerExecutionCredentialRequired } from "./provider-catalog.js";
-import { fallbackRegistryCredential, getRegistryCredentialResolver } from "./registry-runtime.js";
-import { parseRouteStrategy, type RouteStrategy } from "./registry-routing.js";
 import {
 	type ActualUsageCost,
 	actualCostFromUsage,
@@ -55,12 +50,21 @@ import {
 	readTenantBudgetUsd,
 } from "./cost.js";
 import {
-	UnsupportedWireContentError,
+	getProviderDescriptor,
+	listProviderDescriptors,
+	providerExecutionCredentialRequired,
+} from "./provider-catalog.js";
+import type { ModelRegistry } from "./registry.js";
+import { parseRouteStrategy, type RouteStrategy } from "./registry-routing.js";
+import { fallbackRegistryCredential, getRegistryCredentialResolver } from "./registry-runtime.js";
+import type { ModelCard } from "./types.js";
+import {
+	type AnthropicMessagesResponse,
 	coerceOpenAIChatRequest,
 	translateAnthropicStreamToOpenAI,
 	translateAnthropicToOpenAI,
 	translateOpenAIToAnthropicWithNotes,
-	type AnthropicMessagesResponse,
+	UnsupportedWireContentError,
 	type WireTranslation,
 } from "./wire-anthropic.js";
 
@@ -226,7 +230,10 @@ function parseKoshaHint(model: string): KoshaHint | null {
 
 	const hint: KoshaHint = { strategy };
 	if (filters === null) return hint;
-	for (const part of filters.split(",").map((s) => s.trim()).filter(Boolean)) {
+	for (const part of filters
+		.split(",")
+		.map((s) => s.trim())
+		.filter(Boolean)) {
 		if (part.startsWith("provider:")) {
 			hint.provider = part.slice("provider:".length);
 		} else if (/^\d+k$/i.test(part)) {
@@ -255,6 +262,18 @@ function isForwardable(model: ModelCard): boolean {
 	return false; // cloud-sdk (bedrock, vertex) needs per-SDK translation
 }
 
+/**
+ * True when the card says input and output are both free, but nothing other
+ * than a catalog vouches for it. OpenRouter's `:free` ids are the exception:
+ * the provider bills by id, so a `:free` route costs nothing whatever the
+ * catalog says.
+ */
+function isUnverifiedZeroPrice(model: ModelCard): boolean {
+	const pricing = model.pricing;
+	if (pricing?.inputPerMillion !== 0 || pricing.outputPerMillion !== 0) return false;
+	return !(model.provider === "openrouter" && model.id.endsWith(":free"));
+}
+
 function isExecutableRoute(registry: ModelRegistry, model: ModelCard): boolean {
 	if (!isForwardable(model)) return false;
 	const descriptor = getProviderDescriptor(model.provider);
@@ -273,12 +292,15 @@ function isExecutableRoute(registry: ModelRegistry, model: ModelCard): boolean {
 function resolveProxyCandidates(registry: ModelRegistry, requested: string): ModelCard[] {
 	const hint = parseKoshaHint(requested);
 	if (hint !== null) {
-		const ranked = registry.rankedRoutes({
-			mode: "chat",
-			capability: hint.capability,
-			provider: hint.provider,
-			limit: 20,
-		}, hint.strategy);
+		const ranked = registry.rankedRoutes(
+			{
+				mode: "chat",
+				capability: hint.capability,
+				provider: hint.provider,
+				limit: 20,
+			},
+			hint.strategy,
+		);
 		const filtered = hint.minContext
 			? ranked.filter((r) => r.model.contextWindow >= (hint.minContext as number))
 			: ranked;
@@ -286,7 +308,14 @@ function resolveProxyCandidates(registry: ModelRegistry, requested: string): Mod
 		const fwd = filtered
 			.filter((r) => isForwardable(r.model) && !isExecutableRoute(registry, r.model))
 			.map((r) => r.model);
-		return dedupeModels([...exec, ...fwd]);
+		// A catalog-only $0 would otherwise top every price ranking; the real
+		// bill would be whatever the provider charges. Try those routes last.
+		const ordered = dedupeModels([...exec, ...fwd]);
+		const trusted = ordered.filter(
+			(m) => !isUnverifiedZeroPrice(m) || getProviderDescriptor(m.provider)?.isLocal === true,
+		);
+		const unverified = ordered.filter((m) => !trusted.includes(m));
+		return [...trusted, ...unverified];
 	}
 
 	// For a specific model ID or alias, prefer the canonical card but fall back
@@ -359,10 +388,6 @@ function dedupeModels(models: ModelCard[]): ModelCard[] {
 	return out;
 }
 
-function resolveProxyModel(registry: ModelRegistry, requested: string): ModelCard | null {
-	return resolveProxyCandidates(registry, requested)[0] ?? null;
-}
-
 // ---------------------------------------------------------------------------
 // URL builder
 // ---------------------------------------------------------------------------
@@ -384,7 +409,10 @@ function buildUpstreamUrl(model: ModelCard, registry: ModelRegistry): string {
 		base = (descriptor?.defaultBaseUrl ?? "").replace(/\/$/, "");
 	}
 	// Some native/local roots expose the OpenAI-compatible layer under /v1.
-	if ((model.provider === "openai" || model.provider === "ollama" || model.provider === "llama.cpp") && !base.endsWith("/v1")) {
+	if (
+		(model.provider === "openai" || model.provider === "ollama" || model.provider === "llama.cpp") &&
+		!base.endsWith("/v1")
+	) {
 		return `${base}/v1/chat/completions`;
 	}
 	return `${base}/chat/completions`;
@@ -556,14 +584,10 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 				);
 			}
 			if (budget !== null && spent >= budget) {
-				return ctx.json(
-					{ error: "monthly budget exceeded", spentUsd: spent, budgetUsd: budget },
-					429,
-					{
-						"x-kosha-budget-remaining-usd": Math.max(0, budget - spent).toFixed(4),
-						"x-kosha-budget-usd": budget.toFixed(2),
-					},
-				);
+				return ctx.json({ error: "monthly budget exceeded", spentUsd: spent, budgetUsd: budget }, 429, {
+					"x-kosha-budget-remaining-usd": Math.max(0, budget - spent).toFixed(4),
+					"x-kosha-budget-usd": budget.toFixed(2),
+				});
 			}
 			if (tenantBudget !== null && tenantSpent >= tenantBudget) {
 				return ctx.json(
@@ -601,9 +625,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			wantsStream && (body.stream_options as { include_usage?: unknown } | undefined)?.include_usage === true;
 
 		for (const model of candidates) {
-			const credential = resolver
-				? await resolver.resolve(model.provider)
-				: fallbackRegistryCredential(model.provider);
+			const credential = resolver ? await resolver.resolve(model.provider) : fallbackRegistryCredential(model.provider);
 			const bearerToken = credential.apiKey ?? credential.accessToken;
 			const descriptor = getProviderDescriptor(model.provider);
 			if (descriptor && providerExecutionCredentialRequired(descriptor) && !bearerToken) {
@@ -630,7 +652,14 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			}
 			// With no price kosha writes no ledger row, so a budget would never
 			// see this spend. Local runtimes cost nothing and stay allowed.
-			if ((budget !== null || tenantBudget !== null) && descriptor?.isLocal !== true && !estimateRequestCost(model, body)) {
+			// A remote $0/$0 price counts as no price: the catalogs are the only
+			// source for it, and a poisoned $0 would otherwise win kosha:cheapest
+			// and land in the ledger as free.
+			if (
+				(budget !== null || tenantBudget !== null) &&
+				descriptor?.isLocal !== true &&
+				(!estimateRequestCost(model, body) || isUnverifiedZeroPrice(model))
+			) {
 				attemptChain.push(`${model.provider}:unpriced`);
 				skippedUnpriced = true;
 				continue;
@@ -663,7 +692,9 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 				}
 				wireNotes = translation.notes;
 				if (model.maxOutputTokens > 0 && translation.request.max_tokens > model.maxOutputTokens) {
-					wireNotes.push(`clamped max_tokens ${translation.request.max_tokens} to ${model.maxOutputTokens}: model output cap`);
+					wireNotes.push(
+						`clamped max_tokens ${translation.request.max_tokens} to ${model.maxOutputTokens}: model output cap`,
+					);
 					translation.request.max_tokens = model.maxOutputTokens;
 				}
 				upstreamBody = JSON.stringify(translation.request);
@@ -692,7 +723,10 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			// the client hanging up) can end it.
 			const upstreamAbort = new AbortController();
 			const upstreamTimer = setTimeout(
-				() => upstreamAbort.abort(new DOMException(`upstream did not respond within ${UPSTREAM_TIMEOUT_MS}ms`, "TimeoutError")),
+				() =>
+					upstreamAbort.abort(
+						new DOMException(`upstream did not respond within ${UPSTREAM_TIMEOUT_MS}ms`, "TimeoutError"),
+					),
 				UPSTREAM_TIMEOUT_MS,
 			);
 			const releaseTimer = (): void => clearTimeout(upstreamTimer);
@@ -863,17 +897,19 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 					}
 					releaseTimer();
 					const aErr = extractAnthropicError(raw);
-					return new Response(
-						JSON.stringify({ error: { ...aErr, code: String(upstream.status) } }),
-						{ status: upstream.status, headers: responseHeaders },
-					);
+					return new Response(JSON.stringify({ error: { ...aErr, code: String(upstream.status) } }), {
+						status: upstream.status,
+						headers: responseHeaders,
+					});
 				}
 				if (wantsStream) {
 					if (!upstream.body) {
 						releaseTimer();
 						recordSpend(null);
 						return new Response(
-							JSON.stringify({ error: { message: "anthropic upstream returned no stream body", type: "upstream_error" } }),
+							JSON.stringify({
+								error: { message: "anthropic upstream returned no stream body", type: "upstream_error" },
+							}),
 							{ status: 502, headers: responseHeaders },
 						);
 					}
@@ -893,7 +929,9 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 					releaseTimer();
 					recordSpend(null);
 					return new Response(
-						JSON.stringify({ error: { message: "anthropic upstream returned unparseable JSON", type: "upstream_error" } }),
+						JSON.stringify({
+							error: { message: "anthropic upstream returned unparseable JSON", type: "upstream_error" },
+						}),
 						{ status: 502, headers: responseHeaders },
 					);
 				}
@@ -932,7 +970,10 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 					releaseTimer();
 					recordSpend(null);
 					const message = err instanceof Error ? err.message : String(err);
-					return ctx.json({ error: `upstream body could not be read: ${message}`, resolvedProvider: model.provider, attemptChain }, 502);
+					return ctx.json(
+						{ error: `upstream body could not be read: ${message}`, resolvedProvider: model.provider, attemptChain },
+						502,
+					);
 				}
 				releaseTimer();
 				let usageRaw: unknown = null;
@@ -979,7 +1020,8 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 		if (skippedUnpriced && fetchAttempts === 0) {
 			return ctx.json(
 				{
-					error: "no priced route for this model; with a spend budget set, kosha only forwards models it can charge to the ledger",
+					error:
+						"no priced route for this model; with a spend budget set, kosha only forwards models it can charge to the ledger",
 					attemptChain,
 				},
 				422,
