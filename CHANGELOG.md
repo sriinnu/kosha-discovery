@@ -13,6 +13,8 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
+## [1.10.0] — 2026-10-30
+
 ### Added
 
 - **A switch for where keyless catalog data comes from.**
@@ -51,10 +53,14 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 - **The weekly snapshot carries `schemaVersion` and `kind`.** Loaders accept
   older snapshots without them, and refuse a different kind or an unknown
   version.
-
-- **The release workflow rehearses `npm publish` before asking for approval.**
-  `verify` dry-runs the publish job's exact command on the exact tarball, so a
-  broken publish line fails before the `npm-release` gate, not after it.
+- **npm releases are staged, then approved by a maintainer with 2FA.** CI
+  runs `npm stage publish` through trusted publishing, with no npm token
+  anywhere. The version goes live only when a maintainer runs
+  `npm stage approve`. 1.10.0 is the first release to ship this way.
+- **The release workflow rehearses the stage step before asking for approval.**
+  `verify` dry-runs `npm stage publish` with the same npm, on the same unpacked
+  tarball, so a broken publish line or an unbumped version fails before the
+  `npm-release` gate, not after it.
 
 ## [1.9.1] — 2026-10-29
 
