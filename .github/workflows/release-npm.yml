@@ -161,7 +161,10 @@ jobs:
       # needs no auth but does ask the registry, so an unbumped version fails
       # here too. Only --provenance is left out: it needs the id-token, and
       # verify must not have one. Keep in lockstep with "Stage on npm" below.
+      # Only when this run stages npm: a run 2 (MCP + GitHub release) comes
+      # after the version is live, and npm refuses to publish over it.
       - name: Rehearse the npm stage publish
+        if: ${{ inputs.publish_npm }}
         shell: bash
         working-directory: ${{ runner.temp }}
         run: |
