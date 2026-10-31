@@ -2,7 +2,7 @@
  * Cost primitives (estimate + ledger + budget gate) and proxy wiring.
  */
 
-import { mkdtemp, readFile, readdir, rm, writeFile } from "fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -14,6 +14,16 @@ import {
 	trimLedgerPartitions,
 } from "../src/cost.js";
 import type { ModelCard } from "../src/types.js";
+
+/**
+ * Mid-month, n UTC months before `now`. `setMonth(month - 1)` on the 31st
+ * lands on a day the earlier month doesn't have and rolls forward into the
+ * current month, which failed the release run on 2026-10-31.
+ */
+function monthsAgo(now: number, n: number): number {
+	const d = new Date(now);
+	return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - n, 15);
+}
 
 function model(pricing?: { input: number; output: number }): ModelCard {
 	return {
@@ -95,7 +105,7 @@ describe("ledger", () => {
 
 	it("sums spend within the current calendar month, ignoring rows outside it", async () => {
 		const now = Date.now();
-		const lastMonth = new Date(new Date(now).setMonth(new Date(now).getMonth() - 2)).getTime();
+		const lastMonth = monthsAgo(now, 2);
 		await appendLedgerEntry(makeEntry(now, "tenant-a", 0.5), path);
 		await appendLedgerEntry(makeEntry(now, "tenant-a", 1.0), path);
 		await appendLedgerEntry(makeEntry(lastMonth, "tenant-a", 99), path);
@@ -132,17 +142,9 @@ describe("ledger partitioning", () => {
 		// Each carries an entry in its own month with a different tenant so we
 		// can tell them apart. readSpendForMonth(now) must only see "now".
 		const now = Date.now();
-		const lastMonth = new Date(new Date(now).setMonth(new Date(now).getMonth() - 1)).getTime();
-		await writeFile(
-			partitionFile(dir, now),
-			`${JSON.stringify(makeEntry(now, "cur", 2))}\n`,
-			"utf-8",
-		);
-		await writeFile(
-			partitionFile(dir, lastMonth),
-			`${JSON.stringify(makeEntry(lastMonth, "cur", 40))}\n`,
-			"utf-8",
-		);
+		const lastMonth = monthsAgo(now, 1);
+		await writeFile(partitionFile(dir, now), `${JSON.stringify(makeEntry(now, "cur", 2))}\n`, "utf-8");
+		await writeFile(partitionFile(dir, lastMonth), `${JSON.stringify(makeEntry(lastMonth, "cur", 40))}\n`, "utf-8");
 
 		// Querying "now" must not scan last month's partition.
 		expect(await readSpendForMonth(now, "cur", path)).toBeCloseTo(2);
@@ -169,7 +171,7 @@ describe("ledger partitioning", () => {
 
 	it("ignores legacy entries that fall outside the queried month", async () => {
 		const now = Date.now();
-		const old = new Date(new Date(now).setMonth(new Date(now).getMonth() - 3)).getTime();
+		const old = monthsAgo(now, 3);
 		// Legacy file holds only an old-month entry.
 		await writeFile(path, `${JSON.stringify(makeEntry(old, "t", 7))}\n`, "utf-8");
 		expect(await readSpendForMonth(now, "t", path)).toBeCloseTo(0);
