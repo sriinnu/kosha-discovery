@@ -13,6 +13,55 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
+## [1.11.0] — 2026-10-31
+
+### Fixed
+
+- **`kosha:cheapest` routed to unknown prices, or refused everything under a
+  budget.** Every ranking cut the list to its limit first and filtered it
+  second. On the real catalog the 20 cheapest chat routes were all catalog
+  $0 prices, so the 1.10.0 $0 guard left the proxy nothing to send under a
+  budget (422 on every request) and a $0 guess without one. Filters (context
+  size, a usable key) now run before the cut, everywhere.
+- **A catalog-only $0 price is an unknown price on every surface.** The proxy,
+  `/api/models/cheapest`, the CLI and the MCP tools rank it after every priced
+  route and mark it `priceUnverified: true`. Rates in another unit (per image,
+  per second, per request) still count as a real price; a cache rate beside
+  $0 input (seen on `gemini-exp-1206`) doesn't. Local runtimes and OpenRouter
+  `:free` ids stay real $0.
+- **MCP `min_context_k` returned nothing** past the cheapest few models, and
+  `kosha_context_strategy` offered no alternative that could hold the
+  conversation. Both filter before the cut now.
+- **`kosha doctor` counted sunset days from local midnight**, a day short west
+  of UTC, which moved the `--ci` gate edge. It counts on the UTC calendar.
+- **`kosha spend` took a bad `--since`/`--until` as "all time".** It's an error
+  now, and a bare `--until 2026-10-31` includes the 31st.
+- **Tests:** three ledger tests broke on month-end dates (they blocked the
+  1.10.0 GitHub and MCP release run); a test-home cleanup raced pending
+  writes. CI now also runs the suite in America/Los_Angeles.
+
+### Security
+
+- **A project's `kosha.config.json` can only make kosha stricter.** It may pin
+  the catalog to `pinned` and turn providers off; aliases, base URLs,
+  `enabled: true` and the cache TTL there are ignored (aliases resolve before
+  real ids, so a cloned repo could swap one model for another). Provider
+  entries now merge field by field, so a project layer can't drop your key.
+- **A failed spend write no longer lets requests slip past a budget.** Ledger
+  writes used to fail silently. Now a failed write makes budgeted requests
+  return 503 until the ledger is writable again, like a failed read.
+- **A single request can't overshoot the budget.** The gate refuses a route
+  whose own estimate would cross the cap (429), and tries a cheaper one first.
+
+### Added
+
+- **`kosha ranked`**: routes in the order `kosha:<strategy>` tries them, with
+  `--strategy`, `--min-context`, `--provider`, `--limit`.
+- **`--min-context <k>`** on `kosha cheapest`, and `minContext` on
+  `/api/models/cheapest`.
+- **`KOSHA_LEDGER_PATH`** moves the spend ledger (tests, live checks, a second
+  instance).
+
 ## [1.10.0] — 2026-10-30
 
 ### Added

@@ -483,6 +483,14 @@ export interface CheapestModelOptions extends RoleQueryOptions {
 	outputWeight?: number;
 	/** Include unpriced models at the end of results with undefined score. */
 	includeUnpriced?: boolean;
+	/**
+	 * Only models with at least this context window. Applied before `limit`,
+	 * so asking for 400k context returns the cheapest 400k models, not the
+	 * 400k models among the cheapest few.
+	 */
+	minContextWindow?: number;
+	/** Extra candidate filter, also applied before `limit` (e.g. "has a key"). */
+	where?: (model: ModelCard) => boolean;
 }
 
 /** A ranked cheapest-model match with its computed score. */
@@ -491,6 +499,11 @@ export interface CheapestModelMatch {
 	model: ModelCard;
 	/** Computed cost score (undefined when model has no usable pricing). */
 	score?: number;
+	/**
+	 * True when the catalog lists the model at $0/$0 but nothing confirms it.
+	 * Such a match has no score and ranks after every priced one.
+	 */
+	priceUnverified?: boolean;
 	/** Metric used for scoring this result set. */
 	priceMetric: PricingMetric;
 }

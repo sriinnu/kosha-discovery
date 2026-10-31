@@ -339,18 +339,20 @@ function renderHealth(findings: HealthFinding[]): void {
 	}
 }
 
-function daysBetween(nowMs: number, isoDate: string): number | null {
+/**
+ * Whole days from `nowMs` to `isoDate`, counted on the UTC calendar.
+ * Sunset dates are UTC days (`Date.parse("2026-11-14")` is UTC midnight), so
+ * "today" must be too: local midnight put machines west of UTC a day short,
+ * which moved the `--ci` gate edge.
+ */
+export function daysBetween(nowMs: number, isoDate: string): number | null {
 	const date = Date.parse(isoDate);
 	if (!Number.isFinite(date)) return null;
-	return Math.floor((date - nowMs) / 86_400_000);
+	const now = new Date(nowMs);
+	const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+	return Math.floor((date - todayUtc) / 86_400_000);
 }
 
-/**
- * Today's wall-clock midnight as ms. Wrapped so tests can swap it out;
- * a deprecation finding rendering is otherwise time-dependent and racy.
- */
 function todayMs(): number {
-	const now = new Date();
-	now.setHours(0, 0, 0, 0);
-	return now.getTime();
+	return Date.now();
 }

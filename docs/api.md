@@ -55,6 +55,7 @@ Useful for assistant routers asking: _"For embeddings, what is cheapest right no
 | `inputWeight`    | number | Input weight for `blended` scoring |
 | `outputWeight`   | number | Output weight for `blended` scoring |
 | `includeUnpriced`| bool   | Include unpriced models after ranked matches |
+| `minContext`     | number | Only models with at least this many tokens of context, applied before `limit` |
 
 ```bash
 curl "http://localhost:3000/api/models/cheapest?role=embeddings&limit=3"
@@ -306,8 +307,9 @@ Behaviour:
 
 - **Failover.** Up to three ranked candidates are tried; a 5xx or network error rolls to the next, a 4xx is returned as-is. `x-kosha-attempt-chain` lists `provider:status` for every attempt.
 - **Anthropic bridging.** Anthropic routes are translated to and from `/v1/messages` — streaming, tools / tool calls, `image_url` parts, `response_format` (json_schema on Claude 4.5+), and `reasoning_effort` are all carried. Sampling parameters are dropped on Claude generations that reject them; any lossy mapping is reported in `x-kosha-wire-notes`. Audio / file parts and non-function tools fall over to a native OpenAI-compatible route (OpenRouter, Vercel, …) when one is credentialed, otherwise `422`.
-- **Budget gate.** With `KOSHA_MONTHLY_BUDGET_USD` set, requests over budget return `429` with `x-kosha-budget-remaining-usd` / `x-kosha-budget-usd`. An unreadable ledger fails closed with `503`.
-- **Unpriced and $0 routes under a budget.** With a budget set, the proxy only forwards remote models it can charge to the ledger. A model with no price, or a remote $0/$0 price that only a catalog vouches for, is skipped; if nothing else is left it returns `422`. Local runtimes and OpenRouter `:free` ids stay allowed. Selectors such as `kosha:cheapest` try catalog-only $0 routes last, budget or not, so a poisoned $0 can't win the price ranking.
+- **Budget gate.** With `KOSHA_MONTHLY_BUDGET_USD` set, requests over budget return `429` with `x-kosha-budget-remaining-usd` / `x-kosha-budget-usd`. A request whose own estimate would cross the cap is refused too (`429`, "this request would exceed the monthly budget"), unless a cheaper route still fits. Concurrent requests can still overshoot together. An unreadable ledger fails closed with `503`, and so does one that can't be written: after a failed spend write, budgeted requests get `503` until the ledger is writable again.
+- **Ledger location.** `~/.kosha/ledger-YYYY-MM.jsonl` by default; `KOSHA_LEDGER_PATH` moves it (tests, live checks, a second instance).
+- **Unpriced and $0 routes under a budget.** With a budget set, the proxy only forwards remote models it can charge to the ledger. A model with no price, or a remote $0/$0 price that only a catalog vouches for, is skipped; if nothing else is left it returns `422`. Local runtimes and OpenRouter `:free` ids stay allowed. Every ranking (the proxy's selectors, `/api/models/cheapest`, the CLI and the MCP tools) treats a catalog-only $0 as an unknown price: it ranks after every priced route and carries `priceUnverified: true`. Rates billed in another unit (per image, per second, per request) count as a real price; a cache rate beside $0 input doesn't. Filters such as `kosha:cheapest[400k]` apply before the ranking is cut to its limit.
 - **Tenant bucketing.** `x-kosha-tenant: <name>` (or the legacy `Authorization: Bearer kosha-tenant-<name>` when no operator token is set) tags ledger rows for `kosha spend --tenant` and the optional `KOSHA_TENANT_BUDGET_USD` cap. The global `KOSHA_MONTHLY_BUDGET_USD` cap is always enforced against total spend. The tag is a label, not authentication.
 
 Response headers:

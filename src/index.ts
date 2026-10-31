@@ -32,9 +32,11 @@ export type { ActualUsageCost, CostEstimate, LedgerEntry, UsageShape } from "./c
 export {
 	actualCostFromUsage,
 	appendLedgerEntry,
+	currentLedgerPath,
 	DEFAULT_LEDGER_PATH,
 	estimateRequestCost,
 	isRequestRow,
+	LEDGER_PATH_ENV,
 	ledgerRowUsd,
 	readMonthlyBudgetUsd,
 	readSpendForMonth,

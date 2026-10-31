@@ -290,11 +290,11 @@ export async function callTool(
 				mode: "chat",
 				capability: args.capability as string | undefined,
 				provider: args.provider as string | undefined,
+				minContextWindow: minContext,
 				limit: typeof args.limit === "number" ? args.limit : 5,
 			});
-			const matches = minContext ? result.matches.filter((m) => m.model.contextWindow >= minContext) : result.matches;
 			return {
-				matches: matches.map((m) => ({
+				matches: result.matches.map((m) => ({
 					id: m.model.id,
 					provider: m.model.provider,
 					name: m.model.name,
@@ -302,6 +302,7 @@ export async function callTool(
 					pricing: m.model.pricing ?? null,
 					score: m.score,
 					priceMetric: m.priceMetric,
+					...(m.priceUnverified ? { priceUnverified: true } : {}),
 				})),
 				missingCredentials: result.missingCredentials.map((c) => c.providerId),
 			};
@@ -321,22 +322,21 @@ export async function callTool(
 					mode: "chat",
 					capability: args.capability as string | undefined,
 					provider: args.provider as string | undefined,
-					// Over-fetch so a min-context filter applied after ranking
-					// still has enough candidates to fill `limit`.
-					limit: Math.max(limit * 4, 20),
+					minContextWindow: minContext,
+					limit,
 				},
 				strategy,
 			);
-			const filtered = minContext ? ranked.filter((r) => r.model.contextWindow >= minContext) : ranked;
 			return {
 				strategy,
-				routes: filtered.slice(0, limit).map((r) => ({
+				routes: ranked.map((r) => ({
 					id: r.model.id,
 					provider: r.providerId,
 					name: r.model.name,
 					contextWindow: r.model.contextWindow,
 					pricing: r.model.pricing ?? null,
 					price: r.price,
+					...(r.priceUnverified ? { priceUnverified: true } : {}),
 					compositeScore: r.compositeScore,
 					health: {
 						available: r.health.available,
@@ -413,7 +413,11 @@ export async function callTool(
 			const model = reg.model(modelId);
 			if (!model) return { error: `model '${modelId}' not found` };
 
-			const candidates = reg.cheapestModels({ mode: "chat", limit: 20 }).matches.map((m) => m.model);
+			// Alternatives must hold the conversation, so that filter goes into
+			// the query; filtering the 20 cheapest after the fact found none.
+			const candidates = reg
+				.cheapestModels({ mode: "chat", minContextWindow: currentTokens, limit: 20 })
+				.matches.map((m) => m.model);
 
 			return computeContextStrategy({
 				model,

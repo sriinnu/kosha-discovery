@@ -9,13 +9,23 @@
  * @module cli-cmd-query
  */
 
-import type { ModelMode } from "./types.js";
-import type { ModelRegistry } from "./registry.js";
-import {
-	BOLD, CYAN, DIM, RED, YELLOW,
-	c, formatPrice, formatPricingTier, line, renderTable,
-} from "./cli-format.js";
 import type { Column } from "./cli-format.js";
+import {
+	BOLD,
+	CYAN,
+	c,
+	DIM,
+	formatPrice,
+	formatPricingTier,
+	GREEN,
+	line,
+	RED,
+	renderTable,
+	YELLOW,
+} from "./cli-format.js";
+import type { ModelRegistry } from "./registry.js";
+import { parseRouteStrategy, ROUTE_STRATEGIES } from "./registry-routing.js";
+import type { CheapestModelMatch, ModelMode } from "./types.js";
 
 async function ensureDiscovered(registry: ModelRegistry): Promise<void> {
 	const candidate = registry as unknown as {
@@ -38,11 +48,7 @@ async function ensureDiscovered(registry: ModelRegistry): Promise<void> {
 	}
 }
 
-function parseNumberFlag(
-	flags: Record<string, string | boolean>,
-	name: string,
-	fallback?: number,
-): number | undefined {
+function parseNumberFlag(flags: Record<string, string | boolean>, name: string, fallback?: number): number | undefined {
 	const raw = flags[name];
 	if (typeof raw !== "string" || raw.trim() === "") {
 		return fallback;
@@ -95,9 +101,12 @@ function pricingRow(model: {
 	id?: string;
 	mode?: string;
 	pricing?: {
-		inputPerMillion: number; outputPerMillion: number;
-		cacheReadPerMillion?: number; cacheWritePerMillion?: number;
-		batchInputPerMillion?: number; batchOutputPerMillion?: number;
+		inputPerMillion: number;
+		outputPerMillion: number;
+		cacheReadPerMillion?: number;
+		cacheWritePerMillion?: number;
+		batchInputPerMillion?: number;
+		batchOutputPerMillion?: number;
 	};
 }): string[] {
 	return [
@@ -132,12 +141,18 @@ export async function cmdRoles(registry: ModelRegistry, flags: Record<string, st
 	const providers = registry.providerRoles({ provider, originProvider, mode, capability, role });
 
 	if (flags.json) {
-		console.log(JSON.stringify({
-			providers,
-			count: providers.length,
-			modelCount: providers.reduce((sum, p) => sum + p.models.length, 0),
-			missingCredentials: registry.missingCredentialPrompts(providers.map((p) => p.id)),
-		}, null, 2));
+		console.log(
+			JSON.stringify(
+				{
+					providers,
+					count: providers.length,
+					modelCount: providers.reduce((sum, p) => sum + p.models.length, 0),
+					missingCredentials: registry.missingCredentialPrompts(providers.map((p) => p.id)),
+				},
+				null,
+				2,
+			),
+		);
 		return;
 	}
 
@@ -154,12 +169,8 @@ export async function cmdRoles(registry: ModelRegistry, flags: Record<string, st
 	];
 
 	const rows = providers.flatMap((providerInfo) =>
-		providerInfo.models.map((model) => [
-			c(CYAN, providerInfo.id),
-			model.id,
-			model.mode,
-			model.roles.join(", "),
-		]));
+		providerInfo.models.map((model) => [c(CYAN, providerInfo.id), model.id, model.mode, model.roles.join(", ")]),
+	);
 
 	console.log(renderTable(columns, rows));
 
@@ -194,12 +205,12 @@ export async function cmdCheapest(registry: ModelRegistry, flags: Record<string,
 		capability,
 		role,
 		limit: parseNumberFlag(flags, "limit"),
-		priceMetric: typeof flags["price-metric"] === "string"
-			? flags["price-metric"] as "input" | "output" | "blended"
-			: undefined,
+		priceMetric:
+			typeof flags["price-metric"] === "string" ? (flags["price-metric"] as "input" | "output" | "blended") : undefined,
 		inputWeight: parseNumberFlag(flags, "input-weight"),
 		outputWeight: parseNumberFlag(flags, "output-weight"),
 		includeUnpriced: flags["include-unpriced"] === true,
+		minContextWindow: parseMinContextFlag(flags),
 	});
 
 	if (flags.json) {
@@ -237,7 +248,7 @@ export async function cmdCheapest(registry: ModelRegistry, flags: Record<string,
 			match.model.id,
 			match.priceMetric,
 			formatPricingTier(match.model.pricing),
-			match.score === undefined ? "\u2014" : formatPrice(match.score),
+			scoreLabel(match),
 			formatPrice(match.model.pricing?.inputPerMillion),
 			formatPrice(match.model.pricing?.outputPerMillion),
 			formatPrice(match.model.pricing?.cacheReadPerMillion),
@@ -261,7 +272,7 @@ export async function cmdCheapest(registry: ModelRegistry, flags: Record<string,
 			match.model.id,
 			match.model.mode,
 			match.priceMetric,
-			match.score === undefined ? "\u2014" : formatPrice(match.score),
+			scoreLabel(match),
 			formatPrice(match.model.pricing?.inputPerMillion),
 			formatPrice(match.model.pricing?.outputPerMillion),
 		]);
@@ -294,8 +305,14 @@ export async function cmdCapabilities(registry: ModelRegistry, flags: Record<str
 	await ensureDiscovered(registry);
 	const caps = registry.capabilities({ provider });
 
-	if (flags.json) { console.log(JSON.stringify(caps, null, 2)); return; }
-	if (caps.length === 0) { console.log(c(YELLOW, "No capabilities found.")); return; }
+	if (flags.json) {
+		console.log(JSON.stringify(caps, null, 2));
+		return;
+	}
+	if (caps.length === 0) {
+		console.log(c(YELLOW, "No capabilities found."));
+		return;
+	}
 
 	const columns: Column[] = [
 		{ header: "Capability", width: 20 },
@@ -326,8 +343,15 @@ export async function cmdCapabilities(registry: ModelRegistry, flags: Record<str
  * @param query     The capability query (e.g. "vision", "embeddings", "tools").
  * @param flags     CLI flags (supports `--provider`, `--origin`, `--pricing`, `--json`, `--limit`).
  */
-export async function cmdCapable(registry: ModelRegistry, query: string, flags: Record<string, string | boolean>): Promise<void> {
-	if (!query) { console.error(c(RED, "Usage: kosha capable <capability>")); process.exit(1); }
+export async function cmdCapable(
+	registry: ModelRegistry,
+	query: string,
+	flags: Record<string, string | boolean>,
+): Promise<void> {
+	if (!query) {
+		console.error(c(RED, "Usage: kosha capable <capability>"));
+		process.exit(1);
+	}
 
 	const provider = typeof flags.provider === "string" ? flags.provider : undefined;
 	const originProvider = typeof flags.origin === "string" ? flags.origin : undefined;
@@ -345,16 +369,25 @@ export async function cmdCapable(registry: ModelRegistry, query: string, flags: 
 		models = models.slice(0, limit);
 	}
 
-	if (flags.json) { console.log(JSON.stringify(models, null, 2)); return; }
-
-	if (models.length === 0) {
-		console.log(c(YELLOW, `No models found with capability "${query}"${normalized !== query ? ` (normalized: "${normalized}")` : ""}`));
+	if (flags.json) {
+		console.log(JSON.stringify(models, null, 2));
 		return;
 	}
 
-	const header = normalized !== query
-		? `Models with capability ${c(CYAN, normalized)} ${c(DIM, `(from "${query}")`)}`
-		: `Models with capability ${c(CYAN, normalized)}`;
+	if (models.length === 0) {
+		console.log(
+			c(
+				YELLOW,
+				`No models found with capability "${query}"${normalized !== query ? ` (normalized: "${normalized}")` : ""}`,
+			),
+		);
+		return;
+	}
+
+	const header =
+		normalized !== query
+			? `Models with capability ${c(CYAN, normalized)} ${c(DIM, `(from "${query}")`)}`
+			: `Models with capability ${c(CYAN, normalized)}`;
 
 	console.log(`\n${c(BOLD, header)}\n`);
 
@@ -365,4 +398,66 @@ export async function cmdCapable(registry: ModelRegistry, query: string, flags: 
 	const providerCount = new Set(models.map((m) => m.provider)).size;
 	console.log(c(DIM, line("\u2500", showPricing ? 110 : 90)));
 	console.log(`${c(BOLD, String(models.length))} models from ${c(BOLD, String(providerCount))} providers`);
+}
+
+/** `--min-context 400` means 400k tokens, like the `[400k]` selector and MCP's min_context_k. */
+function parseMinContextFlag(flags: Record<string, string | boolean>): number | undefined {
+	const k = parseNumberFlag(flags, "min-context");
+	return k === undefined ? undefined : k * 1_000;
+}
+
+/** A catalog-only $0 says "unverified" rather than looking free. */
+function scoreLabel(match: CheapestModelMatch): string {
+	if (match.priceUnverified) return c(YELLOW, "unverified");
+	return match.score === undefined ? "\u2014" : formatPrice(match.score);
+}
+
+/**
+ * `kosha ranked` — the routes `kosha:<strategy>` would try, in order. Same
+ * ranking as the proxy and MCP's kosha_ranked_routes.
+ */
+export async function cmdRanked(registry: ModelRegistry, flags: Record<string, string | boolean>): Promise<void> {
+	const strategyRaw = typeof flags.strategy === "string" ? flags.strategy : "cheapest";
+	const strategy = parseRouteStrategy(strategyRaw);
+	if (!strategy) {
+		console.error(c(RED, `Unknown strategy "${strategyRaw}". Use one of: ${ROUTE_STRATEGIES.join(", ")}`));
+		process.exit(1);
+	}
+	await ensureDiscovered(registry);
+	const routes = registry.rankedRoutes(
+		{
+			mode: "chat",
+			provider: typeof flags.provider === "string" ? flags.provider : undefined,
+			capability: typeof flags.capability === "string" ? flags.capability : undefined,
+			minContextWindow: parseMinContextFlag(flags),
+			limit: parseNumberFlag(flags, "limit", 10),
+		},
+		strategy,
+	);
+	if (flags.json) {
+		console.log(JSON.stringify({ strategy, routes }, null, 2));
+		return;
+	}
+	if (routes.length === 0) {
+		console.log(c(YELLOW, "No routes match the requested filters."));
+		return;
+	}
+	const columns: Column[] = [
+		{ header: "#", width: 3, align: "right" },
+		{ header: "Provider", width: 12 },
+		{ header: "Model", width: 38 },
+		{ header: "Context", width: 9, align: "right" },
+		{ header: "Price", width: 10, align: "right" },
+		{ header: "Health", width: 9 },
+	];
+	const rows = routes.map((route, index) => [
+		String(index + 1),
+		c(CYAN, route.providerId),
+		route.model.id,
+		`${Math.round(route.model.contextWindow / 1_000)}k`,
+		route.priceUnverified ? c(YELLOW, "unverified") : route.price === null ? "\u2014" : formatPrice(route.price),
+		route.health.available ? c(GREEN, route.health.breakerState) : c(RED, route.health.breakerState),
+	]);
+	console.log(renderTable(columns, rows));
+	console.log(c(DIM, `\nStrategy: ${strategy}. Same order the proxy tries for kosha:${strategy}.`));
 }

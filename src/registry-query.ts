@@ -7,6 +7,15 @@
  * @module
  */
 
+import { extractModelVersion, extractOriginProvider, matchableModelId } from "./normalize.js";
+import { isUnverifiedZeroPrice } from "./price-trust.js";
+import {
+	getProviderDescriptor,
+	isLocalProvider,
+	normalizeProviderId,
+	providerExecutionCredentialRequired,
+} from "./provider-catalog.js";
+import type { RegistryState } from "./registry-state.js";
 import type {
 	CapabilitySummary,
 	CheapestModelMatch,
@@ -21,14 +30,6 @@ import type {
 	ProviderRoleInfo,
 	RoleQueryOptions,
 } from "./types.js";
-import { extractModelVersion, extractOriginProvider, matchableModelId } from "./normalize.js";
-import {
-	getProviderDescriptor,
-	isLocalProvider,
-	normalizeProviderId,
-	providerExecutionCredentialRequired,
-} from "./provider-catalog.js";
-import type { RegistryState } from "./registry-state.js";
 
 const ROLE_ALIASES: Record<string, string> = {
 	embeddings: "embedding",
@@ -79,26 +80,31 @@ const MODE_ALIASES: Record<string, ModelMode> = {
  * Return a stable provider descriptor, even for synthetic test providers.
  */
 export function registryProviderDescriptor(_state: RegistryState, providerId: string, providerInfo?: ProviderInfo) {
-	return getProviderDescriptor(providerId) ?? {
-		providerId,
-		canonicalProviderId: providerId,
-		aliases: [],
-		name: providerInfo?.name ?? providerId,
-		origin: isLocalProvider(providerId) ? "local" : "direct",
-		isLocal: isLocalProvider(providerId),
-		transport: "native-http" as const,
-		defaultBaseUrl: providerInfo?.baseUrl ?? "",
-		credentialRequired: false,
-		executionCredentialRequired: false,
-		credentialEnvVars: [],
-	};
+	return (
+		getProviderDescriptor(providerId) ?? {
+			providerId,
+			canonicalProviderId: providerId,
+			aliases: [],
+			name: providerInfo?.name ?? providerId,
+			origin: isLocalProvider(providerId) ? "local" : "direct",
+			isLocal: isLocalProvider(providerId),
+			transport: "native-http" as const,
+			defaultBaseUrl: providerInfo?.baseUrl ?? "",
+			credentialRequired: false,
+			executionCredentialRequired: false,
+			credentialEnvVars: [],
+		}
+	);
 }
 
 /**
  * Normalize a role or capability token for routing and filtering.
  */
 export function normalizeRoleToken(value: string): string {
-	const token = value.trim().toLowerCase().replace(/[\s-]+/g, "_");
+	const token = value
+		.trim()
+		.toLowerCase()
+		.replace(/[\s-]+/g, "_");
 	return ROLE_ALIASES[token] ?? token;
 }
 
@@ -164,21 +170,24 @@ export function registryProviderRoles(state: RegistryState, filter?: RoleQueryOp
 	for (const providerInfo of state.providerMap.values()) {
 		if (normalizedProvider && providerInfo.id !== normalizedProvider) continue;
 
-		const models = providerInfo.models.filter((model) => {
-			if (normalizedOriginProvider && normalizeProviderId(model.originProvider) !== normalizedOriginProvider) return false;
-			if (filter?.mode && model.mode !== filter.mode) return false;
-			if (normalizedCapability && !modelSupportsRole(model, normalizedCapability)) return false;
-			if (filter?.role && !modelSupportsRole(model, filter.role)) return false;
-			return true;
-		}).map((model) => ({
-			id: model.id,
-			name: model.name,
-			provider: model.provider,
-			originProvider: model.originProvider,
-			mode: model.mode,
-			roles: modelRoles(model),
-			pricing: model.pricing,
-		}));
+		const models = providerInfo.models
+			.filter((model) => {
+				if (normalizedOriginProvider && normalizeProviderId(model.originProvider) !== normalizedOriginProvider)
+					return false;
+				if (filter?.mode && model.mode !== filter.mode) return false;
+				if (normalizedCapability && !modelSupportsRole(model, normalizedCapability)) return false;
+				if (filter?.role && !modelSupportsRole(model, filter.role)) return false;
+				return true;
+			})
+			.map((model) => ({
+				id: model.id,
+				name: model.name,
+				provider: model.provider,
+				originProvider: model.originProvider,
+				mode: model.mode,
+				roles: modelRoles(model),
+				pricing: model.pricing,
+			}));
 
 		if (models.length === 0) continue;
 		providers.push({
@@ -196,20 +205,27 @@ export function registryProviderRoles(state: RegistryState, filter?: RoleQueryOp
 /**
  * Return prompts for currently discovered providers missing required credentials.
  */
-export function registryMissingCredentialPrompts(state: RegistryState, providerIds?: string[]): ProviderCredentialPrompt[] {
+export function registryMissingCredentialPrompts(
+	state: RegistryState,
+	providerIds?: string[],
+): ProviderCredentialPrompt[] {
 	const normalizedIds = providerIds?.map((providerId) => normalizeProviderId(providerId) ?? providerId);
-	const providers = providerIds && providerIds.length > 0
-		? normalizedIds?.flatMap((providerId) => {
-			const provider = state.providerMap.get(providerId ?? "");
-			return provider ? [provider] : [];
-		}) ?? []
-		: Array.from(state.providerMap.values());
+	const providers =
+		providerIds && providerIds.length > 0
+			? (normalizedIds?.flatMap((providerId) => {
+					const provider = state.providerMap.get(providerId ?? "");
+					return provider ? [provider] : [];
+				}) ?? [])
+			: Array.from(state.providerMap.values());
 	const prompts: ProviderCredentialPrompt[] = [];
 
 	for (const provider of providers) {
 		const descriptor = registryProviderDescriptor(state, provider.id, provider);
 		if (!providerExecutionCredentialRequired(descriptor) || provider.authenticated) continue;
-		const envHint = descriptor.credentialEnvVars.length > 0 ? `Set ${descriptor.credentialEnvVars.join(" or ")}` : "Configure credentials";
+		const envHint =
+			descriptor.credentialEnvVars.length > 0
+				? `Set ${descriptor.credentialEnvVars.join(" or ")}`
+				: "Configure credentials";
 		const action = descriptor.credentialRequired ? "model discovery and requests" : "model requests";
 		prompts.push({
 			providerId: descriptor.providerId,
@@ -233,13 +249,34 @@ export function registryCheapestModels(state: RegistryState, options?: CheapestM
 		provider: options?.provider,
 		originProvider: options?.originProvider,
 		mode: options?.mode,
-	}).filter((model) => model.status !== "retired" && (!capability || modelSupportsRole(model, capability)) && (!options?.role || modelSupportsRole(model, options.role)));
+	}).filter(
+		(model) =>
+			model.status !== "retired" &&
+			(!capability || modelSupportsRole(model, capability)) &&
+			(!options?.role || modelSupportsRole(model, options.role)) &&
+			// Every filter runs here, before the cut to `limit`; filtering the
+			// cut list instead returned "nothing" whenever the cheapest few failed it.
+			(options?.minContextWindow === undefined || model.contextWindow >= options.minContextWindow) &&
+			(!options?.where || options.where(model)),
+	);
 	const priceMetric = options?.priceMetric ?? defaultPricingMetric(options);
 	const ranked: CheapestModelMatch[] = [];
+	const unverified: CheapestModelMatch[] = [];
 	const unpriced: CheapestModelMatch[] = [];
 
 	for (const model of candidates) {
-		const score = computeModelScore(model, priceMetric, options?.inputWeight ?? 1, options?.outputWeight ?? 1, effectiveRole);
+		// A catalog-only $0 is an unknown price, not the cheapest one.
+		if (isUnverifiedZeroPrice(model)) {
+			if (options?.includeUnpriced) unverified.push({ model, score: undefined, priceMetric, priceUnverified: true });
+			continue;
+		}
+		const score = computeModelScore(
+			model,
+			priceMetric,
+			options?.inputWeight ?? 1,
+			options?.outputWeight ?? 1,
+			effectiveRole,
+		);
 		if (score === undefined) {
 			if (options?.includeUnpriced) unpriced.push({ model, score: undefined, priceMetric });
 			continue;
@@ -247,12 +284,22 @@ export function registryCheapestModels(state: RegistryState, options?: CheapestM
 		ranked.push({ model, score, priceMetric });
 	}
 
-	ranked.sort((a, b) => (a.score ?? Number.POSITIVE_INFINITY) - (b.score ?? Number.POSITIVE_INFINITY) || a.model.provider.localeCompare(b.model.provider) || a.model.id.localeCompare(b.model.id));
-	unpriced.sort((a, b) => a.model.provider.localeCompare(b.model.provider) || a.model.id.localeCompare(b.model.id));
-	const scopedProviderIds = options?.provider ? [options.provider] : Array.from(state.providerMap.values()).map((provider) => provider.id);
+	ranked.sort(
+		(a, b) =>
+			(a.score ?? Number.POSITIVE_INFINITY) - (b.score ?? Number.POSITIVE_INFINITY) ||
+			a.model.provider.localeCompare(b.model.provider) ||
+			a.model.id.localeCompare(b.model.id),
+	);
+	const byName = (a: CheapestModelMatch, b: CheapestModelMatch) =>
+		a.model.provider.localeCompare(b.model.provider) || a.model.id.localeCompare(b.model.id);
+	unverified.sort(byName);
+	unpriced.sort(byName);
+	const scopedProviderIds = options?.provider
+		? [options.provider]
+		: Array.from(state.providerMap.values()).map((provider) => provider.id);
 
 	return {
-		matches: [...ranked, ...unpriced].slice(0, normalizeLimit(options?.limit)),
+		matches: [...ranked, ...unverified, ...unpriced].slice(0, normalizeLimit(options?.limit)),
 		candidates: candidates.length,
 		pricedCandidates: ranked.length,
 		skippedNoPricing: candidates.length - ranked.length,
@@ -296,22 +343,48 @@ export function registryModelRouteInfo(state: RegistryState, modelId: string): M
 		// I prefer direct-origin routes first because they are usually the clearest default for operators.
 		for (const route of directRoutes) route.isPreferred = true;
 	} else {
-		const priced = info.filter((route) => route.model.pricing && Number.isFinite(route.model.pricing.inputPerMillion) && Number.isFinite(route.model.pricing.outputPerMillion));
-		(priced.length > 0 ? priced.sort((a, b) => ((a.model.pricing?.inputPerMillion ?? 0) + (a.model.pricing?.outputPerMillion ?? 0)) - ((b.model.pricing?.inputPerMillion ?? 0) + (b.model.pricing?.outputPerMillion ?? 0)) || a.provider.localeCompare(b.provider)) : info)[0].isPreferred = true;
+		const priced = info.filter(
+			(route) =>
+				route.model.pricing &&
+				Number.isFinite(route.model.pricing.inputPerMillion) &&
+				Number.isFinite(route.model.pricing.outputPerMillion),
+		);
+		(priced.length > 0
+			? priced.sort(
+					(a, b) =>
+						(a.model.pricing?.inputPerMillion ?? 0) +
+							(a.model.pricing?.outputPerMillion ?? 0) -
+							((b.model.pricing?.inputPerMillion ?? 0) + (b.model.pricing?.outputPerMillion ?? 0)) ||
+						a.provider.localeCompare(b.provider),
+				)
+			: info)[0].isPreferred = true;
 	}
 
-	return info.sort((a, b) => Number(b.isPreferred) - Number(a.isPreferred) || Number(b.isDirect) - Number(a.isDirect) || a.provider.localeCompare(b.provider));
+	return info.sort(
+		(a, b) =>
+			Number(b.isPreferred) - Number(a.isPreferred) ||
+			Number(b.isDirect) - Number(a.isDirect) ||
+			a.provider.localeCompare(b.provider),
+	);
 }
 
 /**
  * Aggregate capability statistics across all discovered models.
  */
 export function registryCapabilities(state: RegistryState, filter?: { provider?: string }): CapabilitySummary[] {
-	const capabilityMap = new Map<string, { models: Set<string>; providers: Set<string>; modes: Set<ModelMode>; exampleModelId?: string }>();
+	const capabilityMap = new Map<
+		string,
+		{ models: Set<string>; providers: Set<string>; modes: Set<ModelMode>; exampleModelId?: string }
+	>();
 
 	for (const model of registryModels(state, { provider: filter?.provider })) {
 		for (const role of modelRoles(model)) {
-			const entry = capabilityMap.get(role) ?? { models: new Set(), providers: new Set(), modes: new Set(), exampleModelId: model.id };
+			const entry = capabilityMap.get(role) ?? {
+				models: new Set(),
+				providers: new Set(),
+				modes: new Set(),
+				exampleModelId: model.id,
+			};
 			entry.models.add(`${model.provider}:${model.id}`);
 			entry.providers.add(model.provider);
 			entry.modes.add(model.mode);
@@ -319,23 +392,33 @@ export function registryCapabilities(state: RegistryState, filter?: { provider?:
 		}
 	}
 
-	return Array.from(capabilityMap.entries()).map(([capability, entry]) => ({
-		capability,
-		modelCount: entry.models.size,
-		providerCount: entry.providers.size,
-		providers: Array.from(entry.providers).sort(),
-		modes: Array.from(entry.modes).sort() as ModelMode[],
-		exampleModelId: entry.exampleModelId,
-	})).sort((a, b) => b.modelCount - a.modelCount || a.capability.localeCompare(b.capability));
+	return Array.from(capabilityMap.entries())
+		.map(([capability, entry]) => ({
+			capability,
+			modelCount: entry.models.size,
+			providerCount: entry.providers.size,
+			providers: Array.from(entry.providers).sort(),
+			modes: Array.from(entry.modes).sort() as ModelMode[],
+			exampleModelId: entry.exampleModelId,
+		}))
+		.sort((a, b) => b.modelCount - a.modelCount || a.capability.localeCompare(b.capability));
 }
 
 /**
  * Pick the default pricing metric for a cheapest-model query.
  */
 export function defaultPricingMetric(options?: CheapestModelOptions): PricingMetric {
-	const effective = (options?.role ? normalizeRoleToken(options.role) : undefined) ?? (options?.capability ? normalizeRoleToken(options.capability) : undefined);
+	const effective =
+		(options?.role ? normalizeRoleToken(options.role) : undefined) ??
+		(options?.capability ? normalizeRoleToken(options.capability) : undefined);
 	if (options?.mode === "embedding" || effective === "embedding") return "input";
-	if (options?.mode === "image" || options?.mode === "video" || effective === "image_generation" || effective === "video_generation") return "output";
+	if (
+		options?.mode === "image" ||
+		options?.mode === "video" ||
+		effective === "image_generation" ||
+		effective === "video_generation"
+	)
+		return "output";
 	if (effective === "web_search" || effective === "maps_search") return "output";
 	if (options?.mode === "audio" && (effective === "speech_to_text" || effective === "text_to_speech")) return "input";
 	return "blended";
@@ -352,7 +435,8 @@ export function computeModelScore(
 	roleOrCapability?: string,
 ): number | undefined {
 	if (!model.pricing) return undefined;
-	if (metric === "input") return Number.isFinite(model.pricing.inputPerMillion) ? model.pricing.inputPerMillion : undefined;
+	if (metric === "input")
+		return Number.isFinite(model.pricing.inputPerMillion) ? model.pricing.inputPerMillion : undefined;
 	const unitOutput = outputUnitScore(model, roleOrCapability);
 	if (metric === "output") {
 		// A unit-priced rate (USD per image / per second / per 1000 requests / per million chars) is
@@ -361,11 +445,7 @@ export function computeModelScore(
 		if (unitOutput !== undefined) return unitOutput;
 		return Number.isFinite(model.pricing.outputPerMillion) ? model.pricing.outputPerMillion : undefined;
 	}
-	if (
-		unitOutput !== undefined &&
-		model.pricing.inputPerMillion === 0 &&
-		model.pricing.outputPerMillion === 0
-	) {
+	if (unitOutput !== undefined && model.pricing.inputPerMillion === 0 && model.pricing.outputPerMillion === 0) {
 		return unitOutput;
 	}
 	return Number.isFinite(model.pricing.inputPerMillion) && Number.isFinite(model.pricing.outputPerMillion)

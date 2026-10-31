@@ -11,8 +11,8 @@
  * @module
  */
 
-import type { CircuitState } from "./resilience.js";
 import type { ProviderObservation, RegistryState } from "./registry-state.js";
+import type { CircuitState } from "./resilience.js";
 import type { CheapestModelMatch, ModelCard } from "./types.js";
 
 /** Selection strategy applied on top of the price-filtered candidate set. */
@@ -56,6 +56,8 @@ export interface RankedRoute {
 	health: RouteHealth;
 	/** Strategy-specific rank key — lower is better. */
 	compositeScore: number;
+	/** The catalog says $0/$0 and nothing confirms it; `price` is null. */
+	priceUnverified?: boolean;
 }
 
 /**
@@ -66,9 +68,8 @@ export function providerRouteHealth(state: RegistryState, providerId: string): R
 	const breakerState = state.healthTracker.breaker(providerId).health().state;
 	const observation = state.providerObservations.get(providerId);
 	const samples = observation?.latenciesMs.length ?? 0;
-	const timeoutRate = observation && observation.attemptCount > 0
-		? observation.timeoutCount / observation.attemptCount
-		: 0;
+	const timeoutRate =
+		observation && observation.attemptCount > 0 ? observation.timeoutCount / observation.attemptCount : 0;
 
 	let reliabilityScore = 1;
 	if (breakerState === "open") reliabilityScore = 0;
@@ -136,6 +137,7 @@ export function rankCandidatesByStrategy(
 		model: row.model,
 		providerId: row.providerId,
 		price: row.price,
+		...(routable[index].priceUnverified ? { priceUnverified: true } : {}),
 		health: row.health,
 		compositeScore: compositeFor(strategy, row, index, {
 			minPrice,
@@ -150,12 +152,13 @@ export function rankCandidatesByStrategy(
 	// ones among otherwise-equal candidates, then price, then model id as a
 	// final tiebreak. Deprecated routes are demoted, not hidden — a cheaper
 	// or faster deprecated route can still win on its composite score.
-	return scored.sort((a, b) =>
-		Number(b.health.available) - Number(a.health.available) ||
-		a.compositeScore - b.compositeScore ||
-		statusDemotionRank(a.model) - statusDemotionRank(b.model) ||
-		(a.price ?? Number.POSITIVE_INFINITY) - (b.price ?? Number.POSITIVE_INFINITY) ||
-		a.model.id.localeCompare(b.model.id),
+	return scored.sort(
+		(a, b) =>
+			Number(b.health.available) - Number(a.health.available) ||
+			a.compositeScore - b.compositeScore ||
+			statusDemotionRank(a.model) - statusDemotionRank(b.model) ||
+			(a.price ?? Number.POSITIVE_INFINITY) - (b.price ?? Number.POSITIVE_INFINITY) ||
+			a.model.id.localeCompare(b.model.id),
 	);
 }
 
@@ -222,7 +225,5 @@ function percentile(values: number[] | undefined, p: number): number | null {
 export function parseRouteStrategy(value: string | undefined | null): RouteStrategy | undefined {
 	if (!value) return undefined;
 	const normalized = value.trim().toLowerCase();
-	return (ROUTE_STRATEGIES as readonly string[]).includes(normalized)
-		? (normalized as RouteStrategy)
-		: undefined;
+	return (ROUTE_STRATEGIES as readonly string[]).includes(normalized) ? (normalized as RouteStrategy) : undefined;
 }

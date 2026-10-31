@@ -334,6 +334,11 @@ export function createServer(
 		if (limitRaw !== undefined && limit === undefined) {
 			return ctx.json({ error: "invalid query parameter", param: "limit", received: limitRaw }, 400);
 		}
+		const minContextRaw = ctx.req.query("minContext");
+		const minContext = parseNumber(minContextRaw);
+		if (minContextRaw !== undefined && minContext === undefined) {
+			return ctx.json({ error: "invalid query parameter", param: "minContext", received: minContextRaw }, 400);
+		}
 		const priceMetricRaw = ctx.req.query("priceMetric");
 		const priceMetric = parsePriceMetric(priceMetricRaw);
 		if (priceMetricRaw !== undefined && priceMetric === undefined) {
@@ -381,6 +386,7 @@ export function createServer(
 			inputWeight,
 			outputWeight,
 			includeUnpriced: includeUnpricedRaw === "true",
+			minContextWindow: minContext,
 		};
 
 		const result = registry.cheapestModels(options);

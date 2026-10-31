@@ -45,10 +45,12 @@ import {
 	actualCostFromUsage,
 	appendLedgerEntry,
 	estimateRequestCost,
+	ledgerWritable,
 	readMonthlyBudgetUsd,
 	readSpendForMonth,
 	readTenantBudgetUsd,
 } from "./cost.js";
+import { isUnverifiedZeroPrice } from "./price-trust.js";
 import {
 	getProviderDescriptor,
 	listProviderDescriptors,
@@ -262,18 +264,6 @@ function isForwardable(model: ModelCard): boolean {
 	return false; // cloud-sdk (bedrock, vertex) needs per-SDK translation
 }
 
-/**
- * True when the card says input and output are both free, but nothing other
- * than a catalog vouches for it. OpenRouter's `:free` ids are the exception:
- * the provider bills by id, so a `:free` route costs nothing whatever the
- * catalog says.
- */
-function isUnverifiedZeroPrice(model: ModelCard): boolean {
-	const pricing = model.pricing;
-	if (pricing?.inputPerMillion !== 0 || pricing.outputPerMillion !== 0) return false;
-	return !(model.provider === "openrouter" && model.id.endsWith(":free"));
-}
-
 function isExecutableRoute(registry: ModelRegistry, model: ModelCard): boolean {
 	if (!isForwardable(model)) return false;
 	const descriptor = getProviderDescriptor(model.provider);
@@ -292,28 +282,28 @@ function isExecutableRoute(registry: ModelRegistry, model: ModelCard): boolean {
 function resolveProxyCandidates(registry: ModelRegistry, requested: string): ModelCard[] {
 	const hint = parseKoshaHint(requested);
 	if (hint !== null) {
+		// Context and forwardability filter the candidates before the cut to 20.
+		// Filtering after it left nothing whenever the 20 cheapest failed them,
+		// and in 1.10.0 those were all catalog $0 routes.
 		const ranked = registry.rankedRoutes(
 			{
 				mode: "chat",
 				capability: hint.capability,
 				provider: hint.provider,
+				minContextWindow: hint.minContext ?? undefined,
+				where: (model) => isExecutableRoute(registry, model) || isForwardable(model),
 				limit: 20,
 			},
 			hint.strategy,
 		);
-		const filtered = hint.minContext
-			? ranked.filter((r) => r.model.contextWindow >= (hint.minContext as number))
-			: ranked;
-		const exec = filtered.filter((r) => isExecutableRoute(registry, r.model)).map((r) => r.model);
-		const fwd = filtered
+		const exec = ranked.filter((r) => isExecutableRoute(registry, r.model)).map((r) => r.model);
+		const fwd = ranked
 			.filter((r) => isForwardable(r.model) && !isExecutableRoute(registry, r.model))
 			.map((r) => r.model);
 		// A catalog-only $0 would otherwise top every price ranking; the real
 		// bill would be whatever the provider charges. Try those routes last.
 		const ordered = dedupeModels([...exec, ...fwd]);
-		const trusted = ordered.filter(
-			(m) => !isUnverifiedZeroPrice(m) || getProviderDescriptor(m.provider)?.isLocal === true,
-		);
+		const trusted = ordered.filter((m) => !isUnverifiedZeroPrice(m));
 		const unverified = ordered.filter((m) => !trusted.includes(m));
 		return [...trusted, ...unverified];
 	}
@@ -491,6 +481,21 @@ function observeOpenAIStreamUsage(upstream: ReadableStream<Uint8Array>): {
 // ---------------------------------------------------------------------------
 
 export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdownSignal?: AbortSignal): void {
+	// Set when a spend row fails to reach the ledger. Budgets are enforced
+	// against the ledger, so while this is set budgeted requests are refused,
+	// like a failed read. Cleared once the ledger is writable again.
+	let ledgerWriteFailure: string | null = null;
+	const noteLedgerWrite = (write: Promise<void>): void => {
+		write.then(
+			() => {
+				ledgerWriteFailure = null;
+			},
+			(err: unknown) => {
+				ledgerWriteFailure = err instanceof Error ? err.message : String(err);
+				console.error("kosha: ledger write failed:", ledgerWriteFailure);
+			},
+		);
+	};
 	// OpenAI-compatible model list — returns all models the proxy can forward.
 	// Required for SDK compatibility: OpenAI clients call this before chat requests.
 	app.get("/proxy/v1/models", (ctx) => {
@@ -565,9 +570,19 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 		// tenant tag per request. A per-tenant cap is an additional gate.
 		const budget = readMonthlyBudgetUsd();
 		const tenantBudget = tenant ? readTenantBudgetUsd() : null;
+		let spent = 0;
+		let tenantSpent = 0;
 		if (budget !== null || tenantBudget !== null) {
-			let spent = 0;
-			let tenantSpent = 0;
+			if (ledgerWriteFailure !== null && !(await ledgerWritable())) {
+				return ctx.json(
+					{
+						error: "budget enforcement unavailable — spend could not be written to the ledger",
+						budgetUsd: budget ?? tenantBudget,
+					},
+					503,
+				);
+			}
+			ledgerWriteFailure = null;
 			try {
 				if (budget !== null) spent = await readSpendForMonth(Date.now());
 				if (tenantBudget !== null) tenantSpent = await readSpendForMonth(Date.now(), tenant);
@@ -620,6 +635,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 		let sawCredentialedRoute = false;
 		let lastUnsupportedWire: string | null = null;
 		let skippedUnpriced = false;
+		let skippedOverBudget = false;
 		const wantsStream = body.stream === true;
 		const includeUsage =
 			wantsStream && (body.stream_options as { include_usage?: unknown } | undefined)?.include_usage === true;
@@ -662,6 +678,18 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			) {
 				attemptChain.push(`${model.provider}:unpriced`);
 				skippedUnpriced = true;
+				continue;
+			}
+			// The gate above only knows the cap isn't reached yet. A request
+			// whose own estimate would cross it is refused here, per route, so a
+			// cheaper route can still take it.
+			const routeEstimate = estimateRequestCost(model, body)?.estimatedUsd ?? 0;
+			if (
+				(budget !== null && spent + routeEstimate > budget) ||
+				(tenantBudget !== null && tenantSpent + routeEstimate > tenantBudget)
+			) {
+				attemptChain.push(`${model.provider}:over-budget`);
+				skippedOverBudget = true;
 				continue;
 			}
 			const usesAnthropicWire = model.provider === "anthropic";
@@ -823,54 +851,58 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			// separate `adjustment` row carrying the delta.
 			const recordSpend = (actual: ActualUsageCost | null): void => {
 				if (!estimate || !upstreamOk) return;
-				appendLedgerEntry({
-					ts: Date.now(),
-					provider: model.provider,
-					modelId: model.id,
-					requested: safeRequested,
-					tenant,
-					estimatedUsd: estimate.estimatedUsd,
-					estimatedInputTokens: estimate.inputTokens,
-					estimatedOutputTokens: estimate.expectedOutputTokens,
-					upstreamStatus,
-					kind: "request",
-					requestId,
-					...(actual
-						? {
-								actualUsd: actual.usd,
-								actualInputTokens: actual.inputTokens,
-								actualOutputTokens: actual.outputTokens,
-								cacheReadTokens: actual.cacheReadTokens,
-								cacheWriteTokens: actual.cacheWriteTokens,
-								usageSource: "upstream" as const,
-							}
-						: { usageSource: "estimate" as const }),
-				}).catch(() => {});
+				noteLedgerWrite(
+					appendLedgerEntry({
+						ts: Date.now(),
+						provider: model.provider,
+						modelId: model.id,
+						requested: safeRequested,
+						tenant,
+						estimatedUsd: estimate.estimatedUsd,
+						estimatedInputTokens: estimate.inputTokens,
+						estimatedOutputTokens: estimate.expectedOutputTokens,
+						upstreamStatus,
+						kind: "request",
+						requestId,
+						...(actual
+							? {
+									actualUsd: actual.usd,
+									actualInputTokens: actual.inputTokens,
+									actualOutputTokens: actual.outputTokens,
+									cacheReadTokens: actual.cacheReadTokens,
+									cacheWriteTokens: actual.cacheWriteTokens,
+									usageSource: "upstream" as const,
+								}
+							: { usageSource: "estimate" as const }),
+					}),
+				);
 			};
 			const recordAdjustment = (actual: ActualUsageCost | null): void => {
 				if (!estimate || !upstreamOk || !actual) return;
-				appendLedgerEntry({
-					ts: Date.now(),
-					provider: model.provider,
-					modelId: model.id,
-					requested: safeRequested,
-					tenant,
-					estimatedUsd: 0,
-					estimatedInputTokens: 0,
-					estimatedOutputTokens: 0,
-					upstreamStatus,
-					kind: "adjustment",
-					requestId,
-					adjustmentUsd: actual.usd - estimate.estimatedUsd,
-					adjustmentInputTokens: actual.inputTokens - estimate.inputTokens,
-					adjustmentOutputTokens: actual.outputTokens - estimate.expectedOutputTokens,
-					actualUsd: actual.usd,
-					actualInputTokens: actual.inputTokens,
-					actualOutputTokens: actual.outputTokens,
-					cacheReadTokens: actual.cacheReadTokens,
-					cacheWriteTokens: actual.cacheWriteTokens,
-					usageSource: "upstream",
-				}).catch(() => {});
+				noteLedgerWrite(
+					appendLedgerEntry({
+						ts: Date.now(),
+						provider: model.provider,
+						modelId: model.id,
+						requested: safeRequested,
+						tenant,
+						estimatedUsd: 0,
+						estimatedInputTokens: 0,
+						estimatedOutputTokens: 0,
+						upstreamStatus,
+						kind: "adjustment",
+						requestId,
+						adjustmentUsd: actual.usd - estimate.estimatedUsd,
+						adjustmentInputTokens: actual.inputTokens - estimate.inputTokens,
+						adjustmentOutputTokens: actual.outputTokens - estimate.expectedOutputTokens,
+						actualUsd: actual.usd,
+						actualInputTokens: actual.inputTokens,
+						actualOutputTokens: actual.outputTokens,
+						cacheReadTokens: actual.cacheReadTokens,
+						cacheWriteTokens: actual.cacheWriteTokens,
+						usageSource: "upstream",
+					}),
+				);
 			};
 			const reflectActual = (actual: ActualUsageCost | null): void => {
 				if (actual) {
@@ -1015,6 +1047,17 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 					attemptChain,
 				},
 				422,
+			);
+		}
+		if (skippedOverBudget && fetchAttempts === 0) {
+			return ctx.json(
+				{
+					error: "this request would exceed the monthly budget",
+					spentUsd: spent,
+					budgetUsd: budget ?? tenantBudget,
+					attemptChain,
+				},
+				429,
 			);
 		}
 		if (skippedUnpriced && fetchAttempts === 0) {

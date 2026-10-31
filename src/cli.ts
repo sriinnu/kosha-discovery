@@ -26,6 +26,7 @@ import {
 	cmdList,
 	cmdModel,
 	cmdProviders,
+	cmdRanked,
 	cmdRefresh,
 	cmdResolve,
 	cmdRoles,
@@ -172,6 +173,10 @@ async function main(): Promise<void> {
 
 		case "cheapest":
 			await cmdCheapest(registry, flags);
+			break;
+
+		case "ranked":
+			await cmdRanked(registry, flags);
 			break;
 
 		case "model":
