@@ -16,7 +16,7 @@
  */
 
 import { randomBytes } from "crypto";
-import { appendFile, mkdir, open, readdir, readFile, rename, unlink, writeFile } from "fs/promises";
+import { appendFile, mkdir, readdir, readFile, rename, unlink, writeFile } from "fs/promises";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
 import { normalizeTokenUsage } from "./tally.js";
@@ -463,23 +463,6 @@ export async function appendLedgerEntry(entry: LedgerEntry, ledgerPath = current
 		await trimLedgerPartitions(ledgerPath, entry.ts);
 	} catch {
 		// swallowed
-	}
-}
-
-/**
- * Can the ledger be appended to right now? Opens this month's partition for
- * append (creating it if missing) without writing anything. Used to clear
- * the proxy's "ledger write failed" latch once the disk or permissions are
- * fixed.
- */
-export async function ledgerWritable(ledgerPath = currentLedgerPath(), nowMs = Date.now()): Promise<boolean> {
-	try {
-		await mkdir(dirname(ledgerPath), { recursive: true, mode: 0o700 });
-		const handle = await open(partitionPathFor(ledgerPath, nowMs), "a", 0o600);
-		await handle.close();
-		return true;
-	} catch {
-		return false;
 	}
 }
 

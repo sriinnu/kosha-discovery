@@ -39,13 +39,13 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { Hono } from "hono";
+import type { Context, Hono } from "hono";
 import {
 	type ActualUsageCost,
 	actualCostFromUsage,
 	appendLedgerEntry,
 	estimateRequestCost,
-	ledgerWritable,
+	type LedgerEntry,
 	readMonthlyBudgetUsd,
 	readSpendForMonth,
 	readTenantBudgetUsd,
@@ -285,20 +285,23 @@ function resolveProxyCandidates(registry: ModelRegistry, requested: string): Mod
 		// Context and forwardability filter the candidates before the cut to 20.
 		// Filtering after it left nothing whenever the 20 cheapest failed them,
 		// and in 1.10.0 those were all catalog $0 routes.
-		const ranked = registry.rankedRoutes(
-			{
-				mode: "chat",
-				capability: hint.capability,
-				provider: hint.provider,
-				minContextWindow: hint.minContext ?? undefined,
-				where: (model) => isExecutableRoute(registry, model) || isForwardable(model),
-				limit: 20,
-			},
-			hint.strategy,
-		);
-		const exec = ranked.filter((r) => isExecutableRoute(registry, r.model)).map((r) => r.model);
-		const fwd = ranked
-			.filter((r) => isForwardable(r.model) && !isExecutableRoute(registry, r.model))
+		// Routes with credentials and routes without get their own cut, so 20
+		// cheaper routes we can't call never push out one we can.
+		const query = {
+			mode: "chat" as const,
+			capability: hint.capability,
+			provider: hint.provider,
+			minContextWindow: hint.minContext ?? undefined,
+			limit: 20,
+		};
+		const exec = registry
+			.rankedRoutes({ ...query, where: (model) => isExecutableRoute(registry, model) }, hint.strategy)
+			.map((r) => r.model);
+		const fwd = registry
+			.rankedRoutes(
+				{ ...query, where: (model) => isForwardable(model) && !isExecutableRoute(registry, model) },
+				hint.strategy,
+			)
 			.map((r) => r.model);
 		// A catalog-only $0 would otherwise top every price ranking; the real
 		// bill would be whatever the provider charges. Try those routes last.
@@ -481,21 +484,59 @@ function observeOpenAIStreamUsage(upstream: ReadableStream<Uint8Array>): {
 // ---------------------------------------------------------------------------
 
 export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdownSignal?: AbortSignal): void {
-	// Set when a spend row fails to reach the ledger. Budgets are enforced
-	// against the ledger, so while this is set budgeted requests are refused,
-	// like a failed read. Cleared once the ledger is writable again.
-	let ledgerWriteFailure: string | null = null;
-	const noteLedgerWrite = (write: Promise<void>): void => {
-		write.then(
-			() => {
-				ledgerWriteFailure = null;
-			},
-			(err: unknown) => {
-				ledgerWriteFailure = err instanceof Error ? err.message : String(err);
-				console.error("kosha: ledger write failed:", ledgerWriteFailure);
-			},
-		);
+	// Spend rows that didn't reach the ledger. Budgets are enforced against
+	// the ledger, so while any are held, budgeted requests are refused, like a
+	// failed read. Each budgeted request first writes the held rows again, in
+	// order, to their real partition files; only when all of them land does it
+	// go ahead. A probe file beside the ledger can't prove that (a read-only
+	// partition in a writable directory passes it), and the lost spend would
+	// never be counted.
+	const unwrittenRows: LedgerEntry[] = [];
+	let replaying: Promise<boolean> | null = null;
+	const writeLedgerRow = (entry: LedgerEntry): Promise<void> =>
+		appendLedgerEntry(entry).catch((err: unknown) => {
+			unwrittenRows.push(entry);
+			console.error("kosha: ledger write failed:", err instanceof Error ? err.message : String(err));
+		});
+	const ledgerCaughtUp = (): Promise<boolean> => {
+		if (unwrittenRows.length === 0) return Promise.resolve(true);
+		// One replay at a time, so concurrent requests don't write a row twice.
+		replaying ??= (async () => {
+			try {
+				while (unwrittenRows.length > 0) {
+					await appendLedgerEntry(unwrittenRows[0]);
+					unwrittenRows.shift();
+				}
+				return true;
+			} catch {
+				return false;
+			} finally {
+				replaying = null;
+			}
+		})();
+		return replaying;
 	};
+	// Estimates of requests cleared to go upstream whose ledger rows haven't
+	// landed yet. The budget check counts them, so concurrent requests can't
+	// all pass against the same committed spend. In-process only: two proxy
+	// processes sharing one ledger can still overshoot by their in-flight work.
+	let reservedUsd = 0;
+	const reservedByTenant = new Map<string, number>();
+	const reserve = (usd: number, tenant: string | null): (() => void) => {
+		reservedUsd += usd;
+		if (tenant) reservedByTenant.set(tenant, (reservedByTenant.get(tenant) ?? 0) + usd);
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			reservedUsd = Math.max(0, reservedUsd - usd);
+			if (!tenant) return;
+			const left = (reservedByTenant.get(tenant) ?? 0) - usd;
+			if (left > 1e-12) reservedByTenant.set(tenant, left);
+			else reservedByTenant.delete(tenant);
+		};
+	};
+
 	// OpenAI-compatible model list — returns all models the proxy can forward.
 	// Required for SDK compatibility: OpenAI clients call this before chat requests.
 	app.get("/proxy/v1/models", (ctx) => {
@@ -511,7 +552,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 		});
 	});
 
-	app.post("/proxy/v1/chat/completions", async (ctx) => {
+	const handleChat = async (ctx: Context, hold: SpendHold): Promise<Response> => {
 		// ── Parse request ──────────────────────────────────────────────
 		let body: Record<string, unknown>;
 		try {
@@ -573,7 +614,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 		let spent = 0;
 		let tenantSpent = 0;
 		if (budget !== null || tenantBudget !== null) {
-			if (ledgerWriteFailure !== null && !(await ledgerWritable())) {
+			if (!(await ledgerCaughtUp())) {
 				return ctx.json(
 					{
 						error: "budget enforcement unavailable — spend could not be written to the ledger",
@@ -582,7 +623,6 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 					503,
 				);
 			}
-			ledgerWriteFailure = null;
 			try {
 				if (budget !== null) spent = await readSpendForMonth(Date.now());
 				if (tenantBudget !== null) tenantSpent = await readSpendForMonth(Date.now(), tenant);
@@ -635,7 +675,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 		let sawCredentialedRoute = false;
 		let lastUnsupportedWire: string | null = null;
 		let skippedUnpriced = false;
-		let skippedOverBudget = false;
+		let overBudgetCap: "global" | "tenant" | null = null;
 		const wantsStream = body.stream === true;
 		const includeUsage =
 			wantsStream && (body.stream_options as { include_usage?: unknown } | undefined)?.include_usage === true;
@@ -684,14 +724,17 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			// whose own estimate would cross it is refused here, per route, so a
 			// cheaper route can still take it.
 			const routeEstimate = estimateRequestCost(model, body)?.estimatedUsd ?? 0;
-			if (
-				(budget !== null && spent + routeEstimate > budget) ||
-				(tenantBudget !== null && tenantSpent + routeEstimate > tenantBudget)
-			) {
+			const tenantReserved = tenant ? (reservedByTenant.get(tenant) ?? 0) : 0;
+			const overGlobal = budget !== null && spent + reservedUsd + routeEstimate > budget;
+			const overTenant = tenantBudget !== null && tenantSpent + tenantReserved + routeEstimate > tenantBudget;
+			if (overGlobal || overTenant) {
 				attemptChain.push(`${model.provider}:over-budget`);
-				skippedOverBudget = true;
+				overBudgetCap ??= overGlobal ? "global" : "tenant";
 				continue;
 			}
+			// Held until this request's ledger row lands; a failover swaps it.
+			hold.release?.();
+			hold.release = reserve(routeEstimate, tenant);
 			const usesAnthropicWire = model.provider === "anthropic";
 			const upstreamHeaders: Record<string, string> = { "content-type": "application/json" };
 			let upstreamBody: string;
@@ -851,58 +894,54 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			// separate `adjustment` row carrying the delta.
 			const recordSpend = (actual: ActualUsageCost | null): void => {
 				if (!estimate || !upstreamOk) return;
-				noteLedgerWrite(
-					appendLedgerEntry({
-						ts: Date.now(),
-						provider: model.provider,
-						modelId: model.id,
-						requested: safeRequested,
-						tenant,
-						estimatedUsd: estimate.estimatedUsd,
-						estimatedInputTokens: estimate.inputTokens,
-						estimatedOutputTokens: estimate.expectedOutputTokens,
-						upstreamStatus,
-						kind: "request",
-						requestId,
-						...(actual
-							? {
-									actualUsd: actual.usd,
-									actualInputTokens: actual.inputTokens,
-									actualOutputTokens: actual.outputTokens,
-									cacheReadTokens: actual.cacheReadTokens,
-									cacheWriteTokens: actual.cacheWriteTokens,
-									usageSource: "upstream" as const,
-								}
-							: { usageSource: "estimate" as const }),
-					}),
-				);
+				hold.write = writeLedgerRow({
+					ts: Date.now(),
+					provider: model.provider,
+					modelId: model.id,
+					requested: safeRequested,
+					tenant,
+					estimatedUsd: estimate.estimatedUsd,
+					estimatedInputTokens: estimate.inputTokens,
+					estimatedOutputTokens: estimate.expectedOutputTokens,
+					upstreamStatus,
+					kind: "request",
+					requestId,
+					...(actual
+						? {
+								actualUsd: actual.usd,
+								actualInputTokens: actual.inputTokens,
+								actualOutputTokens: actual.outputTokens,
+								cacheReadTokens: actual.cacheReadTokens,
+								cacheWriteTokens: actual.cacheWriteTokens,
+								usageSource: "upstream" as const,
+							}
+						: { usageSource: "estimate" as const }),
+				});
 			};
 			const recordAdjustment = (actual: ActualUsageCost | null): void => {
 				if (!estimate || !upstreamOk || !actual) return;
-				noteLedgerWrite(
-					appendLedgerEntry({
-						ts: Date.now(),
-						provider: model.provider,
-						modelId: model.id,
-						requested: safeRequested,
-						tenant,
-						estimatedUsd: 0,
-						estimatedInputTokens: 0,
-						estimatedOutputTokens: 0,
-						upstreamStatus,
-						kind: "adjustment",
-						requestId,
-						adjustmentUsd: actual.usd - estimate.estimatedUsd,
-						adjustmentInputTokens: actual.inputTokens - estimate.inputTokens,
-						adjustmentOutputTokens: actual.outputTokens - estimate.expectedOutputTokens,
-						actualUsd: actual.usd,
-						actualInputTokens: actual.inputTokens,
-						actualOutputTokens: actual.outputTokens,
-						cacheReadTokens: actual.cacheReadTokens,
-						cacheWriteTokens: actual.cacheWriteTokens,
-						usageSource: "upstream",
-					}),
-				);
+				void writeLedgerRow({
+					ts: Date.now(),
+					provider: model.provider,
+					modelId: model.id,
+					requested: safeRequested,
+					tenant,
+					estimatedUsd: 0,
+					estimatedInputTokens: 0,
+					estimatedOutputTokens: 0,
+					upstreamStatus,
+					kind: "adjustment",
+					requestId,
+					adjustmentUsd: actual.usd - estimate.estimatedUsd,
+					adjustmentInputTokens: actual.inputTokens - estimate.inputTokens,
+					adjustmentOutputTokens: actual.outputTokens - estimate.expectedOutputTokens,
+					actualUsd: actual.usd,
+					actualInputTokens: actual.inputTokens,
+					actualOutputTokens: actual.outputTokens,
+					cacheReadTokens: actual.cacheReadTokens,
+					cacheWriteTokens: actual.cacheWriteTokens,
+					usageSource: "upstream",
+				});
 			};
 			const reflectActual = (actual: ActualUsageCost | null): void => {
 				if (actual) {
@@ -1049,15 +1088,26 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 				422,
 			);
 		}
-		if (skippedOverBudget && fetchAttempts === 0) {
+		if (overBudgetCap !== null && fetchAttempts === 0) {
+			// Report the cap that refused it, with the same headers as the other 429s.
+			const tenantCap = overBudgetCap === "tenant";
+			const capUsd = (tenantCap ? tenantBudget : budget) as number;
+			const capSpent = tenantCap ? tenantSpent : spent;
 			return ctx.json(
 				{
-					error: "this request would exceed the monthly budget",
-					spentUsd: spent,
-					budgetUsd: budget ?? tenantBudget,
+					error: tenantCap
+						? "this request would exceed the tenant monthly budget"
+						: "this request would exceed the monthly budget",
+					...(tenantCap ? { tenant } : {}),
+					spentUsd: capSpent,
+					budgetUsd: capUsd,
 					attemptChain,
 				},
 				429,
+				{
+					"x-kosha-budget-remaining-usd": Math.max(0, capUsd - capSpent).toFixed(4),
+					"x-kosha-budget-usd": capUsd.toFixed(2),
+				},
 			);
 		}
 		if (skippedUnpriced && fetchAttempts === 0) {
@@ -1071,5 +1121,26 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			);
 		}
 		return ctx.json({ error: "all upstream providers failed", attemptChain }, 502);
+	};
+
+	app.post("/proxy/v1/chat/completions", async (ctx) => {
+		const hold: SpendHold = { release: null, write: null };
+		try {
+			return await handleChat(ctx, hold);
+		} finally {
+			// Release the budget hold once the spend it stood for is in the
+			// ledger (or held for replay, which blocks budgeted requests anyway).
+			const release = hold.release;
+			if (release) {
+				if (hold.write) void hold.write.finally(release);
+				else release();
+			}
+		}
 	});
+}
+
+/** A request's claim on the budget while it is in flight. */
+interface SpendHold {
+	release: (() => void) | null;
+	write: Promise<void> | null;
 }

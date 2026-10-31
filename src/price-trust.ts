@@ -1,49 +1,36 @@
 /**
  * kosha-discovery — Which prices kosha can trust.
  *
- * Most prices come from community catalogs. A $0/$0 price there is either a
- * genuinely free model or a mistake (or a poisoned entry), and nothing in the
- * card tells the two apart. Every ranking surface treats such a price as
- * unknown, so it can never come out "cheapest" by default.
+ * Most prices come from community catalogs. A $0 token price there is either
+ * a genuinely free model or a mistake (or a poisoned entry), and nothing in
+ * the card tells the two apart. The proxy, which costs chat by tokens,
+ * refuses such a route under a budget, and every ranking puts a $0 score
+ * built on it after the priced ones, so it can never come out "cheapest".
  * @module
  */
 
 import { getProviderDescriptor } from "./provider-catalog.js";
-import type { ModelCard, ModelPricing } from "./types.js";
-
-/** Rates billed in a unit other than text tokens. */
-const OTHER_UNIT_RATES = [
-	"imageInputPerImage",
-	"imageOutputPerImage",
-	"audioInputPerMillion",
-	"audioOutputPerMillion",
-	"audioInputPerSecond",
-	"audioOutputPerSecond",
-	"videoInputPerSecond",
-	"videoOutputPerSecond",
-	"videoInputPerMillion",
-	"webSearchPerThousandRequests",
-	"mapsSearchPerThousandRequests",
-	"requestPerThousand",
-	"inputPerMillionCharacters",
-	"outputPerMillionCharacters",
-] as const satisfies readonly (keyof ModelPricing)[];
+import type { ModelCard } from "./types.js";
 
 /**
- * True when text input and output are $0, no rate in another unit is set,
- * and nothing other than a catalog vouches for it. Two exceptions are real
- * $0: local runtimes (you run them), and OpenRouter `:free` ids (the provider
- * bills by id, so a `:free` route costs nothing whatever the catalog says).
+ * True when input and output tokens are both $0 and nothing other than a
+ * catalog vouches for it. Two exceptions are real $0: local runtimes (you run
+ * them), and OpenRouter `:free` ids (the provider bills by id, so a `:free`
+ * route costs nothing whatever the catalog says).
+ *
+ * A provider's own API doesn't vouch for $0 either: some adapters fill a
+ * token rate the API left out with 0 (Vercel's does), so a live $0 can be
+ * an unknown too.
+ *
+ * Only token rates count. The proxy estimates and records chat spend from
+ * them alone, so an image or cache rate beside $0 tokens (a cache rate like
+ * that was seen live on gemini-exp-1206) would still pass a budget as free.
+ * Rankings judge per-image or per-second models by the score for the
+ * query instead (see registryCheapestModels).
  */
 export function isUnverifiedZeroPrice(model: ModelCard): boolean {
 	const pricing = model.pricing;
 	if (pricing?.inputPerMillion !== 0 || pricing.outputPerMillion !== 0) return false;
-	// Video, image, audio and search models show $0 per token and bill per
-	// second, per image or per call; a positive rate in one of those units is
-	// a real price. Cache, batch and long-context rates don't count: they are
-	// discounts or surcharges on the token price, so a positive cache rate
-	// beside $0 input (seen live on gemini-exp-1206) is a catalog error.
-	if (OTHER_UNIT_RATES.some((key) => (pricing[key] ?? 0) > 0)) return false;
 	if (model.provider === "openrouter" && model.id.endsWith(":free")) return false;
 	return getProviderDescriptor(model.provider)?.isLocal !== true;
 }

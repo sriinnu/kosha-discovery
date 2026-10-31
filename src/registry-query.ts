@@ -265,11 +265,6 @@ export function registryCheapestModels(state: RegistryState, options?: CheapestM
 	const unpriced: CheapestModelMatch[] = [];
 
 	for (const model of candidates) {
-		// A catalog-only $0 is an unknown price, not the cheapest one.
-		if (isUnverifiedZeroPrice(model)) {
-			if (options?.includeUnpriced) unverified.push({ model, score: undefined, priceMetric, priceUnverified: true });
-			continue;
-		}
 		const score = computeModelScore(
 			model,
 			priceMetric,
@@ -279,6 +274,13 @@ export function registryCheapestModels(state: RegistryState, options?: CheapestM
 		);
 		if (score === undefined) {
 			if (options?.includeUnpriced) unpriced.push({ model, score: undefined, priceMetric });
+			continue;
+		}
+		// A $0 score built on a catalog-only $0 token price is an unknown
+		// price, not the cheapest one. A per-image or per-second rate that
+		// scores above $0 for this query is a real price and ranks as one.
+		if (score === 0 && isUnverifiedZeroPrice(model)) {
+			if (options?.includeUnpriced) unverified.push({ model, score: undefined, priceMetric, priceUnverified: true });
 			continue;
 		}
 		ranked.push({ model, score, priceMetric });
@@ -435,8 +437,15 @@ export function computeModelScore(
 	roleOrCapability?: string,
 ): number | undefined {
 	if (!model.pricing) return undefined;
-	if (metric === "input")
+	if (metric === "input") {
+		// A speech or TTS model can carry $0 tokens beside its real per-second
+		// or per-character rate; that rate is its price for the query.
+		const unitInput = inputUnitScore(model, roleOrCapability);
+		if (unitInput !== undefined && model.pricing.inputPerMillion === 0 && model.pricing.outputPerMillion === 0) {
+			return unitInput;
+		}
 		return Number.isFinite(model.pricing.inputPerMillion) ? model.pricing.inputPerMillion : undefined;
+	}
 	const unitOutput = outputUnitScore(model, roleOrCapability);
 	if (metric === "output") {
 		// A unit-priced rate (USD per image / per second / per 1000 requests / per million chars) is
@@ -451,6 +460,16 @@ export function computeModelScore(
 	return Number.isFinite(model.pricing.inputPerMillion) && Number.isFinite(model.pricing.outputPerMillion)
 		? model.pricing.inputPerMillion * inputWeight + model.pricing.outputPerMillion * outputWeight
 		: undefined;
+}
+
+function inputUnitScore(model: ModelCard, roleOrCapability?: string): number | undefined {
+	const pricing = model.pricing;
+	if (!pricing) return undefined;
+	const role = roleOrCapability ? normalizeRoleToken(roleOrCapability) : undefined;
+	if (role === "speech_to_text") return pricing.audioInputPerSecond;
+	if (role === "text_to_speech")
+		return pricing.inputPerMillionCharacters ?? pricing.audioOutputPerSecond ?? pricing.outputPerMillionCharacters;
+	return undefined;
 }
 
 function outputUnitScore(model: ModelCard, roleOrCapability?: string): number | undefined {

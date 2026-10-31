@@ -147,14 +147,16 @@ export function rankCandidatesByStrategy(
 		}),
 	}));
 
-	// Stable, deterministic ordering: available providers first, then the
-	// strategy score, then deprecated models are pushed behind active/preview
+	// Stable, deterministic ordering: available providers first, then routes
+	// with a known price before catalog-$0 ones (whatever the strategy), then
+	// the strategy score, then deprecated models are pushed behind active/preview
 	// ones among otherwise-equal candidates, then price, then model id as a
 	// final tiebreak. Deprecated routes are demoted, not hidden — a cheaper
 	// or faster deprecated route can still win on its composite score.
 	return scored.sort(
 		(a, b) =>
 			Number(b.health.available) - Number(a.health.available) ||
+			Number(a.priceUnverified === true) - Number(b.priceUnverified === true) ||
 			a.compositeScore - b.compositeScore ||
 			statusDemotionRank(a.model) - statusDemotionRank(b.model) ||
 			(a.price ?? Number.POSITIVE_INFINITY) - (b.price ?? Number.POSITIVE_INFINITY) ||

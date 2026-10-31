@@ -33,6 +33,7 @@ import {
 import {
 	modelRoles,
 	modelSupportsRole,
+	normalizeLimit,
 	normalizeRoleToken,
 	registryCapabilities,
 	registryCheapestModels,
@@ -237,8 +238,14 @@ export class ModelRegistry {
 	 * sort last, which is what makes this usable as a failover order.
 	 */
 	rankedRoutes(options?: CheapestModelOptions, strategy: RouteStrategy = "cheapest"): RankedRoute[] {
-		const result = registryCheapestModels(this.state, { includeUnpriced: true, ...options });
-		return rankCandidatesByStrategy(this.state, result.matches, strategy);
+		// The strategy ranks the whole pool and the limit cuts after it; cutting
+		// by price first would hand "fastest" only the cheapest few.
+		const result = registryCheapestModels(this.state, {
+			includeUnpriced: true,
+			...options,
+			limit: Number.MAX_SAFE_INTEGER,
+		});
+		return rankCandidatesByStrategy(this.state, result.matches, strategy).slice(0, normalizeLimit(options?.limit));
 	}
 
 	/** Read-only runtime health for one provider (breaker state, latency, reliability). */

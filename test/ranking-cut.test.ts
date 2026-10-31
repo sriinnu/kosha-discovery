@@ -7,11 +7,12 @@
  * limit the code uses, so filtering after the cut can't pass them.
  */
 
-import { chmod, mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleJsonRpc, type McpDeps } from "../src/mcp-server.js";
+import { isUnverifiedZeroPrice } from "../src/price-trust.js";
 import { ModelRegistry } from "../src/registry.js";
 import { createServer } from "../src/server.js";
 import type { ModelCard, ProviderInfo } from "../src/types.js";
@@ -71,17 +72,13 @@ function catalog(): ModelCard[] {
 	];
 }
 
-function registry(models = catalog()): ModelRegistry {
-	const provider: ProviderInfo = {
-		id: "groq",
-		name: "groq",
-		baseUrl: "https://api.groq.com/openai/v1",
-		authenticated: true,
-		credentialSource: "env",
-		models,
-		lastRefreshed: Date.now(),
-	};
-	return ModelRegistry.fromJSON({ providers: [provider], aliases: {}, discoveredAt: Date.now() });
+function provider(id: string, models: ModelCard[], authenticated = true): ProviderInfo {
+	return { id, name: id, baseUrl: "", authenticated, credentialSource: "env", models, lastRefreshed: Date.now() };
+}
+
+function registry(models = catalog(), ...others: ProviderInfo[]): ModelRegistry {
+	const groq = { ...provider("groq", models), baseUrl: "https://api.groq.com/openai/v1" };
+	return ModelRegistry.fromJSON({ providers: [groq, ...others], aliases: {}, discoveredAt: Date.now() });
 }
 
 async function mcp(reg: ModelRegistry, name: string, args: Record<string, unknown>) {
@@ -147,6 +144,34 @@ describe("the shared ranking", () => {
 			card("qwen3:8b", "ollama", { pricing: zero }),
 		]);
 		expect(reg.cheapestModels({ mode: "chat", limit: 1 }).matches[0].model.id).toBe("qwen3:8b");
+		expect(isUnverifiedZeroPrice(card("meta/llama:free", "openrouter", { pricing: zero }))).toBe(false);
+		expect(isUnverifiedZeroPrice(card("meta/llama", "openrouter", { pricing: zero }))).toBe(true);
+	});
+
+	it("scores a speech model by its per-second rate, not its $0 tokens", () => {
+		const stt = card("whisper", "groq", {
+			mode: "audio",
+			capabilities: ["speech_to_text"],
+			pricing: { ...zero, audioInputPerSecond: 0.006 },
+		});
+		const match = registry([stt]).cheapestModels({ mode: "audio", role: "speech_to_text", limit: 1 }).matches[0];
+		expect(match).toMatchObject({ score: 0.006 });
+	});
+
+	it("ranks by the strategy before the limit, and keeps catalog $0 behind priced routes", () => {
+		const reg = registry(
+			[card("slow-cheap", "groq", { pricing: { inputPerMillion: 1, outputPerMillion: 1 } })],
+			provider("openrouter", [
+				card("fast-dear", "openrouter", { pricing: { inputPerMillion: 5, outputPerMillion: 5 } }),
+			]),
+			provider("fireworks", [card("fastest-free-lunch", "fireworks", { pricing: zero })]),
+		);
+		for (let i = 0; i < 5; i++) {
+			reg.recordProxyOutcome("groq", { ok: true, latencyMs: 2_000 });
+			reg.recordProxyOutcome("openrouter", { ok: true, latencyMs: 100 });
+			reg.recordProxyOutcome("fireworks", { ok: true, latencyMs: 10 });
+		}
+		expect(reg.rankedRoutes({ mode: "chat", limit: 1 }, "fastest")[0].model.id).toBe("fast-dear");
 	});
 });
 
@@ -196,18 +221,77 @@ describe("MCP tools", () => {
 	});
 });
 
-describe("a ledger that can't be written", () => {
-	it("refuses budgeted requests until the ledger is writable again", async () => {
+// chmod doesn't bind root, so the write wouldn't fail there.
+describe.skipIf(process.getuid?.() === 0)("a ledger that can't be written", () => {
+	it("refuses budgeted requests until the lost row lands, then counts it", async () => {
 		process.env.KOSHA_MONTHLY_BUDGET_USD = "1000";
 		const app = proxyApp();
-		await chmod(ledgerDir, 0o500);
+		expect((await chat(app, "llama-small")).status).toBe(200);
+		// A read-only partition in a writable directory: a probe file beside
+		// it would still say "writable".
+		const partition = await vi.waitFor(async () => {
+			const [name] = await readdir(ledgerDir);
+			expect(name).toBeDefined();
+			return name;
+		});
+		const partitionPath = join(ledgerDir, partition);
+		await chmod(partitionPath, 0o400);
+		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
 		expect((await chat(app, "llama-small")).status).toBe(200); // the write fails after the response
-		await new Promise((resolve) => setTimeout(resolve, 20));
+		await vi.waitFor(() => expect(errors).toHaveBeenCalledWith("kosha: ledger write failed:", expect.any(String)));
 		const refused = await chat(app, "llama-small");
 		expect(refused.status).toBe(503);
 		expect(await refused.json()).toMatchObject({ error: expect.stringMatching(/could not be written/) });
-		await chmod(ledgerDir, 0o700);
+		await chmod(partitionPath, 0o600);
 		expect((await chat(app, "llama-small")).status).toBe(200);
+		await vi.waitFor(async () => {
+			const rows = (await readFile(partitionPath, "utf-8")).trim().split("\n");
+			expect(rows).toHaveLength(3);
+		});
+	});
+});
+
+describe("concurrent requests under one budget", () => {
+	it("don't all pass against the same committed spend", async () => {
+		// Each ~$0.06; the cap fits one.
+		process.env.KOSHA_MONTHLY_BUDGET_USD = "0.1";
+		const app = proxyApp();
+		const upstream = globalThis.fetch;
+		globalThis.fetch = vi.fn(async (...args: Parameters<typeof fetch>) => {
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			return upstream(...args);
+		}) as unknown as typeof fetch;
+		const body = JSON.stringify({ model: "llama-long", messages: [{ role: "user", content: "x".repeat(350_000) }] });
+		const send = () =>
+			app.request("/proxy/v1/chat/completions", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body,
+			});
+		const statuses = (await Promise.all([send(), send()])).map((r) => r.status).sort();
+		expect(statuses).toEqual([200, 429]);
+	});
+});
+
+describe("kosha: selectors with routes we can't call", () => {
+	it("still reach a callable route behind 20 cheaper ones without credentials", async () => {
+		delete process.env.KOSHA_MONTHLY_BUDGET_USD;
+		delete process.env.TOGETHER_API_KEY;
+		proxyApp(); // credentials and a stub upstream
+		const together = provider(
+			"together",
+			Array.from({ length: 25 }, (_, i) =>
+				card(`cheaper-${i}`, "together", { pricing: { inputPerMillion: 0.01, outputPerMillion: 0.01 } }),
+			),
+			false,
+		);
+		const res = await createServer(registry(catalog(), together)).request("/proxy/v1/chat/completions", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ model: "kosha:cheapest", messages: [{ role: "user", content: "hi" }] }),
+		});
+		expect(res.status).toBe(200);
+		expect(res.headers.get("x-kosha-model")).toBe("llama-small");
 	});
 });
 
@@ -238,5 +322,56 @@ describe("a request that would cross the budget", () => {
 			body: longPrompt,
 		});
 		expect(res.status).toBe(200);
+	});
+});
+
+describe("catalog $0 with a rate in another unit", () => {
+	// A chat model is billed by tokens; an image-input rate doesn't make $0
+	// tokens a real price, and the proxy would record its spend as $0.
+	const vision = card("vision-free-lunch", "groq", { pricing: { ...zero, imageInputPerImage: 0.000001 } });
+
+	it("stays unverified in the ranking", () => {
+		const reg = registry([
+			card("llama-small", "groq", { pricing: { inputPerMillion: 0.05, outputPerMillion: 0.1 } }),
+			vision,
+		]);
+		expect(reg.cheapestModels({ mode: "chat", limit: 1 }).matches[0].model.id).toBe("llama-small");
+	});
+
+	it("is refused under a budget", async () => {
+		process.env.KOSHA_MONTHLY_BUDGET_USD = "1000";
+		delete process.env.KOSHA_PROXY_TOKEN;
+		process.env.GROQ_API_KEY = "groq-test";
+		globalThis.fetch = vi.fn() as unknown as typeof fetch;
+		const res = await createServer(registry([vision])).request("/proxy/v1/chat/completions", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ model: "vision-free-lunch", messages: [{ role: "user", content: "hi" }] }),
+		});
+		expect(res.status).toBe(422);
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+	});
+
+	it("still counts as a price for an image model", () => {
+		const imageModel = card("img", "groq", { mode: "image", pricing: { ...zero, imageOutputPerImage: 0.04 } });
+		expect(registry([imageModel]).cheapestModels({ mode: "image", limit: 1 }).matches[0]).toMatchObject({
+			score: 0.04,
+		});
+	});
+});
+
+describe("over-budget 429 with a tenant cap", () => {
+	it("reports the tenant's spend and cap, not the global ones", async () => {
+		delete process.env.KOSHA_MONTHLY_BUDGET_USD;
+		process.env.KOSHA_TENANT_BUDGET_USD = "0.01";
+		const res = await proxyApp().request("/proxy/v1/chat/completions", {
+			method: "POST",
+			headers: { "content-type": "application/json", "x-kosha-tenant": "team-a" },
+			body: JSON.stringify({ model: "llama-long", messages: [{ role: "user", content: "x".repeat(350_000) }] }),
+		});
+		delete process.env.KOSHA_TENANT_BUDGET_USD;
+		expect(res.status).toBe(429);
+		expect(await res.json()).toMatchObject({ tenant: "team-a", spentUsd: 0, budgetUsd: 0.01 });
+		expect(res.headers.get("x-kosha-budget-usd")).toBe("0.01");
 	});
 });

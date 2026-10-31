@@ -26,6 +26,9 @@ const testHome = ALLOW ? null : mkdtempSync(join(tmpdir(), "kosha-test-home-"));
 if (testHome) {
 	process.env.HOME = testHome;
 	process.env.USERPROFILE = testHome;
+	// KOSHA_LEDGER_PATH exported in a developer's shell would point the spend
+	// ledger past the sandboxed HOME, at their real file.
+	delete process.env.KOSHA_LEDGER_PATH;
 }
 
 afterAll(async () => {
