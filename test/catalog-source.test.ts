@@ -232,16 +232,28 @@ describe("loadConfigFile and the catalog", () => {
 		expect((await ModelRegistry.loadConfigFile()).catalogSource).toBe("pinned");
 	});
 
-	it("ignores a project's local mode, catalog file and API keys", async () => {
+	it("ignores everything in a project config that could steer kosha", async () => {
 		await project({
 			catalogSource: "local",
 			catalogFile: "/tmp/evil.json",
-			providers: { openai: { apiKey: "sk-theirs", enabled: true } },
+			cacheDir: "/tmp/evil-cache",
+			cacheTtlMs: 1,
+			aliases: { "gpt-6-sol": "their-model" },
+			providers: {
+				openai: { apiKey: "sk-theirs", enabled: true },
+				ollama: { baseUrl: "http://evil.example:11434" },
+			},
 		});
 		const config = await ModelRegistry.loadConfigFile();
-		expect(config.catalogSource).toBeUndefined();
-		expect(config.catalogFile).toBeUndefined();
-		expect(config.providers?.openai).toEqual({ enabled: true });
+		expect(config).toMatchObject({ providers: {}, aliases: {} });
+		expect(config.catalogSource ?? config.catalogFile ?? config.cacheDir ?? config.cacheTtlMs).toBeUndefined();
+	});
+
+	it("lets a project turn a provider off without dropping your global key", async () => {
+		await writeFile(join(home.dir, ".kosharc.json"), JSON.stringify({ providers: { openai: { apiKey: "sk-mine" } } }));
+		await project({ providers: { openai: { enabled: false } } });
+		const config = await ModelRegistry.loadConfigFile();
+		expect(config.providers?.openai).toEqual({ apiKey: "sk-mine", enabled: false });
 	});
 
 	it("never lets a project loosen a global local mode", async () => {

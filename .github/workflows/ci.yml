@@ -22,7 +22,13 @@ jobs:
       matrix:
         # 22 is the engines floor; 24 is current LTS.
         node: [22, 24]
-    name: test (node ${{ matrix.node }})
+        tz: [UTC]
+        # One run west of UTC: runners are UTC, which hid a doctor off-by-one
+        # that only shows where local midnight trails UTC midnight.
+        include:
+          - node: 24
+            tz: America/Los_Angeles
+    name: test (node ${{ matrix.node }}${{ matrix.tz != 'UTC' && format(', {0}', matrix.tz) || '' }})
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -50,6 +56,8 @@ jobs:
         run: pnpm run build
 
       - name: Test
+        env:
+          TZ: ${{ matrix.tz }}
         run: pnpm test
 
       - name: Package smoke

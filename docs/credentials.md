@@ -228,13 +228,20 @@ The CLI, the MCP server and `kosha serve` read both, as does `createKosha()`.
 Config priority: `~/.kosharc.json` < `kosha.config.json` < programmatic config.
 
 `kosha.config.json` travels with whatever directory kosha runs in, cloned repos
-included, so it is trusted less. kosha ignores these fields there:
+included, so it may only make kosha stricter. kosha reads exactly two things
+from it:
 
-- `providers.<id>.apiKey`: a repo could otherwise route your prompts through
-  an account its author controls. Put keys in env vars or `~/.kosharc.json`.
-- `cacheDir` and `catalogFile`.
-- `catalogSource`, unless it is `pinned` and `~/.kosharc.json` does not already
-  say `local`. A project may tighten the catalog source, never loosen it.
+- `catalogSource: "pinned"`, unless `~/.kosharc.json` already says `local`.
+- `providers.<id>.enabled: false`, to turn a provider off.
+
+Everything else there is ignored: API keys (a repo could route your prompts
+through its author's account), base URLs, `enabled: true`, aliases (they
+resolve before real model ids, so a repo could swap one model for another),
+`cacheDir`, `cacheTtlMs` and `catalogFile`. Put those in `~/.kosharc.json` or
+pass them programmatically.
+
+Provider entries merge field by field across layers, so a project that turns
+a provider off doesn't drop the key `~/.kosharc.json` gave it.
 
 ## New providers (Unreleased)
 

@@ -8,7 +8,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DOCTOR_CI_EXIT_CODE, cmdDoctor } from "../src/cli-cmd-doctor.js";
+import { cmdDoctor, DOCTOR_CI_EXIT_CODE, daysBetween } from "../src/cli-cmd-doctor.js";
 import { ModelRegistry } from "../src/registry.js";
 import type { ModelCard, ProviderInfo } from "../src/types.js";
 
@@ -277,9 +277,7 @@ describe("kosha doctor --ci (CI gate)", () => {
 		vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 		const exit = stubExit();
 
-		await expect(cmdDoctor(registry, { ci: true })).rejects.toThrow(
-			`process.exit:${DOCTOR_CI_EXIT_CODE}`,
-		);
+		await expect(cmdDoctor(registry, { ci: true })).rejects.toThrow(`process.exit:${DOCTOR_CI_EXIT_CODE}`);
 		expect(exit).toHaveBeenCalledWith(DOCTOR_CI_EXIT_CODE);
 	});
 });
@@ -297,7 +295,12 @@ describe("kosha doctor --model (scoped gate)", () => {
 					makeModel({ id: "openai/o4-mini", provider: "openrouter", originProvider: "openai", status: "deprecated" }),
 				]),
 				provider("bedrock", [
-					makeModel({ id: "us.anthropic.claude-opus-5-5", provider: "bedrock", originProvider: "anthropic", status: "deprecated" }),
+					makeModel({
+						id: "us.anthropic.claude-opus-5-5",
+						provider: "bedrock",
+						originProvider: "anthropic",
+						status: "deprecated",
+					}),
 				]),
 			],
 			aliases: { opus: "claude-opus-5-5" },
@@ -321,7 +324,11 @@ describe("kosha doctor --model (scoped gate)", () => {
 		} catch (error) {
 			exitCode = Number((error as Error).message.replace("process.exit:", ""));
 		}
-		return { result: JSON.parse(out) as { deprecations: Array<{ modelId: string; provider: string; status: string | null }> }, exit, exitCode };
+		return {
+			result: JSON.parse(out) as { deprecations: Array<{ modelId: string; provider: string; status: string | null }> },
+			exit,
+			exitCode,
+		};
 	}
 
 	it("ignores deprecated models outside the scope, and does not fail over one reseller route", async () => {
@@ -329,7 +336,9 @@ describe("kosha doctor --model (scoped gate)", () => {
 		// o4-mini and opus-4-6 are deprecated but not asked about. The Bedrock
 		// route of the requested model is reported, but Anthropic still serves
 		// it directly, so the build does not fail.
-		expect(result.deprecations.map((f) => `${f.provider}/${f.modelId}`)).toEqual(["bedrock/us.anthropic.claude-opus-5-5"]);
+		expect(result.deprecations.map((f) => `${f.provider}/${f.modelId}`)).toEqual([
+			"bedrock/us.anthropic.claude-opus-5-5",
+		]);
 		expect(exitCode).toBeNull();
 	});
 
@@ -352,7 +361,14 @@ describe("kosha doctor --model (scoped gate)", () => {
 	it("reports a model no provider lists as missing and fails the gate", async () => {
 		const { result, exitCode } = await doctorJson(scopedRegistry(), { model: "claude-opus-5-5, gpt-3", ci: true });
 		const missing = result.deprecations.find((f) => f.status === "missing");
-		expect(missing).toEqual({ modelId: "gpt-3", provider: "-", status: "missing", deprecationDate: null, daysUntilSunset: null, replacedBy: null });
+		expect(missing).toEqual({
+			modelId: "gpt-3",
+			provider: "-",
+			status: "missing",
+			deprecationDate: null,
+			daysUntilSunset: null,
+			replacedBy: null,
+		});
 		expect(exitCode).toBe(DOCTOR_CI_EXIT_CODE);
 	});
 
@@ -366,5 +382,24 @@ describe("kosha doctor --model (scoped gate)", () => {
 		const { result, exitCode } = await doctorJson(registry, { model: "sonnet,claude-sonnet-5-5", ci: true });
 		expect(result.deprecations).toEqual([]);
 		expect(exitCode).toBeNull();
+	});
+});
+
+describe("daysBetween", () => {
+	const savedTz = process.env.TZ;
+	afterEach(() => {
+		if (savedTz === undefined) delete process.env.TZ;
+		else process.env.TZ = savedTz;
+	});
+
+	it("counts sunset days on the UTC calendar in any timezone", () => {
+		// 10:00 UTC on Nov 1 is 03:00 in Los Angeles: LA's midnight came seven
+		// hours after UTC's, so counting from local midnight lost a day.
+		const now = Date.parse("2026-11-01T10:00:00Z");
+		for (const tz of ["UTC", "America/Los_Angeles", "Pacific/Kiritimati"]) {
+			process.env.TZ = tz;
+			expect(daysBetween(now, "2026-11-15"), tz).toBe(14);
+			expect(daysBetween(now, "2026-11-01"), tz).toBe(0);
+		}
 	});
 });

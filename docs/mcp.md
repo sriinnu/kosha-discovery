@@ -35,7 +35,7 @@ Tool-execution failures (a provider timing out, a model not found) come back as 
 | Tool | Purpose | Key arguments |
 |------|---------|---------------|
 | `kosha_query_models` | List / filter models | `provider`, `mode`, `capability`, `limit` |
-| `kosha_cheapest_model` | Cheapest models meeting requirements | `capability`, `min_context_k`, `provider`, `limit` |
+| `kosha_cheapest_model` | Cheapest models meeting requirements; remote $0 prices rank last with `priceUnverified: true` | `capability`, `min_context_k`, `provider`, `limit` |
 | `kosha_ranked_routes` | Routes ranked by strategy, breaker-open providers last | `strategy` (`cheapest` / `fastest` / `reliable` / `balanced`), same filters as cheapest |
 | `kosha_model_detail` | Full card for one model (pricing, capabilities, tool dialect, structured-output modes, status) | `model` |
 | `kosha_model_routes` | Every serving-layer route for a model with per-route pricing | `model` |

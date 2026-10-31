@@ -15,10 +15,10 @@
  * @module
  */
 
-import { appendFile, mkdir, readFile, readdir, rename, unlink, writeFile } from "fs/promises";
 import { randomBytes } from "crypto";
+import { appendFile, mkdir, readdir, readFile, rename, unlink, writeFile } from "fs/promises";
 import { homedir } from "os";
-import { dirname, join } from "path";
+import { dirname, join, resolve } from "path";
 import { normalizeTokenUsage } from "./tally.js";
 import type { ModelCard } from "./types.js";
 
@@ -112,7 +112,8 @@ export type UsageShape = "openai" | "anthropic";
  */
 export function actualCostFromUsage(model: ModelCard, rawUsage: unknown, shape: UsageShape): ActualUsageCost | null {
 	const pricing = model.pricing;
-	if (!pricing || typeof pricing.inputPerMillion !== "number" || typeof pricing.outputPerMillion !== "number") return null;
+	if (!pricing || typeof pricing.inputPerMillion !== "number" || typeof pricing.outputPerMillion !== "number")
+		return null;
 	if (!rawUsage || typeof rawUsage !== "object") return null;
 	const usage = normalizeTokenUsage(rawUsage as Record<string, unknown>);
 	if (!usage) return null;
@@ -139,10 +140,25 @@ export function actualCostFromUsage(model: ModelCard, rawUsage: unknown, shape: 
 		tokensTimesRate(cacheWrite1h, write1hRate);
 	if (!Number.isFinite(usd) || usd < 0) return null;
 
-	return { usd, inputTokens: uncachedInput, outputTokens: usage.outputTokens, cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite };
+	return {
+		usd,
+		inputTokens: uncachedInput,
+		outputTokens: usage.outputTokens,
+		cacheReadTokens: cacheRead,
+		cacheWriteTokens: cacheWrite,
+	};
 }
 
 export const DEFAULT_LEDGER_PATH: string = join(homedir(), ".kosha", "ledger.jsonl");
+
+/** Env override for the ledger location: tests, live checks, or a second instance. */
+export const LEDGER_PATH_ENV = "KOSHA_LEDGER_PATH";
+
+/** The ledger kosha reads and writes now: `KOSHA_LEDGER_PATH`, else ~/.kosha. Read per call. */
+export function currentLedgerPath(): string {
+	const override = process.env[LEDGER_PATH_ENV]?.trim();
+	return override ? resolve(override) : DEFAULT_LEDGER_PATH;
+}
 
 /**
  * How many monthly partitions to retain on disk. Older partitions are
@@ -192,7 +208,8 @@ export function estimateRequestCost(model: ModelCard, requestBody: Record<string
 			: typeof requestBody.max_tokens === "number" && requestBody.max_tokens > 0
 				? requestBody.max_tokens
 				: undefined;
-	const expectedOutputTokens = requestedOutput !== undefined ? Math.floor(requestedOutput) : DEFAULT_EXPECTED_OUTPUT_TOKENS;
+	const expectedOutputTokens =
+		requestedOutput !== undefined ? Math.floor(requestedOutput) : DEFAULT_EXPECTED_OUTPUT_TOKENS;
 
 	const estimatedUsd =
 		tokensTimesRate(inputTokens, pricing.inputPerMillion) +
@@ -264,7 +281,11 @@ function readPositiveUsd(raw: string | undefined): number | null {
  * the un-partitioned file keep counting until that file stops growing. At
  * most two files are read, never the full history.
  */
-export async function readSpendForMonth(nowMs: number, tenant?: string | null, ledgerPath = DEFAULT_LEDGER_PATH): Promise<number> {
+export async function readSpendForMonth(
+	nowMs: number,
+	tenant?: string | null,
+	ledgerPath = currentLedgerPath(),
+): Promise<number> {
 	const cutoffStart = startOfMonth(nowMs);
 	const cutoffEnd = startOfNextMonth(nowMs);
 	// The month partition is the hot path; the legacy file is the fallback
@@ -420,25 +441,21 @@ export async function trimLedgerPartitions(
  * ENOENT, so a fresh install comes up cleanly. After the write we run a
  * best-effort retention trim so old partitions age out without a cron job.
  */
-export async function appendLedgerEntry(entry: LedgerEntry, ledgerPath = DEFAULT_LEDGER_PATH): Promise<void> {
+export async function appendLedgerEntry(entry: LedgerEntry, ledgerPath = currentLedgerPath()): Promise<void> {
 	await mkdir(dirname(ledgerPath), { recursive: true, mode: 0o700 });
 	const partPath = partitionPathFor(ledgerPath, entry.ts);
 	const line = `${JSON.stringify(sanitizeEntry(entry))}\n`;
 	try {
 		await appendFile(partPath, line, { encoding: "utf-8", mode: 0o600 });
 	} catch (err: unknown) {
-		// If append fails (e.g. permissions) we just swallow — ledger is
-		// observability, not load-bearing routing state. A best-effort
-		// create-and-rename gets us going on a fresh install.
-		if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
-			const tmp = `${partPath}.${randomBytes(4).toString("hex")}.tmp`;
-			try {
-				await writeFile(tmp, line, { encoding: "utf-8", mode: 0o600 });
-				await rename(tmp, partPath);
-			} catch {
-				// give up silently
-			}
-		}
+		// The ledger is what budgets are enforced against, so a failed write
+		// throws: the proxy then refuses budgeted requests instead of letting
+		// spend go unrecorded. ENOENT on a fresh install gets one atomic
+		// create-and-rename first.
+		if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
+		const tmp = `${partPath}.${randomBytes(4).toString("hex")}.tmp`;
+		await writeFile(tmp, line, { encoding: "utf-8", mode: 0o600 });
+		await rename(tmp, partPath);
 	}
 	// Opportunistic, best-effort retention sweep. Housekeeping must never
 	// break the append — the ledger is observability.

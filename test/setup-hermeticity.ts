@@ -26,10 +26,17 @@ const testHome = ALLOW ? null : mkdtempSync(join(tmpdir(), "kosha-test-home-"));
 if (testHome) {
 	process.env.HOME = testHome;
 	process.env.USERPROFILE = testHome;
+	// KOSHA_LEDGER_PATH exported in a developer's shell would point the spend
+	// ledger past the sandboxed HOME, at their real file.
+	delete process.env.KOSHA_LEDGER_PATH;
 }
 
-afterAll(() => {
+afterAll(async () => {
 	if (!testHome) return;
+	// Proxy tests return before their spend row is written. Let those writes
+	// land (or fail, and log) while the worker is still alive, instead of
+	// racing the delete below.
+	await new Promise((resolve) => setTimeout(resolve, 100));
 	if (originalHome === undefined) {
 		delete process.env.HOME;
 	} else {
@@ -40,5 +47,8 @@ afterAll(() => {
 	} else {
 		process.env.USERPROFILE = originalUserProfile;
 	}
-	rmSync(testHome, { recursive: true, force: true });
+	// A fire-and-forget cache or ledger write can still be landing files in
+	// the home while this runs; without retries that raced into ENOTEMPTY and
+	// failed whichever test file happened to finish last.
+	rmSync(testHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });

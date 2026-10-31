@@ -33,6 +33,7 @@ import {
 import {
 	modelRoles,
 	modelSupportsRole,
+	normalizeLimit,
 	normalizeRoleToken,
 	registryCapabilities,
 	registryCheapestModels,
@@ -237,8 +238,14 @@ export class ModelRegistry {
 	 * sort last, which is what makes this usable as a failover order.
 	 */
 	rankedRoutes(options?: CheapestModelOptions, strategy: RouteStrategy = "cheapest"): RankedRoute[] {
-		const result = registryCheapestModels(this.state, { includeUnpriced: true, ...options });
-		return rankCandidatesByStrategy(this.state, result.matches, strategy);
+		// The strategy ranks the whole pool and the limit cuts after it; cutting
+		// by price first would hand "fastest" only the cheapest few.
+		const result = registryCheapestModels(this.state, {
+			includeUnpriced: true,
+			...options,
+			limit: Number.MAX_SAFE_INTEGER,
+		});
+		return rankCandidatesByStrategy(this.state, result.matches, strategy).slice(0, normalizeLimit(options?.limit));
 	}
 
 	/** Read-only runtime health for one provider (breaker state, latency, reliability). */
@@ -456,26 +463,7 @@ export class ModelRegistry {
 		const projectConfig = await ModelRegistry.readJsonFile<KoshaConfig>(join(process.cwd(), "kosha.config.json"));
 
 		if (globalConfig) layers.push(globalConfig);
-		if (projectConfig) {
-			// kosha.config.json comes with whatever directory kosha runs in,
-			// cloned repos included. `cacheDir` there would aim refresh's
-			// `*.json` cleanup at any directory, so only ~/.kosharc.json and
-			// programmatic config may set it.
-			// The same goes for the catalog: a repo may tighten `community` to
-			// `pinned`, never loosen `local`, and never name a file of its own.
-			const { cacheDir: _ignored, catalogFile: _file, catalogSource, ...rest } = projectConfig;
-			const projectLayer: KoshaConfig = rest;
-			const tightens = catalogSource === "pinned" && globalConfig?.catalogSource !== "local";
-			if (tightens) projectLayer.catalogSource = catalogSource;
-			// Nor may it supply an API key: kosha would then send your prompts
-			// through an account the repo's author controls.
-			if (projectLayer.providers) {
-				projectLayer.providers = Object.fromEntries(
-					Object.entries(projectLayer.providers).map(([id, { apiKey: _key, ...rest }]) => [id, rest]),
-				);
-			}
-			layers.push(projectLayer);
-		}
+		if (projectConfig) layers.push(projectConfigLayer(projectConfig, globalConfig));
 		if (overrides) layers.push(overrides);
 		if (layers.length === 0) return {};
 
@@ -485,7 +473,7 @@ export class ModelRegistry {
 				// biome-ignore lint/performance/noAccumulatingSpread: three layers at most
 				...merged,
 				...layer,
-				providers: { ...merged.providers, ...layer.providers },
+				providers: mergeProviders(merged.providers, layer.providers),
 				aliases: { ...merged.aliases, ...layer.aliases },
 			}),
 			{},
@@ -571,4 +559,28 @@ function normalizeProxyErrorType(raw: string | undefined): ProviderObservation["
 	if (raw && PROXY_ERROR_TYPES.has(raw)) return raw as ProviderObservation["lastErrorType"];
 	if (!raw) return "unknown";
 	return registryClassifyError(raw);
+}
+
+/**
+ * What a project's kosha.config.json may change. That file comes with
+ * whatever directory kosha runs in, cloned repos included, so it may only
+ * make kosha stricter: pin the catalog to `pinned` (unless ~/.kosharc.json
+ * already says `local`) and turn providers off. Everything else is ignored:
+ * keys and base URLs would send prompts or requests where the repo's author
+ * chooses, aliases resolve before real ids and could swap one model for
+ * another, and `cacheDir`/`cacheTtlMs` reach the shared cache.
+ */
+function projectConfigLayer(project: KoshaConfig, global: KoshaConfig | null): KoshaConfig {
+	const layer: KoshaConfig = {};
+	if (project.catalogSource === "pinned" && global?.catalogSource !== "local") layer.catalogSource = "pinned";
+	const disabled = Object.entries(project.providers ?? {}).filter(([, entry]) => entry?.enabled === false);
+	if (disabled.length > 0) layer.providers = Object.fromEntries(disabled.map(([id]) => [id, { enabled: false }]));
+	return layer;
+}
+
+/** Merge provider entries field by field, so a later layer can't drop an earlier key. */
+function mergeProviders(base: KoshaConfig["providers"], over: KoshaConfig["providers"]): KoshaConfig["providers"] {
+	const merged: NonNullable<KoshaConfig["providers"]> = { ...base };
+	for (const [id, entry] of Object.entries(over ?? {})) merged[id] = { ...merged[id], ...entry };
+	return merged;
 }

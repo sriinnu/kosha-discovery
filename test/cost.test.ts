@@ -152,6 +152,23 @@ describe("ledger partitioning", () => {
 		expect(await readSpendForMonth(lastMonth, "cur", path)).toBeCloseTo(40);
 	});
 
+	it("keeps months apart on the days that broke the release run", async () => {
+		// Fixed instants, not the real clock: month-ends, the day after a leap
+		// day, and the last minute of a month in UTC.
+		const edges = ["2026-10-31T12:00:00Z", "2027-03-31T23:59:00Z", "2028-02-29T12:00:00Z", "2028-03-01T00:30:00Z"];
+		for (const edge of edges) {
+			await rm(dir, { recursive: true, force: true });
+			dir = await mkdtemp(join(tmpdir(), "kosha-part-"));
+			path = join(dir, "ledger.jsonl");
+			const now = Date.parse(edge);
+			const lastMonth = monthsAgo(now, 1);
+			await writeFile(partitionFile(dir, now), `${JSON.stringify(makeEntry(now, "cur", 2))}\n`, "utf-8");
+			await writeFile(partitionFile(dir, lastMonth), `${JSON.stringify(makeEntry(lastMonth, "cur", 40))}\n`, "utf-8");
+			expect(await readSpendForMonth(now, "cur", path), edge).toBeCloseTo(2);
+			expect(await readSpendForMonth(lastMonth, "cur", path), edge).toBeCloseTo(40);
+		}
+	});
+
 	it("counts legacy ledger.jsonl entries for backward compat", async () => {
 		// Simulate a pre-partitioning install: history lives in ledger.jsonl.
 		const now = Date.now();

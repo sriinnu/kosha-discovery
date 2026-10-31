@@ -56,6 +56,10 @@ ${c(BOLD, "COMMANDS")}
     --input-weight <n>            Weight for blended metric input price
     --output-weight <n>           Weight for blended metric output price
     --include-unpriced            Include unpriced models after ranked matches
+    --min-context <k>             Only models with at least k thousand tokens of context
+  ${c(CYAN, "ranked")}                        Routes in the order kosha:<strategy> tries them
+    --strategy <name>             cheapest | fastest | reliable | balanced (default cheapest)
+    --min-context <k>             Only models with at least k thousand tokens of context
   ${c(CYAN, "routes")} <id|alias>             Show all provider routes for a model
   ${c(CYAN, "providers")}                     List all providers and their status
   ${c(CYAN, "resolve")} <alias>               Resolve an alias to canonical model ID
@@ -67,7 +71,7 @@ ${c(BOLD, "COMMANDS")}
     --ci                          Exit non-zero on lifecycle findings (alias: --fail-on-warning)
   ${c(CYAN, "spend")} ${c(DIM, "(usage)")}                 Roll up the proxy spend ledger
     --since <iso-date>            Start of the window (default: all rows)
-    --until <iso-date>            End of the window
+    --until <iso-date>            End of the window (a bare date includes that day)
     --tenant <name>               Only rows tagged with this tenant
     --ledger <path>               Ledger file (default ~/.kosha/ledger.jsonl + monthly partitions)
   ${c(CYAN, "registry export")}               Write the catalog in snapshot format (for local mode)

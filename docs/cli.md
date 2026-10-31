@@ -36,6 +36,10 @@ COMMANDS
     --input-weight <n>            Weight for blended metric input price
     --output-weight <n>           Weight for blended metric output price
     --include-unpriced            Include unpriced models after ranked matches
+    --min-context <k>             Only models with at least k thousand tokens of context
+  ranked                        Routes in the order kosha:<strategy> tries them
+    --strategy <name>             cheapest | fastest | reliable | balanced (default cheapest)
+    --min-context <k>             Only models with at least k thousand tokens of context
   routes <id|alias>             Show all provider routes for a model
   providers                     List all providers and their status
   resolve <alias>               Resolve an alias to canonical model ID

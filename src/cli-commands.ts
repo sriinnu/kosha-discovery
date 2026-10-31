@@ -12,14 +12,25 @@
  * @module cli-commands
  */
 
-import type { ModelMode, ProviderInfo } from "./types.js";
-import type { ModelRegistry } from "./registry.js";
-import {
-	BOLD, CYAN, DIM, GREEN, RED, YELLOW,
-	c, formatContextWindow, formatPrice, formatPricingTier, formatRelativeTime, formatTimestamp,
-	line, renderTable,
-} from "./cli-format.js";
 import type { Column } from "./cli-format.js";
+import {
+	BOLD,
+	CYAN,
+	c,
+	DIM,
+	formatContextWindow,
+	formatPrice,
+	formatPricingTier,
+	formatRelativeTime,
+	formatTimestamp,
+	GREEN,
+	line,
+	RED,
+	renderTable,
+	YELLOW,
+} from "./cli-format.js";
+import type { ModelRegistry } from "./registry.js";
+import type { ModelMode, ProviderInfo } from "./types.js";
 
 // ---------------------------------------------------------------------------
 //  Shared helpers — exported so split modules can import them
@@ -99,16 +110,10 @@ export async function ensureDiscovered(registry: ModelRegistry): Promise<void> {
 
 	if (usedCache) {
 		const age = formatRelativeTime(discoveredAt, beforeMs);
-		console.log(c(DIM,
-			`Loaded ${totalModels} models from cache (${age}). Run "kosha update" to refresh.`,
-		));
+		console.log(c(DIM, `Loaded ${totalModels} models from cache (${age}). Run "kosha update" to refresh.`));
 	} else {
-		console.log(c(DIM,
-			`Discovered ${totalModels} models from ${providers.length} providers.`,
-		));
-		console.log(c(DIM,
-			`Saved to ~/.kosha/cache and exported manifest to ~/.kosha/registry.json`,
-		));
+		console.log(c(DIM, `Discovered ${totalModels} models from ${providers.length} providers.`));
+		console.log(c(DIM, `Saved to ~/.kosha/cache and exported manifest to ~/.kosha/registry.json`));
 	}
 }
 
@@ -117,9 +122,17 @@ export async function ensureDiscovered(registry: ModelRegistry): Promise<void> {
  * @param m  A model card object.
  * @returns  An array of formatted cell strings.
  */
-export function modelRow(m: { provider: string; id: string; mode: string; contextWindow: number; pricing?: { inputPerMillion: number; outputPerMillion: number } }): string[] {
+export function modelRow(m: {
+	provider: string;
+	id: string;
+	mode: string;
+	contextWindow: number;
+	pricing?: { inputPerMillion: number; outputPerMillion: number };
+}): string[] {
 	return [
-		c(CYAN, m.provider), m.id, m.mode,
+		c(CYAN, m.provider),
+		m.id,
+		m.mode,
 		formatContextWindow(m.contextWindow),
 		formatPrice(m.pricing?.inputPerMillion),
 		formatPrice(m.pricing?.outputPerMillion),
@@ -133,15 +146,22 @@ export function modelRow(m: { provider: string; id: string; mode: string; contex
  * @returns  An array of formatted cell strings for the pricing column layout.
  */
 function pricingRow(m: {
-	provider: string; id: string; mode: string;
+	provider: string;
+	id: string;
+	mode: string;
 	pricing?: {
-		inputPerMillion: number; outputPerMillion: number;
-		cacheReadPerMillion?: number; cacheWritePerMillion?: number;
-		batchInputPerMillion?: number; batchOutputPerMillion?: number;
+		inputPerMillion: number;
+		outputPerMillion: number;
+		cacheReadPerMillion?: number;
+		cacheWritePerMillion?: number;
+		batchInputPerMillion?: number;
+		batchOutputPerMillion?: number;
 	};
 }): string[] {
 	return [
-		c(CYAN, m.provider), m.id, m.mode,
+		c(CYAN, m.provider),
+		m.id,
+		m.mode,
 		formatPricingTier(m.pricing),
 		formatPrice(m.pricing?.inputPerMillion),
 		formatPrice(m.pricing?.outputPerMillion),
@@ -159,19 +179,17 @@ function printProviderSummary(providers: ProviderInfo[]): void {
 		totalModels += p.models.length;
 		// Three-state indicator: green ✓ if models found, yellow ○ if no creds but
 		// provider is optional (e.g. Ollama not running), red ✗ if auth required but missing
-		const status = p.models.length > 0
-			? c(GREEN, "\u2713")
-			: p.credentialSource === "none"
-				? c(YELLOW, "\u25CB")
-				: c(RED, "\u2717");
-		const hint = p.models.length === 0 && p.credentialSource !== "none" && !p.authenticated
-			? c(DIM, " (no credentials)")
-			: p.models.length === 0 && p.credentialSource === "none"
-				? c(DIM, " (not running)")
-				: "";
+		const status =
+			p.models.length > 0 ? c(GREEN, "\u2713") : p.credentialSource === "none" ? c(YELLOW, "\u25CB") : c(RED, "\u2717");
+		const hint =
+			p.models.length === 0 && p.credentialSource !== "none" && !p.authenticated
+				? c(DIM, " (no credentials)")
+				: p.models.length === 0 && p.credentialSource === "none"
+					? c(DIM, " (not running)")
+					: "";
 		console.log(`  ${status} ${c(CYAN, p.name)}: ${p.models.length} models${hint}`);
 	}
-	console.log(c(DIM, "\n" + line("\u2500", 50)));
+	console.log(c(DIM, `\n${line("\u2500", 50)}`));
 	console.log(`${c(BOLD, String(totalModels))} models from ${c(BOLD, String(providers.length))} providers`);
 }
 
@@ -209,9 +227,14 @@ export async function cmdDiscover(registry: ModelRegistry, flags: Record<string,
  */
 export async function cmdLatest(registry: ModelRegistry, flags: Record<string, string | boolean>): Promise<void> {
 	const provider = typeof flags.provider === "string" ? flags.provider : undefined;
-	console.log(c(DIM, provider
-		? `Fetching latest details for provider "${provider}"...`
-		: "Fetching latest details for all providers..."));
+	console.log(
+		c(
+			DIM,
+			provider
+				? `Fetching latest details for provider "${provider}"...`
+				: "Fetching latest details for all providers...",
+		),
+	);
 
 	const result = await registry.fetchLatestDetails({
 		providers: provider ? [provider] : undefined,
@@ -288,8 +311,14 @@ export async function cmdList(registry: ModelRegistry, flags: Record<string, str
 	await ensureDiscovered(registry);
 	const models = registry.models({ provider, originProvider, mode, capability });
 
-	if (flags.json) { console.log(JSON.stringify(models, null, 2)); return; }
-	if (models.length === 0) { console.log(c(YELLOW, "No models found matching the given filters.")); return; }
+	if (flags.json) {
+		console.log(JSON.stringify(models, null, 2));
+		return;
+	}
+	if (models.length === 0) {
+		console.log(c(YELLOW, "No models found matching the given filters."));
+		return;
+	}
 
 	const listColumns = showPricing ? PRICING_TABLE_COLUMNS : MODEL_TABLE_COLUMNS;
 	const listRowFn = showPricing ? pricingRow : modelRow;
@@ -309,8 +338,15 @@ export async function cmdList(registry: ModelRegistry, flags: Record<string, str
  * @param query     The search term (substring).
  * @param flags     CLI flags (supports `--origin`, `--pricing`, `--json`).
  */
-export async function cmdSearch(registry: ModelRegistry, query: string, flags: Record<string, string | boolean>): Promise<void> {
-	if (!query) { console.error(c(RED, "Usage: kosha search <query>")); process.exit(1); }
+export async function cmdSearch(
+	registry: ModelRegistry,
+	query: string,
+	flags: Record<string, string | boolean>,
+): Promise<void> {
+	if (!query) {
+		console.error(c(RED, "Usage: kosha search <query>"));
+		process.exit(1);
+	}
 
 	await ensureDiscovered(registry);
 	const needle = query.toLowerCase();
@@ -318,15 +354,23 @@ export async function cmdSearch(registry: ModelRegistry, query: string, flags: R
 	const showPricing = flags.pricing === true;
 
 	// Apply optional origin filter first, then substring-match across id, name, and aliases
-	const matches = registry.models({ originProvider }).filter(
-		(m) =>
-			m.id.toLowerCase().includes(needle) ||
-			m.name.toLowerCase().includes(needle) ||
-			m.aliases.some((a) => a.toLowerCase().includes(needle)),
-	);
+	const matches = registry
+		.models({ originProvider })
+		.filter(
+			(m) =>
+				m.id.toLowerCase().includes(needle) ||
+				m.name.toLowerCase().includes(needle) ||
+				m.aliases.some((a) => a.toLowerCase().includes(needle)),
+		);
 
-	if (flags.json) { console.log(JSON.stringify(matches, null, 2)); return; }
-	if (matches.length === 0) { console.log(c(YELLOW, `No models matching "${query}"`)); return; }
+	if (flags.json) {
+		console.log(JSON.stringify(matches, null, 2));
+		return;
+	}
+	if (matches.length === 0) {
+		console.log(c(YELLOW, `No models matching "${query}"`));
+		return;
+	}
 
 	const searchColumns = showPricing ? PRICING_TABLE_COLUMNS : MODEL_TABLE_COLUMNS;
 	const searchRowFn = showPricing ? pricingRow : modelRow;
@@ -346,8 +390,14 @@ export async function cmdProviders(registry: ModelRegistry, flags: Record<string
 	await ensureDiscovered(registry);
 	const allProviders = registry.providers_list();
 
-	if (flags.json) { console.log(JSON.stringify(allProviders, null, 2)); return; }
-	if (allProviders.length === 0) { console.log(c(YELLOW, "No providers found.")); return; }
+	if (flags.json) {
+		console.log(JSON.stringify(allProviders, null, 2));
+		return;
+	}
+	if (allProviders.length === 0) {
+		console.log(c(YELLOW, "No providers found."));
+		return;
+	}
 
 	const columns: Column[] = [
 		{ header: "Provider", width: 13 },
@@ -383,10 +433,16 @@ export async function cmdRefresh(registry: ModelRegistry, flags: Record<string, 
 	await registry.refresh(provider);
 
 	if (flags.json) {
-		console.log(JSON.stringify({
-			...registry.toJSON(),
-			modelCount: registry.models().length,
-		}, null, 2));
+		console.log(
+			JSON.stringify(
+				{
+					...registry.toJSON(),
+					modelCount: registry.models().length,
+				},
+				null,
+				2,
+			),
+		);
 		return;
 	}
 
@@ -431,5 +487,5 @@ export async function cmdServe(flags: Record<string, string | boolean>): Promise
 // ---------------------------------------------------------------------------
 
 export { cmdModel, cmdResolve, cmdRoutes } from "./cli-cmd-model.js";
-export { cmdRoles, cmdCheapest, cmdCapabilities, cmdCapable } from "./cli-cmd-query.js";
-export { showHelp, showVersion, showSplash } from "./cli-help.js";
+export { cmdCapabilities, cmdCapable, cmdCheapest, cmdRanked, cmdRoles } from "./cli-cmd-query.js";
+export { showHelp, showSplash, showVersion } from "./cli-help.js";
