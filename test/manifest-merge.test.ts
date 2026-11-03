@@ -110,6 +110,53 @@ describe("mergeManifests: pricing quarantine", () => {
 		expect(row?.rawCapabilities).toContain("pricing_quarantined");
 	});
 
+	describe("releasing a held price", () => {
+		const DAY = 24 * 60 * 60 * 1000;
+		const at = (models: DiscoveryModelV1[], discoveredAt: number) => ({ ...snapshot(models), discoveredAt });
+		const priced = (inputPerMillion: number) =>
+			emptyModel("anthropic:sonnet", { pricing: { inputPerMillion, outputPerMillion: 15 } });
+		const row = (s: DiscoverySnapshotV1) => s.models.find((m) => m.key === "anthropic:sonnet");
+
+		it("accepts rates still published after three days, across saved manifests", () => {
+			const first = mergeManifests(at([priced(3)], 0), at([priced(0.1)], DAY));
+			expect(row(first)?.pricing?.inputPerMillion).toBe(3);
+
+			// Round-trip through JSON: the hold has to survive being written to disk.
+			const saved = JSON.parse(JSON.stringify(first)) as DiscoverySnapshotV1;
+			const nearly = mergeManifests(saved, at([priced(0.1)], DAY * 4 - 1));
+			expect(row(nearly)?.pricing?.inputPerMillion).toBe(3);
+			expect(row(nearly)?.rawCapabilities).toContain("pricing_quarantined");
+
+			const released = mergeManifests(nearly, at([priced(0.1)], DAY * 4));
+			expect(row(released)?.pricing?.inputPerMillion).toBe(0.1);
+			expect(row(released)?.rawCapabilities ?? []).not.toContain("pricing_quarantined");
+			expect(row(released)).not.toHaveProperty("pricingHold");
+		});
+
+		it("restarts the clock when the published rates change", () => {
+			const first = mergeManifests(at([priced(3)], 0), at([priced(0.1)], DAY));
+			const changed = mergeManifests(first, at([priced(0.2)], DAY * 3));
+			const later = mergeManifests(changed, at([priced(0.2)], DAY * 5));
+			expect(row(later)?.pricing?.inputPerMillion).toBe(3);
+			const released = mergeManifests(later, at([priced(0.2)], DAY * 6));
+			expect(row(released)?.pricing?.inputPerMillion).toBe(0.2);
+		});
+
+		it("never accepts a billed rate of $0", () => {
+			const first = mergeManifests(at([priced(3)], 0), at([priced(0)], DAY));
+			const later = mergeManifests(first, at([priced(0)], DAY * 60));
+			expect(row(later)?.pricing?.inputPerMillion).toBe(3);
+			expect(row(later)?.rawCapabilities).toContain("pricing_quarantined");
+		});
+
+		it("drops the hold when the catalog returns to the old price", () => {
+			const first = mergeManifests(at([priced(3)], 0), at([priced(0.1)], DAY));
+			const back = mergeManifests(first, at([priced(3)], DAY * 2));
+			expect(row(back)).not.toHaveProperty("pricingHold");
+			expect(row(back)?.rawCapabilities ?? []).not.toContain("pricing_quarantined");
+		});
+	});
+
 	it("still treats a zero cache rate as not reported", () => {
 		const prev = snapshot([
 			emptyModel("anthropic:sonnet", {

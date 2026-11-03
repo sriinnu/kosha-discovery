@@ -739,6 +739,11 @@ async function readPreviousManifest(manifestPath: string): Promise<DiscoverySnap
  *  a much larger swing so legitimate price updates aren't blocked. */
 const PRICING_QUARANTINE_THRESHOLD = 0.75;
 
+/** Quarantine guards against a one-shot bad publish. A catalog that keeps
+ *  publishing the same rates for this long isn't one, so the new rates are
+ *  accepted. Without this, a real price move stays refused forever. */
+const PRICING_QUARANTINE_HOLD_MS = 3 * 24 * 60 * 60 * 1000;
+
 /** After this many consecutive discovery passes in which a previously-known
  *  model is missing from the fresh snapshot, the model is dropped from the
  *  merged manifest. Prevents the manifest from becoming a graveyard of
@@ -764,6 +769,7 @@ export function mergeManifests(previous: DiscoverySnapshotV1 | null, fresh: Disc
 	//       → keep the previous pricing and tag the row pricing_quarantined,
 	//       so a one-shot bad publish (provider returns 0, garbage units, …)
 	//       can't silently overcharge or underprice downstream consumers.
+	//       The same rates published for PRICING_QUARANTINE_HOLD_MS are accepted.
 	const freshModelKeys = new Set<string>();
 	const mergedModels: (typeof fresh.models)[number][] = [];
 	for (const f of fresh.models ?? []) {
@@ -779,16 +785,25 @@ export function mergeManifests(previous: DiscoverySnapshotV1 | null, fresh: Disc
 			// it skips quarantine. Otherwise the first move to it would be refused
 			// on every run.
 			//
-			// Quarantine the suspect rates: keep the old pricing block and
-			// tag the operational `rawCapabilities` array (the trusted
-			// `capabilities` taxonomy stays clean, since this isn't a routing
-			// signal — it's a "don't trust the freshly-published rate" flag).
-			kept = {
-				...kept,
-				pricing: old.pricing,
-				originPricing: old.originPricing,
-				rawCapabilities: tagCapability(kept.rawCapabilities, "pricing_quarantined"),
-			};
+			const now = fresh.discoveredAt ?? Date.now();
+			const rates = pricingFingerprint(f);
+			const hold = (old as { pricingHold?: PricingHold }).pricingHold;
+			const since = hold?.rates === rates ? hold.since : now;
+			// A billed rate of $0 is never accepted this way: it poisons cheapest
+			// routing however long it's published.
+			if (billedRateDroppedToZero(old, f) || now - since < PRICING_QUARANTINE_HOLD_MS) {
+				// Quarantine the suspect rates: keep the old pricing block and
+				// tag the operational `rawCapabilities` array (the trusted
+				// `capabilities` taxonomy stays clean, since this isn't a routing
+				// signal — it's a "don't trust the freshly-published rate" flag).
+				kept = {
+					...kept,
+					pricing: old.pricing,
+					originPricing: old.originPricing,
+					rawCapabilities: tagCapability(kept.rawCapabilities, "pricing_quarantined"),
+					pricingHold: { rates, since },
+				} as typeof kept;
+			}
 		}
 		mergedModels.push(kept);
 	}
@@ -813,6 +828,38 @@ export function mergeManifests(previous: DiscoverySnapshotV1 | null, fresh: Disc
 		models: mergedModels,
 		providers: mergedProviders,
 	};
+}
+
+/** The rates a quarantined row is waiting on, and when they were first seen. */
+interface PricingHold {
+	rates: string;
+	since: number;
+}
+
+type PricedSides = { pricing?: unknown; originPricing?: unknown };
+type BilledRates = { inputPerMillion?: number; outputPerMillion?: number } | null | undefined;
+
+function pricingFingerprint(model: PricedSides): string {
+	const fields = [
+		"inputPerMillion",
+		"outputPerMillion",
+		"cacheReadPerMillion",
+		"cacheWritePerMillion",
+		"cacheWrite1hPerMillion",
+	];
+	return JSON.stringify(
+		[model.pricing, model.originPricing].map((side) =>
+			fields.map((field) => (side as Record<string, unknown> | null | undefined)?.[field] ?? null),
+		),
+	);
+}
+
+/** True if a priced model's billed input or output rate fell to zero. */
+function billedRateDroppedToZero(previous: PricedSides, fresh: PricedSides): boolean {
+	const a = previous.pricing as BilledRates;
+	const b = fresh.pricing as BilledRates;
+	if (!a || !b) return false;
+	return (["inputPerMillion", "outputPerMillion"] as const).some((field) => (a[field] ?? 0) > 0 && b[field] === 0);
 }
 
 /** True if any defined per-million rate moved by more than the quarantine

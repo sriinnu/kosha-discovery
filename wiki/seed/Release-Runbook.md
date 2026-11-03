@@ -21,10 +21,10 @@ Every commit is signed. Signing uses a hardware key and needs a touch, so make t
 git switch main && git pull --ff-only
 git tag -s vX.Y.Z -m "vX.Y.Z"
 git push origin vX.Y.Z
-gh workflow run release-npm.yml -f tag=vX.Y.Z
+gh workflow run release-npm.yml --ref vX.Y.Z -f tag=vX.Y.Z
 ```
 
-The tag must be an annotated, signed tag: the workflow refuses a lightweight one. It checks that the tag matches `package.json`, runs lint / build / test, publishes to npm with provenance, creates the GitHub Release, and publishes the MCP server to the MCP registry.
+`--ref` matters: the `npm-release` environment only allows `v*` refs, and from `main` the job fails with no logs. The tag must be an annotated, signed tag: the workflow refuses a lightweight one. It checks that the tag matches `package.json`, runs lint / build / test, publishes to npm with provenance, creates the GitHub Release, and publishes the MCP server to the MCP registry.
 
 ## 4. Verify
 

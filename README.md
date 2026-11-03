@@ -358,7 +358,7 @@ The same pages are mirrored to the [wiki](https://github.com/sriinnu/kosha-disco
 
 ```bash
 git tag -s vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
-gh workflow run release-npm.yml -f tag=vX.Y.Z
+gh workflow run release-npm.yml --ref vX.Y.Z -f tag=vX.Y.Z
 ```
 
 The workflow checks that the tag matches `package.json`, runs lint / build / test, stages the package on npm with provenance, and creates the GitHub Release. Staging authenticates through npm trusted publishing (OIDC); there is no npm token. The version goes live only after a maintainer approves it with 2FA:
@@ -366,7 +366,7 @@ The workflow checks that the tag matches `package.json`, runs lint / build / tes
 ```bash
 npm stage list @sriinnu/kosha-discovery
 npm stage approve <id>
-gh workflow run release-npm.yml -f tag=vX.Y.Z -f publish_npm=false -f create_github_release=false   # then publish to the MCP registry
+gh workflow run release-npm.yml --ref vX.Y.Z -f tag=vX.Y.Z -f publish_npm=false -f create_github_release=false   # then publish to the MCP registry
 ```
 
 ## Support
