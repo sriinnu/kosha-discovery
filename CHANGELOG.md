@@ -13,6 +13,16 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
+## [1.12.1] — 2026-11-03
+
+### Fixed
+
+- A real price move of 75% or more is no longer refused forever. Quarantine kept the old rate with no way out, so 83 models were stuck on it; rates a catalog keeps publishing for three days are now accepted. A billed rate that falls to $0 stays refused, and a change in the published rates restarts the wait.
+
+### Docs
+
+- The release commands in the README and runbook now pass `--ref vX.Y.Z`. Without it the run starts from `main`, and the `npm-release` environment rejects it with no logs.
+
 ## [1.12.0] — 2026-11-03
 
 ### Fixed
