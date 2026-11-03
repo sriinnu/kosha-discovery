@@ -59,8 +59,32 @@ export interface ProviderCacheBehavior {
 	notes?: string;
 }
 
+/**
+ * A price that depends on when the request ran. The card's own rates are the
+ * peak rates; `offPeak` replaces them at any time outside `peakWindows`.
+ */
+export interface PricingSchedule {
+	/** Rates outside the peak windows, in USD per million tokens. */
+	offPeak: {
+		inputPerMillion: number;
+		outputPerMillion: number;
+		cacheReadPerMillion?: number;
+	};
+	/** When the card's own rates apply. A window's end hour is exclusive. */
+	peakWindows: {
+		/** UTC weekdays, as `Date.getUTCDay()` numbers them (0 is Sunday). */
+		days: number[];
+		startHourUtc: number;
+		endHourUtc: number;
+	}[];
+	/** Where these rates are published. */
+	source: string;
+}
+
 /** Token pricing in USD per million tokens. */
 export interface ModelPricing {
+	/** Time-of-day rates, for providers that charge differently by the hour. */
+	schedule?: PricingSchedule;
 	/** USD cost per 1 million input tokens. */
 	inputPerMillion: number;
 	/** USD cost per 1 million output tokens. */
