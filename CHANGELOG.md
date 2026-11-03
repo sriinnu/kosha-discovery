@@ -13,6 +13,21 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
+## [1.12.0] — 2026-11-03
+
+### Fixed
+
+- **DeepSeek's peak and off-peak prices.** DeepSeek charges half price outside
+  01:00–04:00 and 06:00–10:00 UTC on weekdays, and the catalogs publish one
+  rate. `deepseek-flash` and `deepseek-v4-pro` now carry their peak rates plus
+  `pricing.schedule`, which holds the off-peak rates and the peak windows.
+  Chinese public holidays, also off-peak, aren't modelled.
+- **The same pricing warnings on every run.** A quarantined price keeps the old
+  rate in the manifest, so each export saw the same move again and printed it:
+  about 170 lines per export, into the terminal of any program using kosha. A
+  move is now logged once, and an export prints at most one line pointing at
+  `anomalies.json`. A scheduled price skips quarantine.
+
 ## [1.11.0] — 2026-10-31
 
 ### Fixed

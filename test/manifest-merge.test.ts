@@ -72,6 +72,24 @@ describe("mergeManifests: pricing quarantine", () => {
 		expect(row?.rawCapabilities).toContain("pricing_quarantined");
 	});
 
+	it("accepts a scheduled price however far it moved", () => {
+		const prev = snapshot([
+			emptyModel("deepseek:deepseek-flash", { pricing: { inputPerMillion: 0.15, outputPerMillion: 0.6 } }),
+		]);
+		const schedule = {
+			offPeak: { inputPerMillion: 0.15, outputPerMillion: 0.6 },
+			peakWindows: [{ days: [1], startHourUtc: 1, endHourUtc: 4 }],
+			source: "https://example.test",
+		};
+		const fresh = snapshot([
+			emptyModel("deepseek:deepseek-flash", { pricing: { inputPerMillion: 0.3, outputPerMillion: 1.2, schedule } }),
+		]);
+		const row = mergeManifests(prev, fresh).models.find((m) => m.key === "deepseek:deepseek-flash");
+		expect(row?.pricing?.inputPerMillion).toBe(0.3);
+		expect(row?.pricing?.schedule).toEqual(schedule);
+		expect(row?.rawCapabilities ?? []).not.toContain("pricing_quarantined");
+	});
+
 	it("lets a small price change through without quarantining", () => {
 		const prev = snapshot([emptyModel("anthropic:sonnet", { pricing: { inputPerMillion: 3, outputPerMillion: 15 } })]);
 		const fresh = snapshot([

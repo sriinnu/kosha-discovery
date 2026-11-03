@@ -11,6 +11,7 @@ import { mkdir, open, readdir, rename, stat, unlink, writeFile } from "fs/promis
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { catalogCacheKey, loadActiveCatalog } from "./catalog-source.js";
+import { applyPriceSchedules } from "./discovery/price-schedules.js";
 import { applyPromoOverrides } from "./discovery/promo-overrides.js";
 import type { DiscoverySnapshotV1 } from "./discovery-contract.js";
 import { DISCOVERY_SCHEMA_VERSION } from "./discovery-contract.js";
@@ -115,7 +116,7 @@ export async function registryDiscover(
 	for (const [providerId, providerInfo] of state.providerMap) {
 		state.providerMap.set(providerId, {
 			...providerInfo,
-			models: applyPromoOverrides(providerInfo.models),
+			models: applyPriceSchedules(applyPromoOverrides(providerInfo.models)),
 		});
 	}
 
@@ -288,7 +289,7 @@ export async function registryEnrichOnly(state: RegistryState): Promise<EnrichOn
 	for (const [providerId, providerInfo] of state.providerMap) {
 		state.providerMap.set(providerId, {
 			...providerInfo,
-			models: applyPromoOverrides(providerInfo.models),
+			models: applyPriceSchedules(applyPromoOverrides(providerInfo.models)),
 		});
 	}
 	attributePricingSources(state, preEnrichmentPriced);
@@ -505,13 +506,10 @@ export async function exportRegistryManifest(state: RegistryState): Promise<void
 		try {
 			const anomalies = detectPricingAnomalies(previousManifest, fresh);
 			if (anomalies.length > 0) {
-				await appendAnomalies(dirname(manifestPath), anomalies);
-				for (const a of anomalies) {
-					const tag = a.promo ? " [promo]" : "";
-					console.warn(
-						`[kosha] pricing anomaly${tag}: ${a.key} ${a.field} ` +
-							`${a.previous} → ${a.current} (${(a.deltaPct * 100).toFixed(0)}%)`,
-					);
+				const logged = await appendAnomalies(dirname(manifestPath), anomalies);
+				if (logged > 0) {
+					const path = join(dirname(manifestPath), ANOMALY_FILE);
+					console.warn(`[kosha] ${logged} pricing change(s) logged to ${path}`);
 				}
 			}
 		} catch {
@@ -776,7 +774,11 @@ export function mergeManifests(previous: DiscoverySnapshotV1 | null, fresh: Disc
 		if (old && !hasUsablePricing(f) && hasUsablePricing(old)) {
 			// Keep all of fresh's metadata but restore pricing from old.
 			kept = { ...kept, pricing: old.pricing, originPricing: old.originPricing };
-		} else if (old && quarantinePricingMove(old, f)) {
+		} else if (old && !f.pricing?.schedule && quarantinePricingMove(old, f)) {
+			// A scheduled price is curated and cited, not a catalog's publish, so
+			// it skips quarantine. Otherwise the first move to it would be refused
+			// on every run.
+			//
 			// Quarantine the suspect rates: keep the old pricing block and
 			// tag the operational `rawCapabilities` array (the trusted
 			// `capabilities` taxonomy stays clean, since this isn't a routing
@@ -984,9 +986,26 @@ function detectPricingAnomalies(previous: DiscoverySnapshotV1 | null, fresh: Dis
 	return anomalies;
 }
 
-/** Append fresh anomalies to <manifestDir>/anomalies.json. Atomic write,
- *  rolling retention (30 days OR last 5000 entries, whichever is tighter). */
-async function appendAnomalies(manifestDir: string, fresh: PricingAnomaly[]): Promise<void> {
+/**
+ * Drop anomalies the log already ends on. A quarantined rate keeps the old
+ * price in the manifest, so every export sees the same move again; logging
+ * each one printed the same 172 lines on every run and pushed real changes
+ * out of the capped log. A price that moves away and back is still logged.
+ */
+export function unloggedAnomalies(existing: PricingAnomaly[], fresh: PricingAnomaly[]): PricingAnomaly[] {
+	const latest = new Map<string, PricingAnomaly>();
+	const id = (a: PricingAnomaly) => `${a.key}|${a.side}|${a.field}`;
+	for (const a of existing) latest.set(id(a), a);
+	return fresh.filter((a) => {
+		const last = latest.get(id(a));
+		return !last || last.previous !== a.previous || last.current !== a.current;
+	});
+}
+
+/** Append new anomalies to <manifestDir>/anomalies.json and return how many
+ *  there were. Atomic write, rolling retention (30 days OR last 5000 entries,
+ *  whichever is tighter). */
+async function appendAnomalies(manifestDir: string, detected: PricingAnomaly[]): Promise<number> {
 	const path = join(manifestDir, ANOMALY_FILE);
 	const cutoff = Date.now() - ANOMALY_RETENTION_MS;
 	let existing: PricingAnomaly[] = [];
@@ -998,6 +1017,8 @@ async function appendAnomalies(manifestDir: string, fresh: PricingAnomaly[]): Pr
 	} catch {
 		// missing or unreadable — start fresh
 	}
+	const fresh = unloggedAnomalies(existing, detected);
+	if (fresh.length === 0) return 0;
 	const all = [...existing, ...fresh].filter((a) => a.ts >= cutoff).slice(-ANOMALY_MAX_ENTRIES);
 	const tmp = `${path}.${randomBytes(4).toString("hex")}.tmp`;
 	try {
@@ -1010,6 +1031,7 @@ async function appendAnomalies(manifestDir: string, fresh: PricingAnomaly[]): Pr
 		await unlink(tmp).catch(() => {});
 		throw err;
 	}
+	return fresh.length;
 }
 
 async function discoverProvider(

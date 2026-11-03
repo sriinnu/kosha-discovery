@@ -111,6 +111,7 @@ export type {
 	ModelRouteInfo,
 	ModelStatus,
 	PricingMetric,
+	PricingSchedule,
 	ProviderCredentialPrompt,
 	ProviderDiscoverer,
 	ProviderInfo,
