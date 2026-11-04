@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MODELSDEV_CATALOG_URL, resetModelsDevCatalogCache } from "../src/discovery/modelsdev-catalog.js";
+import { PROVIDER_CATALOG } from "../src/provider-catalog.js";
 import { ModelRegistry } from "../src/registry.js";
 
 const model = (id: string, input: number, output: number) => ({
@@ -40,7 +41,9 @@ function stubFetch(catalogResponse: () => Response): void {
 		vi.fn(async (input: string | URL | Request) => {
 			const url = String(input instanceof Request ? input.url : input);
 			if (url === MODELSDEV_CATALOG_URL) return catalogResponse();
-			throw new Error(`no network in this test: ${url}`);
+			// A 404 fails at once. Throwing would look like a network failure, which
+			// the discoverers retry with backoff.
+			return new Response("", { status: 404 });
 		}),
 	);
 }
@@ -56,7 +59,15 @@ interface Row {
 }
 
 async function discovered(home = mkdtempSync(join(tmpdir(), "kosha-catalog-only-"))) {
-	const registry = new ModelRegistry({ cacheDir: join(home, "cache") });
+	// Only the built-ins these tests read. The rest shell out to cloud CLIs or fetch
+	// for nothing, which pushed a discovery past the 10s test limit on a CI runner.
+	const providers = Object.fromEntries(
+		PROVIDER_CATALOG.filter((p) => p.providerId !== "deepseek" && p.providerId !== "nvidia").map((p) => [
+			p.providerId,
+			{ enabled: false },
+		]),
+	);
+	const registry = new ModelRegistry({ cacheDir: join(home, "cache"), providers });
 	await registry.discover({ force: true, enrichWithPricing: false, includeLocal: false });
 	const read = (name: string) =>
 		existsSync(join(home, name)) ? (JSON.parse(readFileSync(join(home, name), "utf-8")) as { models: Row[] }) : null;
