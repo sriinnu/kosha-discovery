@@ -6,6 +6,8 @@
 
 **Tells your agent — or your code — which model to use and what it costs.**
 
+**Website:** [kosha.srinivas.dev](https://kosha.srinivas.dev)
+
 [![Sponsor](https://img.shields.io/badge/sponsor-%E2%9D%A4-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/sriinnu)
 [![Buy Me a Coffee](https://img.shields.io/badge/buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/sriinnu)
 
@@ -24,6 +26,7 @@ LiteLLM catalogs, so `kosha list` is useful on a fresh machine.
 ```bash
 npm install @sriinnu/kosha-discovery       # library / server
 npm install -g @sriinnu/kosha-discovery    # global `kosha` CLI
+brew install sriinnu/tap/kosha             # same CLI and MCP server, via Homebrew
 ```
 
 Requires Node.js 22+.
