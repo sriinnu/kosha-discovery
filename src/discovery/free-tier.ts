@@ -22,6 +22,12 @@ import type { ModelCard } from "../types.js";
 
 export const FREE_TIER_CAPABILITY = "free_tier";
 
+/** Raw capability on a model known only from the public catalog. */
+export const CATALOG_ONLY_CAPABILITY = "catalog_only";
+
+/** Raw capability on a model billed by a subscription plan, not per token. */
+export const SUBSCRIPTION_PLAN_CAPABILITY = "subscription_plan";
+
 /**
  * Returns a copy of the card with `"free_tier"` added to capabilities
  * when both input and output pricing are exactly zero. No-op otherwise.

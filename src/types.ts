@@ -7,6 +7,8 @@
  * @module
  */
 
+import type { PriceEvidence } from "./discovery/price-evidence.js";
+
 /**
  * Supported model operational modes.
  *
@@ -296,6 +298,8 @@ export interface LocalRuntimeMetadata {
  * model creator (e.g. "anthropic", "openai", "google").
  */
 export interface ModelCard {
+	/** What each source said this model costs, when more than one listed it. */
+	priceEvidence?: PriceEvidence[];
 	/** Provider's canonical model ID (e.g. "claude-opus-4-8"). */
 	id: string;
 	/** Human-readable display name (e.g. "Claude Opus 4"). */

@@ -6,8 +6,9 @@
  * @module
  */
 
-import type { ModelCard, ModelPricing, StructuredOutputMode, ToolDialect } from "./types.js";
+import type { PriceEvidence } from "./discovery/price-evidence.js";
 import type { ProviderDescriptor } from "./provider-catalog.js";
+import type { ModelCard, ModelPricing, StructuredOutputMode, ToolDialect } from "./types.js";
 
 /** Stable schema version exposed to Chitragupta and other daemon consumers. */
 export const DISCOVERY_SCHEMA_VERSION = 1;
@@ -86,6 +87,8 @@ export interface DiscoveryModelV1 {
 	maxOutputTokens: number | null;
 	pricing: ModelPricing | null;
 	originPricing?: ModelPricing | null;
+	/** What each source said this model costs, when more than one listed it. */
+	priceEvidence?: PriceEvidence[];
 	dimensions: number | null;
 	maxInputTokens: number | null;
 	discoveredAt: number;
@@ -299,7 +302,8 @@ export function trustedCapabilitiesForModel(model: ModelCard, descriptor: Provid
 	const lowerId = model.id.toLowerCase();
 
 	if (model.mode === "chat" || rawCaps.includes("chat")) caps.add("chat");
-	if (model.mode === "embedding" || rawCaps.includes("embedding") || rawCaps.includes("embeddings")) caps.add("embeddings");
+	if (model.mode === "embedding" || rawCaps.includes("embedding") || rawCaps.includes("embeddings"))
+		caps.add("embeddings");
 	if (rawCaps.includes("function_calling")) caps.add("function_calling");
 	if (rawCaps.includes("vision")) caps.add("vision");
 	if (model.mode === "video" || rawCaps.includes("video_generation")) caps.add("video_generation");
@@ -317,7 +321,8 @@ export function trustedCapabilitiesForModel(model: ModelCard, descriptor: Provid
 	if (model.localRuntime?.supportsStreaming === true || model.mode === "chat") caps.add("streaming");
 	if (model.localRuntime?.supportsStructuredOutput === true) caps.add("structured_output");
 	if ((model.contextWindow ?? 0) >= 100_000) caps.add("long_context");
-	if (rawCaps.includes("code") || CODE_PATTERNS.some((pattern) => lowerId.includes(pattern))) caps.add("code_generation");
+	if (rawCaps.includes("code") || CODE_PATTERNS.some((pattern) => lowerId.includes(pattern)))
+		caps.add("code_generation");
 	if (rawCaps.includes("nlu") || REASONING_PATTERNS.some((pattern) => lowerId.includes(pattern))) caps.add("reasoning");
 	if (LOW_LATENCY_PROVIDER_IDS.has(descriptor.canonicalProviderId) || descriptor.isLocal) caps.add("low_latency");
 	if (descriptor.isLocal || isCheapPricing(model.pricing)) caps.add("cheap_inference");
@@ -371,7 +376,8 @@ function isFreeTierPricing(model: ModelCard): boolean {
 }
 
 function hasUnitPricing(pricing: ModelPricing): boolean {
-	return pricing.imageOutputPerImage !== undefined ||
+	return (
+		pricing.imageOutputPerImage !== undefined ||
 		pricing.imageInputPerImage !== undefined ||
 		pricing.audioInputPerSecond !== undefined ||
 		pricing.audioOutputPerSecond !== undefined ||
@@ -381,5 +387,6 @@ function hasUnitPricing(pricing: ModelPricing): boolean {
 		pricing.outputPerMillionCharacters !== undefined ||
 		pricing.webSearchPerThousandRequests !== undefined ||
 		pricing.mapsSearchPerThousandRequests !== undefined ||
-		pricing.requestPerThousand !== undefined;
+		pricing.requestPerThousand !== undefined
+	);
 }
