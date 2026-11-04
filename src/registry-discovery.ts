@@ -6,19 +6,19 @@
  * @module
  */
 
-import {
-	DISCOVERY_SCHEMA_VERSION,
-	discoveryRoles,
-	makeModelKey,
-	rawCapabilitiesForModel,
-	trustedCapabilitiesForModel,
-} from "./discovery-contract.js";
 import type {
 	DiscoveryDeltaV1,
 	DiscoveryHealthRecord,
 	DiscoveryModelV1,
 	DiscoveryProviderV1,
 	DiscoverySnapshotV1,
+} from "./discovery-contract.js";
+import {
+	DISCOVERY_SCHEMA_VERSION,
+	discoveryRoles,
+	makeModelKey,
+	rawCapabilitiesForModel,
+	trustedCapabilitiesForModel,
 } from "./discovery-contract.js";
 import {
 	getProviderConfig,
@@ -28,8 +28,8 @@ import {
 } from "./provider-catalog.js";
 import { diffSnapshots, fullSnapshotChanges } from "./registry-delta.js";
 import { registryModels, registryProviderDescriptor } from "./registry-query.js";
-import type { ModelCard, ProviderCredentialPrompt } from "./types.js";
 import type { ProviderObservation, RegistryState } from "./registry-state.js";
+import type { ModelCard, ProviderCredentialPrompt } from "./types.js";
 
 /**
  * Return the cached snapshot when it is still valid for diff generation.
@@ -81,8 +81,8 @@ export function registryDiscoveryDelta(
 		};
 	}
 
-	const sinceIndex = state.deltaHistory.findIndex((delta) =>
-		delta.sinceCursor === sinceCursor || delta.cursor === sinceCursor
+	const sinceIndex = state.deltaHistory.findIndex(
+		(delta) => delta.sinceCursor === sinceCursor || delta.cursor === sinceCursor,
 	);
 	if (sinceIndex === -1) {
 		return {
@@ -246,7 +246,8 @@ export function registrySerializeModel(state: RegistryState, model: ModelCard): 
 		name: model.name,
 		providerId: model.provider,
 		canonicalProviderId: descriptor.canonicalProviderId,
-		originProviderId: normalizeProviderId(model.originProvider) ?? model.originProvider ?? descriptor.canonicalProviderId,
+		originProviderId:
+			normalizeProviderId(model.originProvider) ?? model.originProvider ?? descriptor.canonicalProviderId,
 		mode: model.mode,
 		capabilities: trustedCapabilitiesForModel(model, descriptor),
 		rawCapabilities: rawCapabilitiesForModel(model),
@@ -254,6 +255,7 @@ export function registrySerializeModel(state: RegistryState, model: ModelCard): 
 		maxOutputTokens: model.maxOutputTokens > 0 ? model.maxOutputTokens : null,
 		pricing: model.pricing ?? null,
 		originPricing: model.originPricing ?? null,
+		...(model.priceEvidence ? { priceEvidence: model.priceEvidence } : {}),
 		dimensions: model.dimensions ?? null,
 		maxInputTokens: model.maxInputTokens ?? null,
 		discoveredAt: model.discoveredAt,
@@ -289,9 +291,8 @@ export function registryBuildHealthRecord(state: RegistryState, providerId: stri
 	const breaker = state.healthTracker.breaker(providerId).health();
 	const observation = state.providerObservations.get(providerId);
 	const provider = state.providerMap.get(providerId);
-	const timeoutRate = observation && observation.attemptCount > 0
-		? observation.timeoutCount / observation.attemptCount
-		: 0;
+	const timeoutRate =
+		observation && observation.attemptCount > 0 ? observation.timeoutCount / observation.attemptCount : 0;
 	const latencyClass = computeLatencyClass(observation);
 	let stateLabel: DiscoveryHealthRecord["state"] = "unknown";
 
@@ -317,7 +318,8 @@ export function registryBuildHealthRecord(state: RegistryState, providerId: stri
 		lastFailureAt: breaker.lastFailureTime || null,
 		latencyClass,
 		timeoutRate: Number(timeoutRate.toFixed(3)),
-		rateLimitState: observation?.lastErrorType === "throttled" ? "throttled" : observation?.attemptCount ? "ok" : "unknown",
+		rateLimitState:
+			observation?.lastErrorType === "throttled" ? "throttled" : observation?.attemptCount ? "ok" : "unknown",
 		circuitState: breaker.state,
 	};
 }
@@ -363,7 +365,12 @@ export function registryClassifyError(errorMessage: string): ProviderObservation
 	if (lower.includes("timed out") || lower.includes("timeout") || lower.includes("abort")) {
 		return "timeout";
 	}
-	if (lower.includes("network") || lower.includes("econn") || lower.includes("fetch failed") || /\b5\d{2}\b/.test(lower)) {
+	if (
+		lower.includes("network") ||
+		lower.includes("econn") ||
+		lower.includes("fetch failed") ||
+		/\b5\d{2}\b/.test(lower)
+	) {
 		return "transport";
 	}
 	return "unknown";
@@ -378,9 +385,10 @@ function catalogCredentialPrompts(state: RegistryState): ProviderCredentialPromp
 			continue;
 		}
 
-		const envHint = descriptor.credentialEnvVars.length > 0
-			? `Set ${descriptor.credentialEnvVars.join(" or ")}`
-			: "Configure credentials";
+		const envHint =
+			descriptor.credentialEnvVars.length > 0
+				? `Set ${descriptor.credentialEnvVars.join(" or ")}`
+				: "Configure credentials";
 
 		prompts.push({
 			providerId: descriptor.providerId,
@@ -396,9 +404,7 @@ function catalogCredentialPrompts(state: RegistryState): ProviderCredentialPromp
 	return prompts.sort((a, b) => a.providerId.localeCompare(b.providerId));
 }
 
-function computeLatencyClass(
-	observation: ProviderObservation | undefined,
-): DiscoveryHealthRecord["latencyClass"] {
+function computeLatencyClass(observation: ProviderObservation | undefined): DiscoveryHealthRecord["latencyClass"] {
 	if (!observation || observation.attemptCount === 0 || observation.latenciesMs.length === 0) {
 		return "unknown";
 	}

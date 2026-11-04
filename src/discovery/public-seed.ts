@@ -30,6 +30,7 @@ import { extractOriginProvider } from "../normalize.js";
 import type { ModelCard } from "../types.js";
 import { getLiteLLMSeed } from "./litellm-seed.js";
 import { getModelsDevSeed } from "./modelsdev-seed.js";
+import { evidenceFrom } from "./price-evidence.js";
 import { applyPromoOverrides } from "./promo-overrides.js";
 import { getSnapshotSeed } from "./snapshot-catalog.js";
 
@@ -70,7 +71,14 @@ export async function getPublicSeed(providerId: string): Promise<ModelCard[]> {
 
 	// Index models.dev by id so duplicate ids from LiteLLM are dropped.
 	const seen = new Set<string>(modelsDev.map((card) => card.id));
-	const merged: ModelCard[] = [...modelsDev];
+	const merged: ModelCard[] = [];
+	const litellmById = new Map(litellm.map((card) => [card.id, card]));
+	for (const card of modelsDev) {
+		const fromLiteLLM = litellmById.get(card.id);
+		const a = evidenceFrom(card, "models.dev");
+		const b = fromLiteLLM ? evidenceFrom(fromLiteLLM, "litellm") : null;
+		merged.push(a && b ? { ...card, priceEvidence: [a, b] } : card);
+	}
 	for (const card of litellm) {
 		if (seen.has(card.id)) continue;
 		seen.add(card.id);

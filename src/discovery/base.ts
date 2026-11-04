@@ -8,6 +8,7 @@
 
 import { assertCleanPayload } from "../security.js";
 import type { CredentialResult, ModelCard, ProviderDiscoverer } from "../types.js";
+import { evidenceFrom, type PriceEvidence } from "./price-evidence.js";
 import { getPublicSeed } from "./public-seed.js";
 
 /** Safety cap for paginated model listing. */
@@ -195,11 +196,20 @@ export abstract class BaseDiscoverer implements ProviderDiscoverer {
 					releaseDate: api.releaseDate ?? seed.releaseDate,
 				};
 				const apiHasPricing = !!api.pricing || !!api.originPricing;
-				if (apiHasPricing) return dated;
+				if (apiHasPricing) {
+					// The provider's own price is the third witness.
+					const live = evidenceFrom(api, "provider-api");
+					const catalogs = seed.priceEvidence ?? [
+						evidenceFrom(seed, seed.catalogSource === "litellm" ? "litellm" : "models.dev"),
+					];
+					const evidence = [live, ...catalogs].filter((entry): entry is PriceEvidence => entry !== null);
+					return live && evidence.length > 1 ? { ...dated, priceEvidence: evidence } : dated;
+				}
 				return {
 					...dated,
 					pricing: seed.pricing,
 					originPricing: seed.originPricing,
+					...(seed.priceEvidence ? { priceEvidence: seed.priceEvidence } : {}),
 				};
 			});
 			const apiIds = new Set(apiCards.map((c) => c.id));

@@ -12,12 +12,14 @@
  */
 
 import type { ModelCard, ModelMode, ModelPricing, ModelStatus } from "../types.js";
-import { applyFreeTierFlag } from "./free-tier.js";
 import {
-	type ModelsDevModel,
-	type ModelsDevProvider,
-	loadModelsDevCatalog,
-} from "./modelsdev-catalog.js";
+	applyFreeTierFlag,
+	CATALOG_ONLY_CAPABILITY,
+	FREE_TIER_CAPABILITY,
+	isFreeTier,
+	SUBSCRIPTION_PLAN_CAPABILITY,
+} from "./free-tier.js";
+import { loadModelsDevCatalog, type ModelsDevModel, type ModelsDevProvider } from "./modelsdev-catalog.js";
 
 /** Maximum models seeded for a single provider. */
 const MAX_MODELS_PER_SEED = 1_000;
@@ -80,6 +82,62 @@ const PROVIDER_SLUG_ALIASES: Record<string, readonly string[]> = {
 	vertex: ["google-vertex", "google-vertex-anthropic"],
 	bedrock: ["amazon-bedrock"],
 };
+
+/** Every models.dev slug already served through a mapped kosha provider. */
+export function mappedModelsDevSlugs(): Set<string> {
+	return new Set([...Object.keys(PROVIDER_SLUG_ALIASES), ...Object.values(PROVIDER_SLUG_ALIASES).flat()]);
+}
+
+/**
+ * A plan's catalog entry lists $0 because the subscription pays for the
+ * tokens, so the $0 says nothing about what the model costs.
+ */
+export function isSubscriptionPlanSlug(slug: string): boolean {
+	return /(^|-)(coding|code|token)-plan(-|$)/.test(slug) || SUBSCRIPTION_BILLED_SLUGS.has(slug);
+}
+
+/**
+ * Plans whose slug doesn't say so. GitLab lists 31 Duo models at $0, among them
+ * `duo-chat-fable-5`, a paid vendor's model no one gives away, and its docs entry
+ * is the Duo Agent Platform: the seat pays for those tokens.
+ */
+const SUBSCRIPTION_BILLED_SLUGS = new Set(["gitlab"]);
+
+/**
+ * Cards for a catalog slug with no kosha provider of its own. Same validation
+ * as a mapped provider's seed. A plan's $0 is dropped, not kept as a price.
+ */
+export async function getCatalogOnlySeed(slug: string): Promise<ModelCard[]> {
+	const catalog = await loadModelsDevCatalog();
+	const models = catalog[slug]?.models;
+	if (!models || typeof models !== "object") return [];
+
+	const plan = isSubscriptionPlanSlug(slug);
+	const seeds = new Map<string, ModelCard>();
+	for (const [rawId, entry] of Object.entries(models)) {
+		if (seeds.size >= MAX_MODELS_PER_SEED) break;
+		if (!entry || typeof entry !== "object") continue;
+		const id = sanitiseId(rawId);
+		if (!id || seeds.has(id)) continue;
+		const card = buildSeedCard(id, slug, entry);
+		if (card) seeds.set(id, markCatalogOnly(card, plan));
+	}
+	return [...seeds.values()];
+}
+
+function markCatalogOnly(card: ModelCard, plan: boolean): ModelCard {
+	const raw = card.rawCapabilities ?? card.capabilities;
+	if (!plan) return { ...card, rawCapabilities: [...raw, CATALOG_ONLY_CAPABILITY] };
+
+	const notFree = (capability: string) => capability !== FREE_TIER_CAPABILITY;
+	const { pricing, ...rest } = card;
+	return {
+		...rest,
+		...(pricing && !isFreeTier(card) ? { pricing } : {}),
+		capabilities: card.capabilities.filter(notFree),
+		rawCapabilities: [...raw.filter(notFree), CATALOG_ONLY_CAPABILITY, SUBSCRIPTION_PLAN_CAPABILITY],
+	};
+}
 
 /**
  * Build seed {@link ModelCard}s for the given kosha provider, sourced from

@@ -157,6 +157,110 @@ describe("mergeManifests: pricing quarantine", () => {
 		});
 	});
 
+	describe("how much the sources agree", () => {
+		const DAY = 24 * 60 * 60 * 1000;
+		const at = (models: DiscoveryModelV1[], discoveredAt: number) => ({ ...snapshot(models), discoveredAt });
+		const said = (source: string, inputPerMillion: number, outputPerMillion = 15) => ({
+			source,
+			inputPerMillion,
+			outputPerMillion,
+		});
+		const priced = (inputPerMillion: number, evidence?: ReturnType<typeof said>[], outputPerMillion = 15) =>
+			emptyModel("anthropic:sonnet", {
+				pricing: { inputPerMillion, outputPerMillion },
+				...(evidence ? { priceEvidence: evidence } : {}),
+			} as Partial<DiscoveryModelV1>);
+		const row = (s: DiscoverySnapshotV1) => s.models.find((m) => m.key === "anthropic:sonnet");
+		const twoAgree = [said("models.dev", 0.1), said("litellm", 0.1)];
+		const twoDisagree = [said("models.dev", 0.1), said("litellm", 2.9)];
+
+		it("accepts a big move after one day when two sources agree", () => {
+			const first = mergeManifests(at([priced(3)], 0), at([priced(0.1, twoAgree)], DAY));
+			const early = mergeManifests(first, at([priced(0.1, twoAgree)], 2 * DAY - 1));
+			expect(row(early)?.pricing?.inputPerMillion).toBe(3);
+			const accepted = mergeManifests(early, at([priced(0.1, twoAgree)], 2 * DAY));
+			expect(row(accepted)?.pricing?.inputPerMillion).toBe(0.1);
+			expect(row(accepted)?.rawCapabilities ?? []).not.toContain("pricing_single_source");
+			expect(row(accepted)?.rawCapabilities ?? []).not.toContain("pricing_quarantined");
+		});
+
+		it("makes one source wait three days, and flags it from then on", () => {
+			const first = mergeManifests(at([priced(3)], 0), at([priced(0.1)], DAY));
+			const early = mergeManifests(first, at([priced(0.1)], 4 * DAY - 1));
+			expect(row(early)?.pricing?.inputPerMillion).toBe(3);
+			const accepted = mergeManifests(early, at([priced(0.1)], 4 * DAY));
+			expect(row(accepted)?.pricing?.inputPerMillion).toBe(0.1);
+			expect(row(accepted)?.rawCapabilities).toContain("pricing_single_source");
+			const later = mergeManifests(accepted, at([priced(0.1)], 9 * DAY));
+			expect(row(later)?.rawCapabilities).toContain("pricing_single_source");
+		});
+
+		it("drops the single-source flag once a second source confirms it", () => {
+			const accepted = mergeManifests(
+				mergeManifests(at([priced(3)], 0), at([priced(0.1)], DAY)),
+				at([priced(0.1)], 4 * DAY),
+			);
+			const confirmed = mergeManifests(accepted, at([priced(0.1, twoAgree)], 5 * DAY));
+			expect(row(confirmed)?.rawCapabilities ?? []).not.toContain("pricing_single_source");
+		});
+
+		it("holds a disputed move for 7 days, then accepts it and keeps the flag", () => {
+			let merged = mergeManifests(at([priced(3)], 0), at([priced(0.1, twoDisagree)], DAY));
+			merged = mergeManifests(merged, at([priced(0.1, twoDisagree)], 8 * DAY - 1));
+			expect(row(merged)?.pricing?.inputPerMillion).toBe(3);
+			expect(row(merged)?.rawCapabilities).toContain("pricing_quarantined");
+			expect(row(merged)?.rawCapabilities).toContain("pricing_sources_disagree");
+
+			merged = mergeManifests(merged, at([priced(0.1, twoDisagree)], 8 * DAY));
+			expect(row(merged)?.pricing?.inputPerMillion).toBe(0.1);
+			expect(row(merged)?.rawCapabilities ?? []).not.toContain("pricing_quarantined");
+			expect(row(merged)?.rawCapabilities).toContain("pricing_sources_disagree");
+
+			// No move now, and the dispute stands, so the flag stays visible.
+			merged = mergeManifests(merged, at([priced(0.1, twoDisagree)], 9 * DAY));
+			expect(row(merged)?.rawCapabilities).toContain("pricing_sources_disagree");
+		});
+
+		it("restarts the 7 days when a disputed price changes again", () => {
+			let merged = mergeManifests(at([priced(3)], 0), at([priced(0.1, twoDisagree)], DAY));
+			merged = mergeManifests(merged, at([priced(0.2, [said("models.dev", 0.2), said("litellm", 3)])], 7 * DAY));
+			merged = mergeManifests(merged, at([priced(0.2, [said("models.dev", 0.2), said("litellm", 3)])], 13 * DAY));
+			expect(row(merged)?.pricing?.inputPerMillion).toBe(3);
+		});
+
+		it("releases a disputed price once the sources settle", () => {
+			const held = mergeManifests(at([priced(3)], 0), at([priced(0.1, twoDisagree)], DAY));
+			const settled = mergeManifests(held, at([priced(0.1, twoAgree)], 2 * DAY));
+			expect(row(settled)?.pricing?.inputPerMillion).toBe(0.1);
+			expect(row(settled)?.rawCapabilities ?? []).not.toContain("pricing_sources_disagree");
+		});
+
+		it("takes a smaller move but flags it when sources dispute it", () => {
+			const lie = [said("models.dev", 4.2), said("litellm", 3)];
+			const moved = mergeManifests(at([priced(3)], 0), at([priced(4.2, lie)], DAY));
+			expect(row(moved)?.pricing?.inputPerMillion).toBe(4.2);
+			expect(row(moved)?.rawCapabilities).toContain("pricing_sources_disagree");
+			expect(row(moved)?.rawCapabilities ?? []).not.toContain("pricing_quarantined");
+			const still = mergeManifests(moved, at([priced(4.2, lie)], 2 * DAY));
+			expect(row(still)?.rawCapabilities).toContain("pricing_sources_disagree");
+		});
+
+		it("doesn't flag a price that hasn't moved, however its sources differ", () => {
+			const same = mergeManifests(
+				at([priced(3)], 0),
+				at([priced(3, [said("models.dev", 3), said("litellm", 9)])], DAY),
+			);
+			expect(row(same)?.rawCapabilities ?? []).not.toContain("pricing_sources_disagree");
+		});
+
+		it("refuses a billed $0 even when two sources say so", () => {
+			const zero = [said("models.dev", 0, 0), said("litellm", 0, 0)];
+			const held = mergeManifests(at([priced(3)], 0), at([priced(0, zero, 0)], DAY));
+			const later = mergeManifests(held, at([priced(0, zero, 0)], 60 * DAY));
+			expect(row(later)?.pricing?.inputPerMillion).toBe(3);
+		});
+	});
+
 	it("still treats a zero cache rate as not reported", () => {
 		const prev = snapshot([
 			emptyModel("anthropic:sonnet", {

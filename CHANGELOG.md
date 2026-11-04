@@ -13,6 +13,24 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
+## [1.13.0] — 2026-11-04
+
+### Added
+
+- `keyless: true` makes discovery use public data only. Kosha reads no API key from the environment, config or a CLI's files, runs no cloud CLI, and sends no credential.
+
+### Added
+
+- Every models.dev provider now reaches kosha with no list to edit. The hardcoded list covered 40 of 235 providers, so OpenCode's free models and thousands of others were missing. Providers kosha has no discoverer for are saved to `~/.kosha/catalog-only.json`, beside the registry. Read it for prices from a provider you name.
+- That file is separate on purpose. `registry.json`, the provider cache, `cheapest`, `routes` and `model()` are unchanged, and an older kosha or tokmeter never sees these rows.
+- A subscription plan's $0 isn't a price. Plan providers such as `zai-coding-plan`, and GitLab Duo, get no `free_tier` flag and no $0 rate, and carry a `subscription_plan` raw capability.
+
+### Changed
+
+- How long a price move of 75% or more is held now depends on its sources: models.dev, LiteLLM and the provider's own API. Two agreeing means a day. One alone means three days, and the row carries `pricing_single_source`. While they disagree it's held for seven days, then accepted, and the row keeps `pricing_sources_disagree`, so a source going stale can't pin the old price forever. A billed $0 stays refused, and a change in the rates restarts the wait.
+- A smaller move still takes effect, but carries `pricing_sources_disagree` if the sources dispute it, and kosha prints one line the first time a model gets there.
+- Cards and manifest rows carry `priceEvidence` when more than one source listed the model.
+
 ## [1.12.1] — 2026-11-03
 
 ### Fixed

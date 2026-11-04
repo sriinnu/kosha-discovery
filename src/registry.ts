@@ -159,7 +159,9 @@ export class ModelRegistry {
 	 */
 	async discover(options?: DiscoveryOptions): Promise<ProviderInfo[]> {
 		await assertCatalogReady();
-		const credentialResolver = await getRegistryCredentialResolver();
+		const credentialResolver = this.state.config.keyless
+			? { resolve: async (): Promise<CredentialResult> => ({ source: "none" }) }
+			: await getRegistryCredentialResolver();
 		const dependencies = this.dependencies(credentialResolver);
 		// Chain this pass onto the in-flight tail so it runs only after the
 		// previous pass settles, preserving FIFO ordering of state mutations.

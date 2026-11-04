@@ -10,7 +10,9 @@ import { randomBytes } from "crypto";
 import { mkdir, open, readdir, rename, stat, unlink, writeFile } from "fs/promises";
 import { homedir } from "os";
 import { dirname, join } from "path";
-import { catalogCacheKey, loadActiveCatalog } from "./catalog-source.js";
+import { catalogCacheKey, loadActiveCatalog, resolveCatalogSource } from "./catalog-source.js";
+import { buildCatalogOnlyRows } from "./discovery/catalog-only.js";
+import { type PriceEvidence, priceAgreement } from "./discovery/price-evidence.js";
 import { applyPriceSchedules } from "./discovery/price-schedules.js";
 import { applyPromoOverrides } from "./discovery/promo-overrides.js";
 import type { DiscoverySnapshotV1 } from "./discovery-contract.js";
@@ -42,6 +44,9 @@ const CACHE_KEY_PREFIX = "provider_";
  */
 export const REGISTRY_MANIFEST_PATH = join(homedir(), ".kosha", "registry.json");
 
+/** Providers known only from the public catalog, beside the registry. */
+export const CATALOG_ONLY_FILE = "catalog-only.json";
+
 /**
  * Run provider discovery, enrichment, caching, and delta emission.
  */
@@ -67,7 +72,9 @@ export async function registryDiscover(
 			// Scoped provider rehydration can carry cache-derived state that should
 			// not be published as a fresh top-level manifest snapshot.
 			if (!providers || providers.length === 0) {
-				await exportRegistryManifest(state);
+				// A cache hit makes no network calls, and that includes this file:
+				// it waits for the next real discovery.
+				await exportRegistryManifest(state, { catalogOnly: false });
 			}
 			return Array.from(state.providerMap.values());
 		}
@@ -455,7 +462,7 @@ export async function saveRegistryToCache(state: RegistryState): Promise<void> {
  * still completed successfully, so I swallow errors rather than failing
  * the whole command.
  */
-export async function exportRegistryManifest(state: RegistryState): Promise<void> {
+export async function exportRegistryManifest(state: RegistryState, options?: { catalogOnly?: boolean }): Promise<void> {
 	let manifestPath: string | null = null;
 	let lockReleased = true;
 	let lockPath: string | null = null;
@@ -538,6 +545,8 @@ export async function exportRegistryManifest(state: RegistryState): Promise<void
 			await unlink(tmpPath).catch(() => {});
 			throw err;
 		}
+		warnOnNewlyDisputedPrices(previousManifest, merged);
+		if (options?.catalogOnly !== false) await exportCatalogOnlyManifest(manifestPath);
 	} catch (err) {
 		// Manifest export is best-effort — the cache still works either way.
 		// But silent failure was making permission/disk-full bugs invisible
@@ -694,6 +703,64 @@ function escapeRegExp(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** A price held or changed while its sources disagree is only worth anything if
+ *  someone hears about it, so say so once, when a model first enters that state. */
+function warnOnNewlyDisputedPrices(previous: DiscoverySnapshotV1 | null, merged: DiscoverySnapshotV1): void {
+	const disputed = (snapshot: DiscoverySnapshotV1 | null) =>
+		(snapshot?.models ?? []).filter((m) => m.rawCapabilities?.includes(PRICING_SOURCES_DISAGREE)).map((m) => m.key);
+	const known = new Set(disputed(previous));
+	const fresh = disputed(merged).filter((key) => !known.has(key));
+	if (fresh.length > 0) {
+		console.warn(`[kosha] ${fresh.length} price(s) where sources disagree, e.g. ${fresh[0]}`);
+	}
+}
+
+/** Refuse to write more than this: the catalog itself caps providers and models,
+ *  so a file this large means something upstream went wrong. */
+const MAX_CATALOG_ONLY_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Save providers known only from the public catalog to their own file beside
+ * the registry. They stay out of `registry.json` and the provider cache so no
+ * reader, however old, can route to one or match a model name against one.
+ * Readers ask this file for one named provider. Goes through the same merge,
+ * so a bad publish is held here as it is anywhere else.
+ *
+ * Failing leaves the previous file in place: the registry above is already saved.
+ */
+async function exportCatalogOnlyManifest(manifestPath: string): Promise<void> {
+	if (resolveCatalogSource().mode !== "community") return;
+	const path = join(dirname(manifestPath), CATALOG_ONLY_FILE);
+	let tmpPath: string | null = null;
+	try {
+		const { getAllDiscoverers } = await import("./discovery/index.js");
+		const models = await buildCatalogOnlyRows(getAllDiscoverers().map((discoverer) => discoverer.providerId));
+		if (models.length === 0) return;
+		const fresh = {
+			schemaVersion: DISCOVERY_SCHEMA_VERSION,
+			discoveredAt: Date.now(),
+			cursor: "",
+			providers: [],
+			models,
+			roles: [],
+			health: [],
+			credentialPrompts: [],
+		} as unknown as DiscoverySnapshotV1;
+		const merged = mergeManifests(await readPreviousManifest(path), fresh);
+		const body = JSON.stringify(merged);
+		if (Buffer.byteLength(body) > MAX_CATALOG_ONLY_BYTES) {
+			throw new Error(`${CATALOG_ONLY_FILE} would exceed ${MAX_CATALOG_ONLY_BYTES} bytes`);
+		}
+		assertCleanPayload(merged, CATALOG_ONLY_FILE);
+		tmpPath = `${path}.${randomBytes(4).toString("hex")}.tmp`;
+		await writeFile(tmpPath, body, { encoding: "utf-8", mode: 0o600 });
+		await rename(tmpPath, path);
+	} catch (err) {
+		if (tmpPath) await unlink(tmpPath).catch(() => {});
+		console.warn(`[kosha] ${CATALOG_ONLY_FILE} not updated: ${err instanceof Error ? err.message : String(err)}`);
+	}
+}
+
 /** Resolve the on-disk path for the registry manifest. Tests + custom callers
  *  pin via `state.config.cacheDir`; production falls back to ~/.kosha. */
 function resolveManifestPath(state: RegistryState): string {
@@ -739,10 +806,26 @@ async function readPreviousManifest(manifestPath: string): Promise<DiscoverySnap
  *  a much larger swing so legitimate price updates aren't blocked. */
 const PRICING_QUARANTINE_THRESHOLD = 0.75;
 
-/** Quarantine guards against a one-shot bad publish. A catalog that keeps
- *  publishing the same rates for this long isn't one, so the new rates are
- *  accepted. Without this, a real price move stays refused forever. */
-const PRICING_QUARANTINE_HOLD_MS = 3 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Quarantine guards against a bad publish, but a real move must not stay refused
+ *  forever. Two independent sources agreeing is strong evidence, so that's a day. */
+const PRICING_AGREED_HOLD_MS = DAY_MS;
+
+/** One source can't vouch for itself, and a compromised one can simply wait out
+ *  the hold. So it waits longer, and the row stays flagged once it's accepted. */
+const PRICING_SINGLE_SOURCE_HOLD_MS = 3 * DAY_MS;
+
+/** Sources can stay apart for good: one going stale after a real move would
+ *  otherwise pin the old price forever. So a dispute waits longest, and the row
+ *  stays flagged once it's accepted. */
+const PRICING_DISPUTED_HOLD_MS = 7 * DAY_MS;
+
+/** The accepted price rests on one source's word. */
+const PRICING_SINGLE_SOURCE = "pricing_single_source";
+
+/** Sources list different prices for this model. */
+const PRICING_SOURCES_DISAGREE = "pricing_sources_disagree";
 
 /** After this many consecutive discovery passes in which a previously-known
  *  model is missing from the fresh snapshot, the model is dropped from the
@@ -769,7 +852,8 @@ export function mergeManifests(previous: DiscoverySnapshotV1 | null, fresh: Disc
 	//       → keep the previous pricing and tag the row pricing_quarantined,
 	//       so a one-shot bad publish (provider returns 0, garbage units, …)
 	//       can't silently overcharge or underprice downstream consumers.
-	//       The same rates published for PRICING_QUARANTINE_HOLD_MS are accepted.
+	//       The same rates are accepted after a day if two sources agree on them,
+	//       after three days if only one lists them, and not while sources disagree.
 	const freshModelKeys = new Set<string>();
 	const mergedModels: (typeof fresh.models)[number][] = [];
 	for (const f of fresh.models ?? []) {
@@ -789,21 +873,48 @@ export function mergeManifests(previous: DiscoverySnapshotV1 | null, fresh: Disc
 			const rates = pricingFingerprint(f);
 			const hold = (old as { pricingHold?: PricingHold }).pricingHold;
 			const since = hold?.rates === rates ? hold.since : now;
+			const agreement = priceAgreement((f as { priceEvidence?: PriceEvidence[] }).priceEvidence);
+			const window =
+				agreement === "agree"
+					? PRICING_AGREED_HOLD_MS
+					: agreement === "disagree"
+						? PRICING_DISPUTED_HOLD_MS
+						: PRICING_SINGLE_SOURCE_HOLD_MS;
 			// A billed rate of $0 is never accepted this way: it poisons cheapest
 			// routing however long it's published.
-			if (billedRateDroppedToZero(old, f) || now - since < PRICING_QUARANTINE_HOLD_MS) {
+			if (billedRateDroppedToZero(old, f) || now - since < window) {
 				// Quarantine the suspect rates: keep the old pricing block and
 				// tag the operational `rawCapabilities` array (the trusted
 				// `capabilities` taxonomy stays clean, since this isn't a routing
 				// signal — it's a "don't trust the freshly-published rate" flag).
+				let tags = tagCapability(kept.rawCapabilities, "pricing_quarantined");
+				if (agreement === "disagree") tags = tagCapability(tags, PRICING_SOURCES_DISAGREE);
 				kept = {
 					...kept,
 					pricing: old.pricing,
 					originPricing: old.originPricing,
-					rawCapabilities: tagCapability(kept.rawCapabilities, "pricing_quarantined"),
+					rawCapabilities: tags,
 					pricingHold: { rates, since },
 				} as typeof kept;
+			} else if (agreement !== "agree") {
+				const flag = agreement === "single" ? PRICING_SINGLE_SOURCE : PRICING_SOURCES_DISAGREE;
+				kept = { ...kept, rawCapabilities: tagCapability(kept.rawCapabilities, flag) };
 			}
+		} else if (old && !f.pricing?.schedule) {
+			// Below the quarantine line a price still takes effect, but a move its
+			// sources dispute is the believable lie, so it carries a flag. Flags
+			// from an earlier move last until the rates change or the evidence does.
+			const agreement = priceAgreement((f as { priceEvidence?: PriceEvidence[] }).priceEvidence);
+			const moved = pricingFingerprint(old) !== pricingFingerprint(f);
+			const wasTagged = (tag: string) => !moved && (old.rawCapabilities ?? []).includes(tag);
+			let tags = kept.rawCapabilities;
+			if (agreement === "disagree" && (moved || wasTagged(PRICING_SOURCES_DISAGREE))) {
+				tags = tagCapability(tags, PRICING_SOURCES_DISAGREE);
+			}
+			if (agreement === "single" && wasTagged(PRICING_SINGLE_SOURCE)) {
+				tags = tagCapability(tags, PRICING_SINGLE_SOURCE);
+			}
+			if (tags !== kept.rawCapabilities) kept = { ...kept, rawCapabilities: tags };
 		}
 		mergedModels.push(kept);
 	}
@@ -1105,7 +1216,10 @@ async function discoverProvider(
 		: dependencies.fallbackCredential(discoverer.providerId, explicitKey);
 
 	try {
-		const models = await discoverer.discover(credential, { timeout });
+		// Cloud discoverers fall back to ambient credentials (the AWS chain, gcloud)
+		// whatever credential they're given, so keyless mode has its own path there.
+		const keylessPath = state.config.keyless ? discoverer.discoverKeyless?.bind(discoverer) : undefined;
+		const models = keylessPath ? await keylessPath() : await discoverer.discover(credential, { timeout });
 		breaker.onSuccess();
 		dependencies.recordObservation(discoverer.providerId, {
 			latencyMs: Date.now() - startedAt,
