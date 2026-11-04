@@ -6,6 +6,7 @@ USAGE
 
 COMMANDS
   discover                      Discover all providers and models
+  enrich                        Re-enrich cached models with latest pricing data
   list                          List all known models
     --provider <name>             Filter by serving-layer provider
     --origin <name>               Filter by origin/creator provider (e.g. anthropic)
@@ -47,6 +48,13 @@ COMMANDS
     --provider <name>             Scope latest fetch to one provider
   refresh (update)              Force re-discover all providers (bypass cache)
     --provider <name>             Refresh only one provider
+  doctor (health)               Deprecation warnings + provider health, no network
+    --ci                          Exit non-zero on lifecycle findings (alias: --fail-on-warning)
+  spend (usage)                 Roll up the proxy spend ledger
+    --since <iso-date>            Start of the window (default: all rows)
+    --until <iso-date>            End of the window (a bare date includes that day)
+    --tenant <name>               Only rows tagged with this tenant
+    --ledger <path>               Ledger file (default ~/.kosha/ledger.jsonl + monthly partitions)
   registry export               Write the catalog in snapshot format (for local mode)
     --output <file>               Write to a file instead of stdout
     --provider <name>             Export only one provider
