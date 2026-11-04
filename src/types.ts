@@ -671,6 +671,12 @@ export interface KoshaConfig {
 	/** Custom user-defined alias mappings (merged on top of built-in defaults). */
 	aliases?: Record<string, string>;
 	/**
+	 * Discover from public data only. Kosha reads no API key from the environment,
+	 * config or a CLI's files, runs no cloud CLI, and sends no credential. For an
+	 * app that wants prices and promises its users it touches no keys.
+	 */
+	keyless?: boolean;
+	/**
 	 * Where keyless catalog data comes from: `community` (models.dev +
 	 * LiteLLM, the default), `pinned` (kosha's published snapshot only) or
 	 * `local` (`catalogFile` only, no network). `KOSHA_CATALOG_SOURCE` wins.
@@ -720,6 +726,8 @@ export interface ProviderDiscoverer {
 	 * @param options    - Optional timeout configuration.
 	 */
 	discover(credential: CredentialResult, options?: { timeout?: number }): Promise<ModelCard[]>;
+	/** For a discoverer that would otherwise reach for ambient credentials. */
+	discoverKeyless?(): Promise<ModelCard[]>;
 }
 
 /**

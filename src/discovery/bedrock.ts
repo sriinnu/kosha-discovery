@@ -17,8 +17,8 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { assertSafeShellArg, cliSpawnOptions } from "../shell-safe.js";
 import { assertCleanPayload } from "../security.js";
+import { assertSafeShellArg, cliSpawnOptions } from "../shell-safe.js";
 import type { CredentialResult, ModelCard, ModelMode } from "../types.js";
 import { BaseDiscoverer } from "./base.js";
 import { getPublicSeed } from "./public-seed.js";
@@ -95,9 +95,7 @@ const VENDOR_TO_ORIGIN: Record<string, string> = {
  * with no AWS tooling.  Context windows and output limits are
  * intentionally set to 0 so that the litellm enrichment pass can fill them in.
  */
-const STATIC_MODELS: ReadonlyArray<
-	Pick<ModelCard, "id" | "name" | "mode" | "capabilities" | "originProvider">
-> = [
+const STATIC_MODELS: ReadonlyArray<Pick<ModelCard, "id" | "name" | "mode" | "capabilities" | "originProvider">> = [
 	{
 		id: "anthropic.claude-opus-5-5",
 		name: "Claude Opus 5.5 (Bedrock)",
@@ -262,17 +260,13 @@ export class BedrockDiscoverer extends BaseDiscoverer {
 		try {
 			assertSafeShellArg(region, "region");
 
-			stdout = execFileSync(
-				"aws",
-				["bedrock", "list-foundation-models", "--region", region, "--output", "json"],
-				{
-					...cliSpawnOptions(),
-					timeout: timeoutMs,
-					encoding: "utf8",
-					// Suppress stderr — credential errors print there, not on stdout
-					stdio: ["ignore", "pipe", "ignore"],
-				},
-			);
+			stdout = execFileSync("aws", ["bedrock", "list-foundation-models", "--region", region, "--output", "json"], {
+				...cliSpawnOptions(),
+				timeout: timeoutMs,
+				encoding: "utf8",
+				// Suppress stderr — credential errors print there, not on stdout
+				stdio: ["ignore", "pipe", "ignore"],
+			});
 		} catch (error: unknown) {
 			// Re-throw so discover() can fall through to the static list
 			throw new Error(`AWS CLI failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -308,6 +302,12 @@ export class BedrockDiscoverer extends BaseDiscoverer {
 		} catch {
 			return [];
 		}
+	}
+
+	/** Public data only: no AWS SDK, no CLI, no ambient credential. */
+	async discoverKeyless(): Promise<ModelCard[]> {
+		const seeds = await this.publicCatalogFallback();
+		return seeds.length > 0 ? seeds : this.staticFallback();
 	}
 
 	// -------------------------------------------------------------------------

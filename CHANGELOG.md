@@ -17,6 +17,10 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ### Added
 
+- `keyless: true` makes discovery use public data only. Kosha reads no API key from the environment, config or a CLI's files, runs no cloud CLI, and sends no credential.
+
+### Added
+
 - Every models.dev provider now reaches kosha with no list to edit. The hardcoded list covered 40 of 235 providers, so OpenCode's free models and thousands of others were missing. Providers kosha has no discoverer for are saved to `~/.kosha/catalog-only.json`, beside the registry. Read it for prices from a provider you name.
 - That file is separate on purpose. `registry.json`, the provider cache, `cheapest`, `routes` and `model()` are unchanged, and an older kosha or tokmeter never sees these rows.
 - A subscription plan's $0 isn't a price. Plan providers such as `zai-coding-plan`, and GitLab Duo, get no `free_tier` flag and no $0 rate, and carry a `subscription_plan` raw capability.

@@ -1216,7 +1216,10 @@ async function discoverProvider(
 		: dependencies.fallbackCredential(discoverer.providerId, explicitKey);
 
 	try {
-		const models = await discoverer.discover(credential, { timeout });
+		// Cloud discoverers fall back to ambient credentials (the AWS chain, gcloud)
+		// whatever credential they're given, so keyless mode has its own path there.
+		const keylessPath = state.config.keyless ? discoverer.discoverKeyless?.bind(discoverer) : undefined;
+		const models = keylessPath ? await keylessPath() : await discoverer.discover(credential, { timeout });
 		breaker.onSuccess();
 		dependencies.recordObservation(discoverer.providerId, {
 			latencyMs: Date.now() - startedAt,

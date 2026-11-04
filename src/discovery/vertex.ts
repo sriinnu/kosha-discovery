@@ -17,10 +17,10 @@ import { execFileSync, execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { assertSafeShellArg, cliSpawnOptions } from "../shell-safe.js";
-import { assertCleanPayload } from "../security.js";
-import type { CredentialResult, ModelCard, ModelMode } from "../types.js";
 import { extractOriginProvider } from "../normalize.js";
+import { assertCleanPayload } from "../security.js";
+import { assertSafeShellArg, cliSpawnOptions } from "../shell-safe.js";
+import type { CredentialResult, ModelCard, ModelMode } from "../types.js";
 import { BaseDiscoverer } from "./base.js";
 import { getPublicSeed } from "./public-seed.js";
 
@@ -100,10 +100,7 @@ export class VertexDiscoverer extends BaseDiscoverer {
 	 */
 	async discover(credential: CredentialResult, options?: { timeout?: number }): Promise<ModelCard[]> {
 		// Project ID resolution: credential → env vars → gcloud config
-		let projectId =
-			credential.metadata?.projectId ??
-			process.env.GOOGLE_CLOUD_PROJECT ??
-			process.env.GCLOUD_PROJECT;
+		let projectId = credential.metadata?.projectId ?? process.env.GOOGLE_CLOUD_PROJECT ?? process.env.GCLOUD_PROJECT;
 
 		if (!projectId) {
 			projectId = this.resolveProjectFromCli();
@@ -136,6 +133,13 @@ export class VertexDiscoverer extends BaseDiscoverer {
 
 		// Attempt 4: Static fallback
 		return this.staticFallback(region, projectId);
+	}
+
+	/** Public data only: no gcloud, no token, no ambient credential. */
+	async discoverKeyless(): Promise<ModelCard[]> {
+		const region = "us-central1";
+		const seeds = await this.publicCatalogFallback(region, undefined);
+		return seeds.length > 0 ? seeds : this.staticFallback(region, undefined);
 	}
 
 	// -------------------------------------------------------------------------
@@ -345,7 +349,8 @@ export class VertexDiscoverer extends BaseDiscoverer {
 			const seeds = await getPublicSeed(this.providerId);
 			return seeds.map((seed) => ({
 				...seed,
-				originProvider: extractOriginProvider(seed.id) ?? (seed.id.includes("/") ? seed.id.slice(0, seed.id.indexOf("/")) : "google"),
+				originProvider:
+					extractOriginProvider(seed.id) ?? (seed.id.includes("/") ? seed.id.slice(0, seed.id.indexOf("/")) : "google"),
 				region,
 				projectId,
 			}));
@@ -372,14 +377,38 @@ export class VertexDiscoverer extends BaseDiscoverer {
 	private staticFallback(region: string, projectId: string | undefined): ModelCard[] {
 		const base = { provider: "vertex", originProvider: "google", region, projectId, source: "manual" as const };
 		const geminiChat = (id: string, name: string, ctx: number, out: number): ModelCard =>
-			this.makeCard({ ...base, id, name, mode: "chat", capabilities: ["chat", "vision", "function_calling", "code", "nlu"], contextWindow: ctx, maxOutputTokens: out });
+			this.makeCard({
+				...base,
+				id,
+				name,
+				mode: "chat",
+				capabilities: ["chat", "vision", "function_calling", "code", "nlu"],
+				contextWindow: ctx,
+				maxOutputTokens: out,
+			});
 
 		return [
 			geminiChat("gemini-2.5-pro", "Gemini 2.5 Pro", 1_048_576, 65_536),
 			geminiChat("gemini-3.8-flash", "Gemini 3.8 Flash", 1_048_576, 65_536),
 			geminiChat("gemini-2.5-flash", "Gemini 2.5 Flash", 1_048_576, 65_536),
-			this.makeCard({ ...base, id: "text-embedding-005", name: "Text Embedding 005", mode: "embedding", capabilities: ["embedding"], contextWindow: 2_048, maxOutputTokens: 0 }),
-			this.makeCard({ ...base, id: "imagen-3.0-generate-002", name: "Imagen 3.0", mode: "image", capabilities: ["image_generation"], contextWindow: 0, maxOutputTokens: 0 }),
+			this.makeCard({
+				...base,
+				id: "text-embedding-005",
+				name: "Text Embedding 005",
+				mode: "embedding",
+				capabilities: ["embedding"],
+				contextWindow: 2_048,
+				maxOutputTokens: 0,
+			}),
+			this.makeCard({
+				...base,
+				id: "imagen-3.0-generate-002",
+				name: "Imagen 3.0",
+				mode: "image",
+				capabilities: ["image_generation"],
+				contextWindow: 0,
+				maxOutputTokens: 0,
+			}),
 		];
 	}
 
@@ -473,7 +502,8 @@ export class VertexDiscoverer extends BaseDiscoverer {
 	private inferCapabilities(id: string, actions: string[]): string[] {
 		const lower = id.toLowerCase();
 
-		if (actions.includes("embedContent") || lower.includes("embedding") || lower.includes("embed")) return ["embedding"];
+		if (actions.includes("embedContent") || lower.includes("embedding") || lower.includes("embed"))
+			return ["embedding"];
 		if (lower.includes("imagen") || lower.includes("image")) return ["image_generation"];
 
 		if (lower.includes("gemini")) {
