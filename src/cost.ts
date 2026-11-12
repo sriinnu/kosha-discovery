@@ -125,7 +125,14 @@ export function actualCostFromUsage(model: ModelCard, rawUsage: unknown, shape: 
 	const cacheRead = usage.cachedInputTokens ?? 0;
 	const cacheWrite = usage.cacheWriteTokens ?? 0;
 	const uncachedInput = shape === "openai" ? Math.max(0, usage.inputTokens - cacheRead) : usage.inputTokens;
-	const readRate = pricing.cacheReadPerMillion ?? pricing.inputPerMillion * (shape === "anthropic" ? 0.1 : 0.5);
+	// Catalogs write 0 for a cache rate they don't know, so a $0 cache read on
+	// paid input is treated as unknown, not free. Billing it at 0 would let
+	// cache-heavy traffic, most of an agent's input, through the budget unpriced.
+	const listedRead = pricing.cacheReadPerMillion;
+	const readRate =
+		typeof listedRead === "number" && (listedRead > 0 || pricing.inputPerMillion === 0)
+			? listedRead
+			: pricing.inputPerMillion * (shape === "anthropic" ? 0.1 : 0.5);
 	const writeRate = pricing.cacheWritePerMillion ?? (shape === "anthropic" ? pricing.inputPerMillion * 1.25 : 0);
 	// Cache writes are billed by lifetime, and the catalog rate is the short-TTL
 	// one. Price the 1-hour share at its own rate when the entry carries it,

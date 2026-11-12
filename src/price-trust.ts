@@ -35,7 +35,7 @@ export function isUnverifiedZeroPrice(model: ModelCard): boolean {
 	return getProviderDescriptor(model.provider)?.isLocal !== true;
 }
 
-const PRICE_RATE_FIELDS = [
+export const PRICE_RATE_FIELDS = [
 	"inputPerMillion",
 	"outputPerMillion",
 	"reasoningInputPerMillion",

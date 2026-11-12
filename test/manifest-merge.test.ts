@@ -288,16 +288,26 @@ describe("mergeManifests: model lifecycle TTL", () => {
 		expect(row?.missingRunCount).toBe(1);
 	});
 
-	it("drops a model whose missingRunCount exceeds the TTL", () => {
+	it("drops a model unseen for more than 30 days, however few runs that took", () => {
+		const day = 24 * 60 * 60 * 1000;
 		const prev = snapshot([
 			emptyModel("openai:gpt-zombie", {
-				missingRunCount: 14,
+				lastSeenAt: 0,
+				missingRunCount: 2,
 				pricing: { inputPerMillion: 1, outputPerMillion: 2 },
-			}),
+			} as Partial<DiscoveryModelV1>),
 		]);
-		const fresh = snapshot([]);
-		const merged = mergeManifests(prev, fresh);
-		expect(merged.models.find((m) => m.key === "openai:gpt-zombie")).toBeUndefined();
+		const at = (discoveredAt: number) => ({ ...snapshot([]), discoveredAt });
+		expect(mergeManifests(prev, at(29 * day)).models.find((m) => m.key === "openai:gpt-zombie")).toBeDefined();
+		expect(mergeManifests(prev, at(31 * day)).models.find((m) => m.key === "openai:gpt-zombie")).toBeUndefined();
+	});
+
+	it("keeps a missing model through many runs inside 30 days", () => {
+		const hour = 60 * 60 * 1000;
+		let manifest = snapshot([emptyModel("openai:gpt-flaky", { pricing: { inputPerMillion: 1, outputPerMillion: 2 } })]);
+		for (let run = 1; run <= 48; run++)
+			manifest = mergeManifests(manifest, { ...snapshot([]), discoveredAt: run * hour });
+		expect(manifest.models.find((m) => m.key === "openai:gpt-flaky")?.pricing?.inputPerMillion).toBe(1);
 	});
 
 	it("resets missingRunCount when a model reappears", () => {

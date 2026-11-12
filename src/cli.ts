@@ -213,7 +213,7 @@ async function main(): Promise<void> {
 			break;
 
 		case "registry":
-			await cmdRegistry(registry, positional[1], flags);
+			await cmdRegistry(registry, positional[1], flags, positional[2]);
 			break;
 
 		default:

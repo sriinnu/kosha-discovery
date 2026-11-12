@@ -1,5 +1,6 @@
 /**
  * `kosha registry export` — write the current catalog to a file.
+ * `kosha registry accept <provider>/<model>` — accept a price quarantine holds.
  *
  * The output uses the same envelope as kosha's weekly snapshot, so it can
  * be fed straight back in as a `local` catalog
@@ -18,10 +19,16 @@ export async function cmdRegistry(
 	registry: ModelRegistry,
 	subcommand: string | undefined,
 	flags: Record<string, string | boolean>,
+	modelRef?: string,
 ): Promise<void> {
+	if (subcommand === "accept") {
+		await acceptHeld(registry, modelRef);
+		return;
+	}
 	if (subcommand !== "export") {
 		console.error(c(RED, `Unknown registry subcommand: "${subcommand ?? ""}"`));
 		console.error(c(DIM, "Usage: kosha registry export [--output <file>] [--provider <id>]"));
+		console.error(c(DIM, "       kosha registry accept <provider>/<model>"));
 		process.exit(1);
 	}
 
@@ -45,5 +52,30 @@ export async function cmdRegistry(
 	console.error(
 		c(GREEN, `Wrote ${envelope.modelCount} models from ${envelope.providerCount} providers`) +
 			c(DIM, ` (catalog source: ${resolveCatalogSource().mode}) → ${target}`),
+	);
+}
+
+/** Accept the rates a quarantine is holding for one model, after you've checked them. */
+async function acceptHeld(registry: ModelRegistry, target: string | undefined): Promise<void> {
+	const slash = target?.indexOf("/") ?? -1;
+	if (!target || slash <= 0 || slash === target.length - 1) {
+		console.error(c(RED, "Usage: kosha registry accept <provider>/<model>"));
+		process.exit(1);
+	}
+	const providerId = target.slice(0, slash);
+	const modelId = target.slice(slash + 1);
+	const result = await registry.acceptHeldPrice(providerId, modelId);
+	if (result.status === "not-found") {
+		console.error(c(RED, `No ${target} in the registry manifest.`));
+		process.exit(1);
+	}
+	if (result.status === "not-held") {
+		console.error(c(DIM, `${target} has no held price; nothing to accept.`));
+		return;
+	}
+	const since = new Date(result.waitingSince).toISOString().slice(0, 10);
+	console.error(
+		c(GREEN, `Accepted the price held for ${target} since ${since}.`) +
+			c(DIM, " The next `kosha update` takes it; a different publish is checked afresh."),
 	);
 }

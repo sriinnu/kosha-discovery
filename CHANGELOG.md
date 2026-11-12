@@ -29,6 +29,17 @@ Fixes from an independent review of the whole codebase.
 - Moonshot, MiniMax, LM Studio and vLLM requests go to `/v1/chat/completions`; they went to `/chat/completions` and 404ed.
 - MiniMax's China Token Plan now points at `api.minimaxi.com`, like every other MiniMax China entry, instead of `api.minimax.cn`.
 - The proxy accepts `[::1]` for a local runtime.
+- Quarantine checks every rate that bills or ranks, not only input, output and cache. An image price falling 99.9% went straight through.
+- A billed rate cut to under 1% of the last one is held like a $0 rate: waiting doesn't release it.
+- A cache rate a catalog reports as `0` keeps its last real value, and the cost of a $0 cache read on paid input is estimated, not taken as free.
+- Only kosha's own cited price schedules skip quarantine. Any row with a `schedule` field used to, including one from a snapshot or a local file.
+- A held price applies even when the manifest write fails (lock timeout, full disk), and an unreadable manifest falls back to its newest `.bak` instead of dropping every price baseline.
+- A model missing from discovery keeps its price baseline for 30 days, not 14 runs (about 15 hours on an hourly loop).
+- While a price is held or its sources disagree, kosha routes and budgets on the highest rate any source reports. The `pricing_sources_disagree` flag used to change nothing.
+
+### Added
+
+- `kosha registry accept <provider>/<model>` accepts the exact rates quarantine is holding, once you've checked them. It replaces moving `registry.json` aside, which cleared every hold at once.
 
 ### Tests
 
