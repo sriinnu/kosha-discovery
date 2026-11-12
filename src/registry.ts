@@ -247,7 +247,17 @@ export class ModelRegistry {
 			...options,
 			limit: Number.MAX_SAFE_INTEGER,
 		});
-		return rankCandidatesByStrategy(this.state, result.matches, strategy).slice(0, normalizeLimit(options?.limit));
+		// Plan-billed models stay routable: they follow the priced routes as
+		// routes with no price, the place they held before they got their own list.
+		const planRoutes = result.includedInPlans.map((model) => ({
+			model,
+			score: undefined,
+			priceMetric: result.priceMetric,
+		}));
+		return rankCandidatesByStrategy(this.state, [...result.matches, ...planRoutes], strategy).slice(
+			0,
+			normalizeLimit(options?.limit),
+		);
 	}
 
 	/** Read-only runtime health for one provider (breaker state, latency, reliability). */

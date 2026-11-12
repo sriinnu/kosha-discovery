@@ -25,7 +25,7 @@ import {
 } from "./cli-format.js";
 import type { ModelRegistry } from "./registry.js";
 import { parseRouteStrategy, ROUTE_STRATEGIES } from "./registry-routing.js";
-import type { CheapestModelMatch, ModelMode } from "./types.js";
+import type { CheapestModelMatch, ModelCard, ModelMode } from "./types.js";
 
 async function ensureDiscovered(registry: ModelRegistry): Promise<void> {
 	const candidate = registry as unknown as {
@@ -220,6 +220,7 @@ export async function cmdCheapest(registry: ModelRegistry, flags: Record<string,
 
 	if (result.matches.length === 0) {
 		console.log(c(YELLOW, "No priced models found for the requested filters."));
+		printIncludedInPlans(result.includedInPlans);
 		if (result.missingCredentials.length > 0) {
 			console.log(c(DIM, "\nMissing provider credentials:"));
 			for (const prompt of result.missingCredentials) {
@@ -280,6 +281,7 @@ export async function cmdCheapest(registry: ModelRegistry, flags: Record<string,
 	}
 
 	console.log(c(DIM, `\n${result.pricedCandidates}/${result.candidates} candidates had usable pricing.`));
+	printIncludedInPlans(result.includedInPlans);
 
 	if (result.missingCredentials.length > 0) {
 		console.log(c(DIM, "\nMissing provider credentials:"));
@@ -404,6 +406,26 @@ export async function cmdCapable(
 function parseMinContextFlag(flags: Record<string, string | boolean>): number | undefined {
 	const k = parseNumberFlag(flags, "min-context");
 	return k === undefined ? undefined : k * 1_000;
+}
+
+/**
+ * Plan-billed models, apart from the price ranking: the subscription already
+ * pays for them, which is neither a price nor "free".
+ */
+function printIncludedInPlans(models: ModelCard[]): void {
+	if (models.length === 0) return;
+	console.log(`\n${c(BOLD, "Included in your plans")} ${c(DIM, "(paid by subscription, no per-token price)")}`);
+	const columns: Column[] = [
+		{ header: "Provider", width: 22 },
+		{ header: "Model", width: 38 },
+		{ header: "Mode", width: 10 },
+	];
+	console.log(
+		renderTable(
+			columns,
+			models.map((model) => [c(CYAN, model.provider), model.id, model.mode]),
+		),
+	);
 }
 
 /** A catalog-only $0 says "unverified" rather than looking free. */

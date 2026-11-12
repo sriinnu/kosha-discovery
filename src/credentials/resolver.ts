@@ -19,9 +19,9 @@ import { execSync } from "child_process";
 import { readFile } from "fs/promises";
 import { homedir, platform } from "os";
 import { join } from "path";
-import type { CredentialResult } from "../types.js";
-import { getProviderDescriptor, normalizeProviderId } from "../provider-catalog.js";
+import { getProviderDescriptor, normalizeProviderId, resolveEnvCredential } from "../provider-catalog.js";
 import { cliSpawnOptions } from "../shell-safe.js";
+import type { CredentialResult } from "../types.js";
 
 /**
  * Multi-source credential resolver for AI providers.
@@ -94,32 +94,6 @@ export class CredentialResolver {
 				return this.resolveVertexCredential(explicitKey);
 			case "nvidia":
 				return this.resolveNvidia(explicitKey);
-			case "together":
-				return this.resolveSimpleEnvKey(explicitKey, "TOGETHER_API_KEY");
-			case "fireworks":
-				return this.resolveSimpleEnvKey(explicitKey, "FIREWORKS_API_KEY");
-			case "groq":
-				return this.resolveSimpleEnvKey(explicitKey, "GROQ_API_KEY");
-			case "mistral":
-				return this.resolveSimpleEnvKey(explicitKey, "MISTRAL_API_KEY");
-			case "deepinfra":
-				return this.resolveSimpleEnvKey(explicitKey, "DEEPINFRA_API_KEY");
-			case "cohere":
-				return this.resolveSimpleEnvKey(explicitKey, "CO_API_KEY");
-			case "cerebras":
-				return this.resolveSimpleEnvKey(explicitKey, "CEREBRAS_API_KEY");
-			case "perplexity":
-				return this.resolveSimpleEnvKey(explicitKey, "PERPLEXITY_API_KEY");
-			case "deepseek":
-				return this.resolveSimpleEnvKey(explicitKey, "DEEPSEEK_API_KEY");
-			case "moonshot":
-				return this.resolveMultiEnvKey(explicitKey, ["MOONSHOT_API_KEY", "KIMI_API_KEY"]);
-			case "glm":
-				return this.resolveMultiEnvKey(explicitKey, ["GLM_API_KEY", "ZHIPUAI_API_KEY"]);
-			case "zai":
-				return this.resolveSimpleEnvKey(explicitKey, "ZAI_API_KEY");
-			case "minimax":
-				return this.resolveSimpleEnvKey(explicitKey, "MINIMAX_API_KEY");
 			default:
 				// Providers whose credential is a plain API key in one of a known
 				// set of env vars need no branch here — the catalog descriptor
@@ -138,11 +112,16 @@ export class CredentialResolver {
 	 * provider looked unauthenticated no matter what the environment held.
 	 */
 	private resolveFromCatalog(providerId: string, explicitKey?: string): Promise<CredentialResult> {
-		const envVars = getProviderDescriptor(providerId)?.credentialEnvVars ?? [];
-		if (!explicitKey && envVars.length === 0) {
-			return Promise.resolve({ source: "none" });
+		const descriptor = getProviderDescriptor(providerId);
+		const envVars = descriptor?.credentialEnvVars ?? [];
+		if (explicitKey) {
+			return Promise.resolve({ apiKey: explicitKey, source: "config" });
 		}
-		return this.resolveMultiEnvKey(explicitKey, [...envVars]);
+		if (envVars.length === 0) return Promise.resolve({ source: "none" });
+		const found = resolveEnvCredential(descriptor);
+		return Promise.resolve(
+			found ? { apiKey: found.apiKey, source: "env", envVar: found.envVar, shared: found.shared } : { source: "none" },
+		);
 	}
 
 	// ---------------------------------------------------------------------------
@@ -188,9 +167,7 @@ export class CredentialResolver {
 		}
 
 		// 5. Claude CLI OAuth — ~/.claude/credentials.json
-		const claudeOAuth = await this.readJson<{ accessToken?: string }>(
-			join(this.home, ".claude", "credentials.json"),
-		);
+		const claudeOAuth = await this.readJson<{ accessToken?: string }>(join(this.home, ".claude", "credentials.json"));
 		if (claudeOAuth?.accessToken) {
 			return {
 				accessToken: claudeOAuth.accessToken,
@@ -653,21 +630,6 @@ export class CredentialResolver {
 		return Promise.resolve({ source: "none" });
 	}
 
-	private resolveMultiEnvKey(explicitKey: string | undefined, envVarNames: string[]): Promise<CredentialResult> {
-		if (explicitKey) {
-			return Promise.resolve({ apiKey: explicitKey, source: "config" });
-		}
-
-		for (const envVarName of envVarNames) {
-			const envKey = process.env[envVarName];
-			if (envKey) {
-				return Promise.resolve({ apiKey: envKey, source: "env" });
-			}
-		}
-
-		return Promise.resolve({ source: "none" });
-	}
-
 	// ---------------------------------------------------------------------------
 	// Helpers
 	// ---------------------------------------------------------------------------
@@ -693,9 +655,7 @@ export class CredentialResolver {
 
 	/** Return candidate paths for gcloud ADC. */
 	private getGcloudPaths(): string[] {
-		const paths: string[] = [
-			join(this.home, ".config", "gcloud", "application_default_credentials.json"),
-		];
+		const paths: string[] = [join(this.home, ".config", "gcloud", "application_default_credentials.json")];
 
 		if (this.isWindows) {
 			const appData = process.env.APPDATA;

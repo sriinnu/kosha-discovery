@@ -21,16 +21,17 @@ import { type FileHandle, open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { catalogCacheKey } from "../src/catalog-source.js";
 import {
 	DISCOVERY_SCHEMA_VERSION,
 	type DiscoveryModelV1,
 	type DiscoveryProviderV1,
 	type DiscoverySnapshotV1,
 } from "../src/discovery-contract.js";
-import { exportRegistryManifest, registryDiscover } from "../src/registry-runtime.js";
-import { createRegistryState } from "../src/registry-state.js";
 import { registryClassifyError, registryRecordObservation } from "../src/registry-discovery.js";
+import { exportRegistryManifest, registryDiscover } from "../src/registry-runtime.js";
 import type { DiscoveryDependencies } from "../src/registry-state.js";
+import { createRegistryState } from "../src/registry-state.js";
 import type { ModelCard, ProviderDiscoverer } from "../src/types.js";
 
 let workDir: string;
@@ -465,9 +466,71 @@ describe("registryDiscover — credentialed failure degrades to the public catal
 		expect(moonshot?.models.map((m) => m.id)).toEqual(["kimi-k3"]);
 		expect(moonshot?.authenticated).toBe(false);
 		expect(moonshot?.credentialSource).toBe("none");
+		// Carried on the provider so `update` and `doctor` can say the key failed.
+		expect(moonshot?.degradedReason).toBe("Moonshot API error: 401 Unauthorized");
 		expect(state.lastDiscoveryErrors).toEqual([
 			expect.objectContaining({ providerId: "moonshot", error: "Moonshot API error: 401 Unauthorized" }),
 		]);
+	});
+
+	it("marks a stale cache served after a rejected key, instead of serving it silently", async () => {
+		const state = createRegistryState({ cacheDir: join(workDir, "cache") });
+		await state.cache.set(catalogCacheKey("provider_moonshot"), {
+			id: "moonshot",
+			name: "Moonshot",
+			baseUrl: "https://api.moonshot.ai/v1",
+			authenticated: true,
+			credentialSource: "env",
+			models: [makeModelCard({ id: "kimi-k3" })],
+			lastRefreshed: 1,
+		});
+		const discoverer: ProviderDiscoverer = {
+			providerId: "moonshot",
+			providerName: "Moonshot",
+			baseUrl: "https://api.moonshot.ai/v1",
+			async discover() {
+				throw new Error("Moonshot API error: 401 Unauthorized");
+			},
+		};
+
+		const providers = await registryDiscover(
+			state,
+			dependenciesFor(state, discoverer, { source: "env", apiKey: "sk-expired" }),
+			{ force: true },
+		);
+
+		const moonshot = providers.find((p) => p.id === "moonshot");
+		expect(moonshot?.models.map((m) => m.id)).toEqual(["kimi-k3"]);
+		expect(moonshot?.degradedReason).toBe("Moonshot API error: 401 Unauthorized");
+		expect(state.lastDiscoveryErrors).toHaveLength(1);
+	});
+
+	it("keeps a keyless failure served from cache quiet", async () => {
+		const state = createRegistryState({ cacheDir: join(workDir, "cache") });
+		await state.cache.set(catalogCacheKey("provider_moonshot"), {
+			id: "moonshot",
+			name: "Moonshot",
+			baseUrl: "https://api.moonshot.ai/v1",
+			authenticated: false,
+			credentialSource: "none",
+			models: [makeModelCard({ id: "kimi-k3" })],
+			lastRefreshed: 1,
+		});
+		const discoverer: ProviderDiscoverer = {
+			providerId: "moonshot",
+			providerName: "Moonshot",
+			baseUrl: "https://api.moonshot.ai/v1",
+			async discover() {
+				throw new Error("network down");
+			},
+		};
+
+		const providers = await registryDiscover(state, dependenciesFor(state, discoverer, { source: "none" }), {
+			force: true,
+		});
+
+		expect(providers.find((p) => p.id === "moonshot")?.degradedReason).toBeUndefined();
+		expect(state.lastDiscoveryErrors).toHaveLength(0);
 	});
 
 	it("still fails when the keyless path has nothing either", async () => {

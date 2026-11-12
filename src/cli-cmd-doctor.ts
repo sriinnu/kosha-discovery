@@ -10,6 +10,7 @@
  */
 
 import { type CatalogReport, describeCatalog } from "./catalog-source.js";
+import { degradedHint, truncateReason } from "./cli-commands.js";
 import { CYAN, c, DIM, GREEN, RED, YELLOW } from "./cli-format.js";
 import { extractOriginProvider, matchableModelId } from "./normalize.js";
 import type { ModelRegistry } from "./registry.js";
@@ -48,6 +49,14 @@ interface DeprecationFinding {
 }
 
 /** Provider health entry surfaced to the operator. */
+/** A provider whose last live listing failed, so its models came from elsewhere. */
+interface CredentialFinding {
+	providerId: string;
+	name: string;
+	reason: string;
+	source?: "catalog" | "cache";
+}
+
 interface HealthFinding {
 	providerId: string;
 	breakerState: string;
@@ -84,10 +93,15 @@ export async function cmdDoctor(registry: ModelRegistry, flags: Record<string, s
 		.map((providerId) => projectHealth(registry, providerId))
 		.filter((row): row is HealthFinding => row !== null);
 
+	const credentials = collectCredentialFindings(registry);
+
 	if (f.json) {
-		process.stdout.write(`${JSON.stringify({ catalog, deprecations, health: healthFindings }, null, 2)}\n`);
+		process.stdout.write(
+			`${JSON.stringify({ catalog, credentials, deprecations, health: healthFindings }, null, 2)}\n`,
+		);
 	} else {
 		renderCatalog(catalog);
+		renderCredentials(credentials);
 		renderDeprecations(deprecations);
 		renderHealth(healthFindings);
 	}
@@ -298,6 +312,31 @@ function projectHealth(registry: ModelRegistry, providerId: string): HealthFindi
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * Providers the last discovery listed without a working live call. Read from
+ * the cached providers, so `doctor` reports it without calling anyone.
+ */
+function collectCredentialFindings(registry: ModelRegistry): CredentialFinding[] {
+	return registry
+		.providers_list()
+		.filter((p) => typeof p.degradedReason === "string" && p.degradedReason.length > 0)
+		.map((p) => ({ providerId: p.id, name: p.name, reason: p.degradedReason as string, source: p.degradedSource }))
+		.sort((a, b) => a.providerId.localeCompare(b.providerId));
+}
+
+function renderCredentials(findings: CredentialFinding[]): void {
+	process.stdout.write(`${c(CYAN, "Credentials")}\n`);
+	if (findings.length === 0) {
+		process.stdout.write(c(DIM, "  Every provider with a key answered its live call.\n\n"));
+		return;
+	}
+	for (const f of findings) {
+		process.stdout.write(`  ${c(YELLOW, degradedHint(f.reason, f.source))}  ${f.providerId}\n`);
+		process.stdout.write(`${c(DIM, `      ${truncateReason(f.reason)}`)}\n`);
+	}
+	process.stdout.write("\n");
 }
 
 function renderDeprecations(findings: DeprecationFinding[]): void {

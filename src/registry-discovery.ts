@@ -381,9 +381,14 @@ function catalogCredentialPrompts(state: RegistryState): ProviderCredentialPromp
 
 	for (const descriptor of listProviderDescriptors()) {
 		const provider = state.providerMap.get(descriptor.providerId);
-		if (!providerExecutionCredentialRequired(descriptor) || provider?.authenticated) {
+		// Plans are opt-in: a key turns one on. Prompting every user for 25 plan
+		// keys they never bought would bury the prompts that matter.
+		if (descriptor.subscriptionPlan || !providerExecutionCredentialRequired(descriptor) || provider?.authenticated) {
 			continue;
 		}
+		// "Set QWEN_API_KEY" is wrong advice when it is set: the key went to a
+		// sibling (a plan) or was refused, and `doctor` reports a refusal.
+		if (descriptor.credentialEnvVars.some((name) => process.env[name])) continue;
 
 		const envHint =
 			descriptor.credentialEnvVars.length > 0

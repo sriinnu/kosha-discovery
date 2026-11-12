@@ -550,6 +550,12 @@ export interface CheapestModelResult {
 	priceMetric: PricingMetric;
 	/** Providers that are likely missing required API keys. */
 	missingCredentials: ProviderCredentialPrompt[];
+	/**
+	 * Models a subscription plan pays for, matching the same filters. They have
+	 * no per-token price, so they are never in `matches` and never ranked as
+	 * free; sorted by provider then id, cut to the same `limit`.
+	 */
+	includedInPlans: ModelCard[];
 }
 
 /** Aggregated capability summary returned by {@link ModelRegistry.capabilities}. */
@@ -616,6 +622,14 @@ export interface ProviderInfo {
 	models: ModelCard[];
 	/** Unix timestamp (ms) of the last successful refresh. */
 	lastRefreshed: number;
+	/**
+	 * Set when the live listing failed (most often a rejected key) and these
+	 * models came from the public catalog or an older cache instead. Holds the
+	 * provider's error, so `update` and `doctor` can say why.
+	 */
+	degradedReason?: string;
+	/** Where the models came from instead: the public catalog or the last good cache. */
+	degradedSource?: "catalog" | "cache";
 }
 
 /**
@@ -702,6 +716,14 @@ export interface CredentialResult {
 	source: "env" | "cli" | "config" | "oauth" | "none";
 	/** Filesystem path the credential was read from, if applicable. */
 	path?: string;
+	/** Env var the key came from, when `source` is `env`. */
+	envVar?: string;
+	/**
+	 * True when that env var is read by more than one provider (a vendor's
+	 * regions and plans). Such a key is tentative: a provider that rejects it
+	 * drops it quietly, and only a key every reader rejects is reported.
+	 */
+	shared?: boolean;
 	/**
 	 * Provider-specific metadata bag.
 	 * For AWS Bedrock: `{ region: "us-east-1" }`.

@@ -50,6 +50,7 @@ import {
 	readSpendForMonth,
 	readTenantBudgetUsd,
 } from "./cost.js";
+import { isPlanBilled } from "./discovery/free-tier.js";
 import { isUnverifiedZeroPrice } from "./price-trust.js";
 import {
 	getProviderDescriptor,
@@ -318,6 +319,14 @@ function resolveProxyCandidates(registry: ModelRegistry, requested: string): Mod
 	const primary = registry.model(requested);
 	const routes = registry.modelRoutes(requested);
 	const ordered: ModelCard[] = [];
+	// A plan you hold already paid for this model: its route goes first, ahead
+	// of the canonical pay-as-you-go one. (Only for a named model; across
+	// models, `kosha:cheapest` keeps plans after priced routes, since plans
+	// carry no price to rank by.)
+	const candidates = primary ? [primary, ...routes] : routes;
+	for (const route of candidates) {
+		if (isPlanBilled(route) && isExecutableRoute(registry, route)) ordered.push(route);
+	}
 	if (primary && isExecutableRoute(registry, primary)) ordered.push(primary);
 	for (const route of routes) if (isExecutableRoute(registry, route)) ordered.push(route);
 	if (primary && isForwardable(primary)) ordered.push(primary);
@@ -711,9 +720,13 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			// A remote $0/$0 price counts as no price: the catalogs are the only
 			// source for it, and a poisoned $0 would otherwise win kosha:cheapest
 			// and land in the ledger as free.
+			// A subscription plan's model has no price either, but the plan is
+			// already paid: the request adds $0, so it passes and, like any
+			// route without a price, writes no ledger row.
 			if (
 				(budget !== null || tenantBudget !== null) &&
 				descriptor?.isLocal !== true &&
+				!isPlanBilled(model) &&
 				(!estimateRequestCost(model, body) || isUnverifiedZeroPrice(model))
 			) {
 				attemptChain.push(`${model.provider}:unpriced`);
@@ -723,7 +736,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			// The gate above only knows the cap isn't reached yet. A request
 			// whose own estimate would cross it is refused here, per route, so a
 			// cheaper route can still take it.
-			const routeEstimate = estimateRequestCost(model, body)?.estimatedUsd ?? 0;
+			const routeEstimate = isPlanBilled(model) ? 0 : (estimateRequestCost(model, body)?.estimatedUsd ?? 0);
 			const tenantReserved = tenant ? (reservedByTenant.get(tenant) ?? 0) : 0;
 			const overGlobal = budget !== null && spent + reservedUsd + routeEstimate > budget;
 			const overTenant = tenantBudget !== null && tenantSpent + tenantReserved + routeEstimate > tenantBudget;
@@ -735,7 +748,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			// Held until this request's ledger row lands; a failover swaps it.
 			hold.release?.();
 			hold.release = reserve(routeEstimate, tenant);
-			const usesAnthropicWire = model.provider === "anthropic";
+			const usesAnthropicWire = model.provider === "anthropic" || descriptor?.wire === "anthropic";
 			const upstreamHeaders: Record<string, string> = { "content-type": "application/json" };
 			let upstreamBody: string;
 			let upstreamUrlString: string;
@@ -775,7 +788,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 				// `safeUrl` is already allowlist-validated, so reusing its
 				// origin keeps the SSRF guarantee intact.
 				const anthropicUrl = new URL(safeUrl.toString());
-				anthropicUrl.pathname = "/v1/messages";
+				anthropicUrl.pathname = descriptor?.anthropicMessagesPath ?? "/v1/messages";
 				upstreamUrlString = anthropicUrl.toString();
 			} else {
 				if (bearerToken) upstreamHeaders.authorization = `Bearer ${bearerToken}`;
@@ -864,7 +877,8 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			// output × outputRate), reflected on the response so the caller can
 			// audit before paying. When the upstream returns a usage block we
 			// also reconcile the actual cost and record both on the ledger.
-			const estimate = estimateRequestCost(model, body);
+			// A plan-billed route has no estimate: nothing is charged per token.
+			const estimate = isPlanBilled(model) ? null : estimateRequestCost(model, body);
 			// Catalog ids come from provider APIs and public catalogs; the scan
 			// allows newlines and non-Latin-1 text, either of which makes
 			// Headers throw after the upstream has already been paid.

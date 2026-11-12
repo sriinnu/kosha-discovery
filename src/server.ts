@@ -393,9 +393,11 @@ export function createServer(
 		const message =
 			result.matches.length > 0
 				? undefined
-				: result.missingCredentials.length > 0
-					? "No priced models found. Add credentials for one of the missing providers."
-					: "No priced models found for the requested filters.";
+				: result.includedInPlans.length > 0
+					? "No priced models matched; matching models are included in your plans (see includedInPlans)."
+					: result.missingCredentials.length > 0
+						? "No priced models found. Add credentials for one of the missing providers."
+						: "No priced models found for the requested filters.";
 
 		return ctx.json({
 			...result,

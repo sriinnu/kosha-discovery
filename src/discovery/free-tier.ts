@@ -52,3 +52,8 @@ export function isFreeTier(card: ModelCard): boolean {
 	if (!pricing) return false;
 	return pricing.inputPerMillion === 0 && pricing.outputPerMillion === 0;
 }
+
+/** True when a subscription plan pays for this card's tokens. */
+export function isPlanBilled(card: ModelCard): boolean {
+	return card.rawCapabilities?.includes(SUBSCRIPTION_PLAN_CAPABILITY) === true;
+}

@@ -7,6 +7,12 @@
  * @module
  */
 
+import {
+	getSubscriptionPlan,
+	planKeyPrefixesForFamily,
+	SUBSCRIPTION_PLANS,
+	type SubscriptionPlan,
+} from "./subscription-plans.js";
 import type { KoshaConfig, ProviderCacheBehavior, ProviderOrigin, ProviderTransport } from "./types.js";
 
 /**
@@ -38,6 +44,30 @@ export interface ProviderDescriptor {
 	/** The single env var that `fallbackRegistryCredential` reads for this provider. */
 	primaryCredentialEnvVar?: string;
 	/**
+	 * Key-shape rules for env vars this provider shares with another one. Alibaba
+	 * issues pay-as-you-go keys and Token Plan keys (`sk-sp-…`) that users keep
+	 * in the same `QWEN_API_KEY`, and each kind is rejected by the other's host.
+	 * A key that fails these rules is skipped, not sent somewhere it can only 401.
+	 */
+	/**
+	 * Request wire this provider speaks when it isn't OpenAI chat-completions.
+	 * `anthropic` routes through the Messages translator (MiniMax's plan host).
+	 */
+	wire?: "anthropic";
+	/** Path of the Messages endpoint for an `anthropic` wire; default `/v1/messages`. */
+	anthropicMessagesPath?: string;
+	/**
+	 * Billed by a flat subscription: the plan pays for tokens, so its models
+	 * carry no per-token price, and a request costs nothing extra.
+	 */
+	subscriptionPlan?: boolean;
+	credentialKeyPrefix?: {
+		/** Only keys starting with this prefix belong to this provider. */
+		require?: string;
+		/** Keys starting with any of these belong to another provider. */
+		reject?: readonly string[];
+	};
+	/**
 	 * Minimum prompt-prefix size (in tokens) required for the provider's prompt
 	 * cache to engage. Only set when the provider publishes a documented floor.
 	 * Undefined means either "no cache support" or "no documented floor"; the
@@ -50,6 +80,17 @@ export interface ProviderDescriptor {
 	 * the provider documents no prompt cache.
 	 */
 	cacheBehavior?: ProviderCacheBehavior;
+}
+
+/**
+ * True when a key has the shape this provider accepts. Providers without
+ * {@link ProviderDescriptor.credentialKeyPrefix} accept any key.
+ */
+export function keyFitsProvider(descriptor: ProviderDescriptor | undefined, key: string): boolean {
+	const rule = descriptor?.credentialKeyPrefix;
+	if (!rule) return true;
+	if (rule.require && !key.startsWith(rule.require)) return false;
+	return !(rule.reject ?? []).some((prefix) => key.startsWith(prefix));
 }
 
 /**
@@ -172,7 +213,11 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "http://localhost:11434",
 		credentialRequired: false,
 		credentialEnvVars: [],
-		cacheBehavior: { mode: "none", documented: true, notes: "Local runtime — KV-cache is in-process, not a billable prompt cache." },
+		cacheBehavior: {
+			mode: "none",
+			documented: true,
+			notes: "Local runtime — KV-cache is in-process, not a billable prompt cache.",
+		},
 	},
 	{
 		providerId: "llama.cpp",
@@ -185,7 +230,11 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "http://127.0.0.1:8080",
 		credentialRequired: false,
 		credentialEnvVars: [],
-		cacheBehavior: { mode: "none", documented: true, notes: "Local runtime — KV-cache is in-process, not a billable prompt cache." },
+		cacheBehavior: {
+			mode: "none",
+			documented: true,
+			notes: "Local runtime — KV-cache is in-process, not a billable prompt cache.",
+		},
 	},
 	{
 		providerId: "lmstudio",
@@ -198,7 +247,11 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "http://127.0.0.1:1234",
 		credentialRequired: false,
 		credentialEnvVars: [],
-		cacheBehavior: { mode: "none", documented: true, notes: "Local runtime — KV-cache is in-process, not a billable prompt cache." },
+		cacheBehavior: {
+			mode: "none",
+			documented: true,
+			notes: "Local runtime — KV-cache is in-process, not a billable prompt cache.",
+		},
 	},
 	{
 		providerId: "vllm",
@@ -211,7 +264,11 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		defaultBaseUrl: "http://127.0.0.1:8000",
 		credentialRequired: false,
 		credentialEnvVars: [],
-		cacheBehavior: { mode: "none", documented: true, notes: "Local runtime — KV-cache is in-process, not a billable prompt cache." },
+		cacheBehavior: {
+			mode: "none",
+			documented: true,
+			notes: "Local runtime — KV-cache is in-process, not a billable prompt cache.",
+		},
 	},
 	{
 		providerId: "bedrock",
@@ -404,11 +461,13 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		credentialRequired: true,
 		credentialEnvVars: ["MOONSHOT_API_KEY", "KIMI_API_KEY"],
 		primaryCredentialEnvVar: "MOONSHOT_API_KEY",
+		credentialKeyPrefix: { reject: planKeyPrefixesForFamily("moonshot") },
 		cacheBehavior: {
 			mode: "automatic",
 			approximateTtlSeconds: 3600,
 			documented: true,
-			notes: "Kimi prompt cache is automatic on repeat prefixes; documented as long-lived but TTL not formally specified.",
+			notes:
+				"Kimi prompt cache is automatic on repeat prefixes; documented as long-lived but TTL not formally specified.",
 		},
 	},
 	{
@@ -449,6 +508,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		credentialRequired: true,
 		credentialEnvVars: ["MOONSHOT_CN_API_KEY", "MOONSHOT_API_KEY", "KIMI_API_KEY"],
 		primaryCredentialEnvVar: "MOONSHOT_CN_API_KEY",
+		credentialKeyPrefix: { reject: planKeyPrefixesForFamily("moonshot") },
 		cacheBehavior: {
 			mode: "automatic",
 			approximateTtlSeconds: 3600,
@@ -481,6 +541,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		credentialRequired: true,
 		credentialEnvVars: ["DASHSCOPE_CN_API_KEY", "DASHSCOPE_API_KEY"],
 		primaryCredentialEnvVar: "DASHSCOPE_CN_API_KEY",
+		credentialKeyPrefix: { reject: planKeyPrefixesForFamily("alibaba") },
 		cacheBehavior: {
 			mode: "automatic",
 			documented: true,
@@ -588,6 +649,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		credentialRequired: true,
 		credentialEnvVars: ["DASHSCOPE_API_KEY", "ALIBABA_API_KEY", "QWEN_API_KEY"],
 		primaryCredentialEnvVar: "DASHSCOPE_API_KEY",
+		credentialKeyPrefix: { reject: planKeyPrefixesForFamily("alibaba") },
 		cacheBehavior: {
 			mode: "automatic",
 			documented: true,
@@ -728,7 +790,8 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		cacheBehavior: {
 			mode: "passthrough",
 			documented: false,
-			notes: "Router forwards to a third-party inference provider; cache behaviour follows whichever one serves the request.",
+			notes:
+				"Router forwards to a third-party inference provider; cache behaviour follows whichever one serves the request.",
 		},
 	},
 	{
@@ -757,7 +820,80 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		credentialEnvVars: ["MINIMAX_API_KEY"],
 		primaryCredentialEnvVar: "MINIMAX_API_KEY",
 	},
+	...SUBSCRIPTION_PLANS.map(planDescriptor),
 ] as const;
+
+/** How many catalog providers read each env var. */
+let envVarReaders: Map<string, number> | undefined;
+
+/** True when more than one provider reads this env var. */
+export function isSharedEnvVar(envVar: string): boolean {
+	if (!envVarReaders) {
+		envVarReaders = new Map();
+		for (const descriptor of PROVIDER_CATALOG) {
+			for (const name of new Set(descriptor.credentialEnvVars)) {
+				envVarReaders.set(name, (envVarReaders.get(name) ?? 0) + 1);
+			}
+		}
+	}
+	return (envVarReaders.get(envVar) ?? 0) > 1;
+}
+
+/** `KOSHA_PLAN_KEY_PROBE=off`: plans read only their dedicated env vars. */
+function planKeyProbeDisabled(): boolean {
+	return /^(off|0|false|no)$/i.test(process.env.KOSHA_PLAN_KEY_PROBE ?? "");
+}
+
+/**
+ * The first env-var key this provider accepts, in descriptor order. A key
+ * whose shape belongs to a sibling (an Alibaba plan key in QWEN_API_KEY) is
+ * skipped. The one lookup both the credential resolver and the fallback path
+ * use, so the two can't disagree about which key a provider gets.
+ */
+export function resolveEnvCredential(
+	descriptor: ProviderDescriptor | undefined,
+	env: NodeJS.ProcessEnv = process.env,
+): { apiKey: string; envVar: string; shared: boolean } | null {
+	if (!descriptor) return null;
+	const dedicated =
+		descriptor.subscriptionPlan && planKeyProbeDisabled()
+			? getSubscriptionPlan(descriptor.providerId)?.dedicatedEnvVars
+			: undefined;
+	for (const envVar of descriptor.credentialEnvVars) {
+		if (dedicated && !dedicated.includes(envVar)) continue;
+		const apiKey = env[envVar];
+		if (apiKey && keyFitsProvider(descriptor, apiKey)) {
+			return { apiKey, envVar, shared: isSharedEnvVar(envVar) };
+		}
+	}
+	return null;
+}
+
+/**
+ * A plan's catalog entry, generated from {@link SUBSCRIPTION_PLANS}. The
+ * dedicated vars come first, so a key meant for this plan wins over a shared
+ * one; `KOSHA_PLAN_KEY_PROBE=off` keeps a plan to its dedicated vars.
+ */
+function planDescriptor(plan: SubscriptionPlan): ProviderDescriptor {
+	const shared = plan.listing === "validates" ? plan.sharedEnvVars : [];
+	return {
+		providerId: plan.providerId,
+		canonicalProviderId: plan.providerId,
+		aliases: plan.aliases ?? [],
+		name: plan.name,
+		origin: "direct",
+		isLocal: false,
+		transport: plan.wire === "anthropic" ? "native-http" : "openai-compatible-http",
+		defaultBaseUrl: plan.baseUrl,
+		credentialRequired: true,
+		credentialEnvVars: [...plan.dedicatedEnvVars, ...shared],
+		primaryCredentialEnvVar: plan.dedicatedEnvVars[0],
+		subscriptionPlan: true,
+		...(plan.wire ? { wire: plan.wire } : {}),
+		...(plan.anthropicMessagesPath ? { anthropicMessagesPath: plan.anthropicMessagesPath } : {}),
+		...(plan.keyPrefix ? { credentialKeyPrefix: { require: plan.keyPrefix } } : {}),
+	};
+}
 
 const PROVIDER_LOOKUP = new Map<string, ProviderDescriptor>();
 for (const descriptor of PROVIDER_CATALOG) {
@@ -805,9 +941,11 @@ export function getProviderConfig(
 		return config.providers[providerId];
 	}
 
-	return config.providers[descriptor.providerId] ??
+	return (
+		config.providers[descriptor.providerId] ??
 		config.providers[descriptor.canonicalProviderId] ??
-		descriptor.aliases.map((alias) => config.providers?.[alias]).find(Boolean);
+		descriptor.aliases.map((alias) => config.providers?.[alias]).find(Boolean)
+	);
 }
 
 /** Return true when model execution through this provider needs auth. */

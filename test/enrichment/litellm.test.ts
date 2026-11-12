@@ -115,6 +115,22 @@ describe("LiteLLMEnricher", () => {
 			expect(enriched.pricing!.outputPerMillion).toBe(15); // 0.000015 * 1_000_000
 		});
 
+		it("puts no per-token price on a plan-billed route, but keeps the origin rate and limits", async () => {
+			// A subscription plan pays for these tokens: copying the pay-as-you-go
+			// rate onto the plan route made `cheapest` quote a price nobody pays.
+			const [enriched] = await enricher.enrich([
+				makeModel({
+					provider: "alibaba-token-plan",
+					originProvider: "anthropic",
+					rawCapabilities: ["subscription_plan"],
+				}),
+			]);
+
+			expect(enriched.pricing).toBeUndefined();
+			expect(enriched.originPricing?.inputPerMillion).toBe(3);
+			expect(enriched.contextWindow).toBeGreaterThan(0);
+		});
+
 		it("fills cache pricing when available", async () => {
 			const models = [makeModel()];
 			const [enriched] = await enricher.enrich(models);
@@ -184,21 +200,21 @@ describe("LiteLLMEnricher", () => {
 			const cacheOnlyEnricher = new LiteLLMEnricher();
 			resetLiteLLMCatalogCache();
 
-			const [enriched] = await cacheOnlyEnricher.enrich([
-				makeModel({ id: "cache-only-model", provider: "anthropic" }),
-			]);
+			const [enriched] = await cacheOnlyEnricher.enrich([makeModel({ id: "cache-only-model", provider: "anthropic" })]);
 
 			expect(enriched.pricing).toBeUndefined();
 			expect(enriched.capabilities).not.toContain("free_tier");
 		});
 
 		it("keeps proxy route pricing and adds originPricing for proxied models", async () => {
-			const models = [makeModel({
-				id: "openai/gpt-4o",
-				provider: "openrouter",
-				originProvider: "openai",
-				pricing: { inputPerMillion: 5, outputPerMillion: 25 },
-			})];
+			const models = [
+				makeModel({
+					id: "openai/gpt-4o",
+					provider: "openrouter",
+					originProvider: "openai",
+					pricing: { inputPerMillion: 5, outputPerMillion: 25 },
+				}),
+			];
 			const [enriched] = await enricher.enrich(models);
 
 			// Preserve route/provider pricing (OpenRouter markup)
@@ -395,9 +411,7 @@ describe("LiteLLMEnricher", () => {
 		});
 
 		it("throws on fetch failure", async () => {
-			vi.mocked(globalThis.fetch).mockResolvedValueOnce(
-				new Response("Not Found", { status: 404 }),
-			);
+			vi.mocked(globalThis.fetch).mockResolvedValueOnce(new Response("Not Found", { status: 404 }));
 			const freshEnricher = new LiteLLMEnricher();
 
 			await expect(freshEnricher.load()).rejects.toThrow("Failed to fetch litellm data");
@@ -417,9 +431,7 @@ describe("LiteLLMEnricher", () => {
 					mode: "chat",
 				},
 			};
-			vi.mocked(globalThis.fetch).mockResolvedValueOnce(
-				new Response(JSON.stringify(poisoned), { status: 200 }),
-			);
+			vi.mocked(globalThis.fetch).mockResolvedValueOnce(new Response(JSON.stringify(poisoned), { status: 200 }));
 			const fresh = new LiteLLMEnricher();
 
 			// The poisoned row is dropped and reported; the rest of the catalog
@@ -442,9 +454,7 @@ describe("LiteLLMEnricher", () => {
 				};
 			}
 			poisoned["good-model"] = { litellm_provider: "openai", mode: "chat" };
-			vi.mocked(globalThis.fetch).mockResolvedValueOnce(
-				new Response(JSON.stringify(poisoned), { status: 200 }),
-			);
+			vi.mocked(globalThis.fetch).mockResolvedValueOnce(new Response(JSON.stringify(poisoned), { status: 200 }));
 			const fresh = new LiteLLMEnricher();
 
 			await expect(fresh.load()).rejects.toThrow(/Rejected litellm data/);
@@ -457,9 +467,7 @@ describe("LiteLLMEnricher", () => {
 					mode: "chat",
 				},
 			};
-			vi.mocked(globalThis.fetch).mockResolvedValueOnce(
-				new Response(JSON.stringify(poisoned), { status: 200 }),
-			);
+			vi.mocked(globalThis.fetch).mockResolvedValueOnce(new Response(JSON.stringify(poisoned), { status: 200 }));
 			const fresh = new LiteLLMEnricher();
 
 			await expect(fresh.load()).rejects.toThrow(/Rejected litellm data/);
