@@ -9,7 +9,7 @@
  * @module
  */
 
-import { applyFreeTierFlag } from "../discovery/free-tier.js";
+import { applyFreeTierFlag, isPlanBilled } from "../discovery/free-tier.js";
 import type { SnapshotCatalog } from "../discovery/snapshot-catalog.js";
 import type { Enricher, ModelCard, ModelPricing } from "../types.js";
 
@@ -25,7 +25,7 @@ export class CatalogEnricher implements Enricher {
 		if (!entry) return { ...model };
 
 		const enriched: ModelCard = { ...model };
-		if (entry.pricing) enriched.pricing = fillPricing(enriched.pricing, entry.pricing);
+		if (entry.pricing && !isPlanBilled(enriched)) enriched.pricing = fillPricing(enriched.pricing, entry.pricing);
 		if (!enriched.originPricing && entry.originPricing) enriched.originPricing = entry.originPricing;
 		if (enriched.contextWindow === 0 && entry.contextWindow) enriched.contextWindow = entry.contextWindow;
 		if (enriched.maxOutputTokens === 0 && entry.maxOutputTokens) enriched.maxOutputTokens = entry.maxOutputTokens;

@@ -12,6 +12,7 @@
 
 import type { DiscoveryModelV1 } from "../discovery-contract.js";
 import { normalizeProviderId } from "../provider-catalog.js";
+import { isSubscriptionPlanProvider } from "../subscription-plans.js";
 import { loadModelsDevCatalog } from "./modelsdev-catalog.js";
 import { getCatalogOnlySeed, mappedModelsDevSlugs } from "./modelsdev-seed.js";
 
@@ -25,7 +26,12 @@ const SAFE_SLUG_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
  */
 export async function buildCatalogOnlyRows(claimedIds: Iterable<string>): Promise<DiscoveryModelV1[]> {
 	const catalog = await loadModelsDevCatalog();
-	const claimed = new Set([...claimedIds, ...mappedModelsDevSlugs()]);
+	// A plan is claimed only while it is listed (a key resolved for it); an
+	// unused plan's models stay here as price-only rows.
+	const claimed = new Set(claimedIds);
+	for (const slug of mappedModelsDevSlugs()) {
+		if (!isSubscriptionPlanProvider(slug)) claimed.add(slug);
+	}
 	const rows: DiscoveryModelV1[] = [];
 	for (const [slug, provider] of Object.entries(catalog)) {
 		if (claimed.has(slug) || normalizeProviderId(slug) !== slug) continue;

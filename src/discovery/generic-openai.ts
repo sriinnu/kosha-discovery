@@ -15,7 +15,9 @@
  * @module
  */
 
+import { SUBSCRIPTION_PLANS } from "../subscription-plans.js";
 import type { CredentialResult, ModelCard, ModelMode } from "../types.js";
+import { SUBSCRIPTION_PLAN_CAPABILITY } from "./free-tier.js";
 import {
 	type ModelClassification,
 	OpenAICompatibleDiscoverer,
@@ -57,10 +59,23 @@ export interface OpenAICompatibleProviderSpec {
 	originAliases?: Readonly<Record<string, string>>;
 	/** Keyword → origin rules for flat IDs. Most specific first. */
 	originRules?: ReadonlyArray<readonly [string, string]>;
+	/**
+	 * Origin for a flat ID no rule matches. Defaults to the provider ID, which
+	 * is wrong for a reseller-shaped provider such as a subscription plan.
+	 */
+	defaultOrigin?: string;
 	/** Keyword → mode overrides applied before the built-in heuristics. */
 	modeRules?: ReadonlyArray<readonly [string, ModelMode]>;
 	/** Substrings that disqualify a model ID entirely. */
 	excludePatterns?: readonly string[];
+	/**
+	 * True for a subscription plan: the plan pays for tokens, so a live card
+	 * carries no per-token price, is tagged plan-billed, and takes its limits
+	 * from the plan's own catalog entry (the plan's model list has none).
+	 */
+	subscriptionPlan?: boolean;
+	/** `x-api-key` for an Anthropic-style model list (MiniMax's plan host). */
+	listAuth?: "x-api-key";
 	/** Capability tags added to every chat model this provider serves. */
 	chatCapabilities?: readonly string[];
 	/**
@@ -69,6 +84,17 @@ export interface OpenAICompatibleProviderSpec {
 	 * IDs the built-in aliases point at.
 	 */
 	staticSeeds?: readonly StaticModelSeed[];
+}
+
+/**
+ * A plan could not test a key borrowed from a shared env var (no list route).
+ * Not a rejection: the key may well work elsewhere in its family.
+ */
+export class PlanKeyUnverifiedError extends Error {
+	constructor(providerName: string) {
+		super(`${providerName}: no model list to test a shared key against`);
+		this.name = "PlanKeyUnverifiedError";
+	}
 }
 
 /**
@@ -100,7 +126,59 @@ export class GenericOpenAICompatibleDiscoverer extends OpenAICompatibleDiscovere
 		if (this.spec.seedOnly || !hasKey) {
 			return this.keylessModels();
 		}
-		return super.discover(credential, options);
+		if (!this.spec.subscriptionPlan) return super.discover(credential, options);
+		let live: ModelCard[];
+		try {
+			live = await super.discover(credential, options);
+		} catch (error) {
+			// No list route and no catalog to fall back on: still not a verdict
+			// on a borrowed key.
+			if (credential.shared && error instanceof Error && /API error:\s*404\b/.test(error.message)) {
+				throw new PlanKeyUnverifiedError(this.providerName);
+			}
+			throw error;
+		}
+		// No list route answered, so the shared pipeline fell back to the
+		// catalog. That proves nothing about a key borrowed from a shared env
+		// var, and claiming it would list a plan the user may not have.
+		if (credential.shared && !live.some((card) => card.source === "api")) {
+			throw new PlanKeyUnverifiedError(this.providerName);
+		}
+		return this.asPlanCards(live);
+	}
+
+	protected override listHeaders(apiKey: string): Record<string, string> {
+		if (this.spec.listAuth === "x-api-key") return { "x-api-key": apiKey, "anthropic-version": "2023-06-01" };
+		return super.listHeaders(apiKey);
+	}
+
+	/**
+	 * Tag live plan cards as plan-billed and fill their limits from the plan's
+	 * catalog entry by ID. A model the catalog doesn't know yet (a preview out
+	 * a day) keeps its live card, untagged limits and all.
+	 */
+	private async asPlanCards(live: ModelCard[]): Promise<ModelCard[]> {
+		let seeds: ModelCard[] = [];
+		try {
+			seeds = await getPublicSeed(this.providerId);
+		} catch {
+			/* limits stay unknown; the listing itself is still right */
+		}
+		const byId = new Map(seeds.map((seed) => [seed.id, seed]));
+		return live.map((card) => {
+			const seed = byId.get(card.id);
+			const raw = card.rawCapabilities ?? card.capabilities;
+			const { pricing: _perToken, ...rest } = card;
+			return {
+				...rest,
+				name: seed?.name ?? card.name,
+				contextWindow: card.contextWindow || seed?.contextWindow || 0,
+				maxOutputTokens: card.maxOutputTokens || seed?.maxOutputTokens || 0,
+				...(card.maxInputTokens === undefined && seed?.maxInputTokens ? { maxInputTokens: seed.maxInputTokens } : {}),
+				...(card.releaseDate === undefined && seed?.releaseDate ? { releaseDate: seed.releaseDate } : {}),
+				rawCapabilities: raw.includes(SUBSCRIPTION_PLAN_CAPABILITY) ? raw : [...raw, SUBSCRIPTION_PLAN_CAPABILITY],
+			};
+		});
 	}
 
 	/** Public catalog seed, falling back to the curated list. */
@@ -165,7 +243,11 @@ export class GenericOpenAICompatibleDiscoverer extends OpenAICompatibleDiscovere
 		if (this.spec.namespacedIds) {
 			return this.extractPrefixOrigin(id, this.providerId, this.spec.originAliases as Record<string, string>);
 		}
-		return this.inferOriginFromKeywords(lower, [...(this.spec.originRules ?? [])] as [string, string][], this.providerId);
+		return this.inferOriginFromKeywords(
+			lower,
+			[...(this.spec.originRules ?? [])] as [string, string][],
+			this.spec.defaultOrigin ?? this.providerId,
+		);
 	}
 
 	/** Spec rules win over the shared heuristics; chat is the fallback. */
@@ -225,10 +307,10 @@ const SHARED_ORIGIN_ALIASES: Readonly<Record<string, string>> = {
 	moonshotai: "moonshot",
 	"stepfun-ai": "stepfun",
 	minimaxai: "minimax",
-	"qwen": "qwen",
-	"inclusionai": "inclusionai",
+	qwen: "qwen",
+	inclusionai: "inclusionai",
 	thinkingmachines: "thinkingmachines",
-	"paddlepaddle": "baidu",
+	paddlepaddle: "baidu",
 	"x-ai": "xai",
 };
 
@@ -246,6 +328,46 @@ const OPEN_WEIGHT_ORIGIN_RULES: ReadonlyArray<readonly [string, string]> = [
 	["mistral", "mistral"],
 	["llama", "meta"],
 ];
+
+/**
+ * Model families plans resell, keyword → origin. Most specific first; a model
+ * no rule names is the plan vendor's own (`defaultOrigin`).
+ */
+const PLAN_ORIGIN_RULES: ReadonlyArray<readonly [string, string]> = [
+	["deepseek", "deepseek"],
+	["glm", "zai"],
+	["kimi", "moonshot"],
+	["minimax", "minimax"],
+	["qwen", "qwen"],
+	["mimo", "xiaomi"],
+	["hunyuan", "tencent"],
+	["doubao", "bytedance"],
+	["step-", "stepfun"],
+];
+
+const PLAN_MODE_RULES: ReadonlyArray<readonly [string, ModelMode]> = [
+	["-image", "image"],
+	["-video", "video"],
+	["2v", "video"],
+	["tts", "audio"],
+	["asr", "audio"],
+	["realtime", "audio"],
+	["wan", "video"],
+];
+
+/** One generic spec per plan in {@link SUBSCRIPTION_PLANS}. */
+const PLAN_SPECS: readonly OpenAICompatibleProviderSpec[] = SUBSCRIPTION_PLANS.map((plan) => ({
+	providerId: plan.providerId,
+	providerName: plan.name,
+	baseUrl: plan.baseUrl,
+	seedOnly: plan.listing === "none",
+	originRules: PLAN_ORIGIN_RULES,
+	defaultOrigin: plan.defaultOrigin,
+	modeRules: PLAN_MODE_RULES,
+	subscriptionPlan: true,
+	...(plan.wire === "anthropic" ? { listAuth: "x-api-key" as const } : {}),
+	chatCapabilities: ["function_calling", "code", "nlu"],
+}));
 
 /**
  * Every provider kosha discovers through the generic OpenAI-compatible path.
@@ -300,6 +422,7 @@ export const GENERIC_OPENAI_PROVIDERS: readonly OpenAICompatibleProviderSpec[] =
 		],
 		chatCapabilities: ["function_calling", "code", "nlu"],
 	},
+	...PLAN_SPECS,
 	{
 		providerId: "siliconflow-cn",
 		providerName: "SiliconFlow (China)",

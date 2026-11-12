@@ -175,8 +175,18 @@ function pricingRow(m: {
 /** Print a provider summary line (used by discover & refresh). */
 function printProviderSummary(providers: ProviderInfo[]): void {
 	let totalModels = 0;
+	let degradedCount = 0;
 	for (const p of providers) {
 		totalModels += p.models.length;
+		if (p.degradedReason) {
+			// A rejected key used to print the same green tick as a working one.
+			degradedCount += 1;
+			console.log(
+				`  ${c(YELLOW, "!")} ${c(CYAN, p.name)}: ${p.models.length} models${c(DIM, ` (${degradedHint(p.degradedReason, p.degradedSource)})`)}`,
+			);
+			console.log(c(DIM, `      ${truncateReason(p.degradedReason)}`));
+			continue;
+		}
 		// Three-state indicator: green ✓ if models found, yellow ○ if no creds but
 		// provider is optional (e.g. Ollama not running), red ✗ if auth required but missing
 		const status =
@@ -191,6 +201,33 @@ function printProviderSummary(providers: ProviderInfo[]): void {
 	}
 	console.log(c(DIM, `\n${line("\u2500", 50)}`));
 	console.log(`${c(BOLD, String(totalModels))} models from ${c(BOLD, String(providers.length))} providers`);
+	if (degradedCount > 0) {
+		console.log(
+			c(
+				YELLOW,
+				`${degradedCount} provider${degradedCount === 1 ? "" : "s"} listed without a working live call — see \`kosha doctor\``,
+			),
+		);
+	}
+}
+
+/** Short reason for a degraded provider line. */
+export function degradedHint(reason: string, source?: "catalog" | "cache"): string {
+	const from =
+		source === "cache"
+			? "the last good listing"
+			: source === "catalog"
+				? "the public catalog"
+				: "the public catalog or cache";
+	return /API error:\s*40[13]\b/.test(reason)
+		? `key rejected, listed from ${from}`
+		: `live listing failed, listed from ${from}`;
+}
+
+/** One line of the provider's error, trimmed for a terminal. */
+export function truncateReason(reason: string, max = 160): string {
+	const flat = reason.replace(/\s+/g, " ").trim();
+	return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
 // ── discover ─────────────────────────────────────────────────────────────

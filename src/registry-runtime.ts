@@ -17,11 +17,18 @@ import { applyPriceSchedules } from "./discovery/price-schedules.js";
 import { applyPromoOverrides } from "./discovery/promo-overrides.js";
 import type { DiscoverySnapshotV1 } from "./discovery-contract.js";
 import { DISCOVERY_SCHEMA_VERSION } from "./discovery-contract.js";
-import { getProviderConfig, getProviderDescriptor, isLocalProvider, normalizeProviderId } from "./provider-catalog.js";
+import {
+	getProviderConfig,
+	getProviderDescriptor,
+	isLocalProvider,
+	normalizeProviderId,
+	resolveEnvCredential,
+} from "./provider-catalog.js";
 import { registryDiscoverySnapshot } from "./registry-discovery.js";
 import type { DiscoveryDependencies, RegistryState } from "./registry-state.js";
 import { StaleCachePolicy } from "./resilience.js";
 import { assertCleanPayload } from "./security.js";
+import { getSubscriptionPlan } from "./subscription-plans.js";
 import type {
 	CredentialResult,
 	DiscoveryError,
@@ -85,8 +92,9 @@ export async function registryDiscover(
 	// Providers whose credentialed call failed but which were still listed from
 	// the public catalog: the error is reported, the provider is not dropped.
 	const degraded: DiscoveryError[] = [];
+	const sharedKeys: SharedKeyLedger = { accepted: new Set(), refused: new Map() };
 	const results = await Promise.allSettled(
-		discoverers.map((discoverer) => discoverProvider(state, dependencies, discoverer, timeout, degraded)),
+		discoverers.map((discoverer) => discoverProvider(state, dependencies, discoverer, timeout, degraded, sharedKeys)),
 	);
 
 	state.lastDiscoveryErrors = [...degraded];
@@ -107,6 +115,7 @@ export async function registryDiscover(
 			timestamp: Date.now(),
 		});
 	}
+	reportRefusedSharedKeys(state, sharedKeys);
 
 	// Snapshot which models the discoverers already priced, BEFORE the
 	// litellm enrichment pass runs. Pricing present here is attributed to
@@ -227,9 +236,10 @@ export function fallbackRegistryCredential(providerId: string, explicitKey?: str
 		if (oidcToken) return { accessToken: oidcToken, source: "env" };
 	}
 
-	const envVar = getProviderDescriptor(normalizedProviderId)?.primaryCredentialEnvVar;
-	const value = envVar ? process.env[envVar] : undefined;
-	return value ? { apiKey: value, source: "env" } : { source: "none" };
+	const found = resolveEnvCredential(getProviderDescriptor(normalizedProviderId));
+	return found
+		? { apiKey: found.apiKey, source: "env", envVar: found.envVar, shared: found.shared }
+		: { source: "none" };
 }
 
 /**
@@ -546,7 +556,8 @@ export async function exportRegistryManifest(state: RegistryState, options?: { c
 			throw err;
 		}
 		warnOnNewlyDisputedPrices(previousManifest, merged);
-		if (options?.catalogOnly !== false) await exportCatalogOnlyManifest(manifestPath);
+		if (options?.catalogOnly !== false)
+			await exportCatalogOnlyManifest(manifestPath, new Set(state.providerMap.keys()));
 	} catch (err) {
 		// Manifest export is best-effort — the cache still works either way.
 		// But silent failure was making permission/disk-full bugs invisible
@@ -728,13 +739,16 @@ const MAX_CATALOG_ONLY_BYTES = 32 * 1024 * 1024;
  *
  * Failing leaves the previous file in place: the registry above is already saved.
  */
-async function exportCatalogOnlyManifest(manifestPath: string): Promise<void> {
+async function exportCatalogOnlyManifest(manifestPath: string, listedIds: ReadonlySet<string>): Promise<void> {
 	if (resolveCatalogSource().mode !== "community") return;
 	const path = join(dirname(manifestPath), CATALOG_ONLY_FILE);
 	let tmpPath: string | null = null;
 	try {
 		const { getAllDiscoverers } = await import("./discovery/index.js");
-		const models = await buildCatalogOnlyRows(getAllDiscoverers().map((discoverer) => discoverer.providerId));
+		const claimed = getAllDiscoverers()
+			.map((discoverer) => discoverer.providerId)
+			.filter((id) => !getSubscriptionPlan(id) || listedIds.has(id));
+		const models = await buildCatalogOnlyRows(claimed);
 		if (models.length === 0) return;
 		const fresh = {
 			schemaVersion: DISCOVERY_SCHEMA_VERSION,
@@ -1198,6 +1212,7 @@ async function discoverProvider(
 	discoverer: ProviderDiscoverer,
 	timeout: number,
 	degraded: DiscoveryError[],
+	sharedKeys: SharedKeyLedger,
 ): Promise<ProviderInfo | null> {
 	const breaker = state.healthTracker.breaker(discoverer.providerId);
 	const startedAt = Date.now();
@@ -1214,6 +1229,10 @@ async function discoverProvider(
 	const credential = dependencies.resolveCredential
 		? await dependencies.resolveCredential(discoverer.providerId, explicitKey)
 		: dependencies.fallbackCredential(discoverer.providerId, explicitKey);
+	// A plan is listed only for someone holding a key to it; without one its
+	// models stay price-only rows in catalog-only.json.
+	const isPlan = getProviderDescriptor(discoverer.providerId)?.subscriptionPlan === true;
+	if (isPlan && (credential.source === "none" || state.config.keyless)) return null;
 
 	try {
 		// Cloud discoverers fall back to ambient credentials (the AWS chain, gcloud)
@@ -1225,6 +1244,7 @@ async function discoverProvider(
 			latencyMs: Date.now() - startedAt,
 			errorType: null,
 		});
+		if (credential.shared && credential.envVar) sharedKeys.accepted.add(credential.envVar);
 
 		return {
 			id: discoverer.providerId,
@@ -1237,6 +1257,19 @@ async function discoverProvider(
 		};
 	} catch (error: unknown) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
+		// A key borrowed from a shared env var (QWEN_API_KEY read by Alibaba's
+		// regions and plans) is expected to be refused by the siblings it isn't
+		// for. That is no fault of this provider, so no breaker failure and no
+		// warning here; only a key every reader refuses gets reported, once.
+		if (credential.shared && credential.envVar && isTentativeKeyMiss(error)) {
+			if (!isPlanKeyUnverified(error)) {
+				const refusers = sharedKeys.refused.get(credential.envVar) ?? [];
+				refusers.push(discoverer.providerId);
+				sharedKeys.refused.set(credential.envVar, refusers);
+			}
+			if (isPlan) return null;
+			return listedWithoutKey(state, discoverer, timeout);
+		}
 		breaker.onFailure(errorMessage);
 		dependencies.recordObservation(discoverer.providerId, {
 			latencyMs: Date.now() - startedAt,
@@ -1248,7 +1281,18 @@ async function discoverProvider(
 			catalogCacheKey(`${CACHE_KEY_PREFIX}${discoverer.providerId}`),
 		);
 		if (stale) {
-			return stale.data;
+			// Serving yesterday's listing is right; serving it silently is not.
+			// A key rejected today otherwise looks healthy for as long as the
+			// old cache lasts. A keyless failure (a local runtime that isn't
+			// up) stays quiet, as it always has.
+			if (credential.source === "none") return stale.data;
+			degraded.push({
+				providerId: discoverer.providerId,
+				providerName: discoverer.providerName,
+				error: errorMessage,
+				timestamp: Date.now(),
+			});
+			return { ...stale.data, degradedReason: errorMessage, degradedSource: "cache" };
 		}
 
 		// A rejected or unreachable credentialed call says nothing about what
@@ -1275,6 +1319,8 @@ async function discoverProvider(
 						credentialSource: "none",
 						models,
 						lastRefreshed: Date.now(),
+						degradedReason: errorMessage,
+						degradedSource: "catalog",
 					};
 				}
 			} catch {
@@ -1283,5 +1329,80 @@ async function discoverProvider(
 		}
 
 		throw error;
+	}
+}
+
+/** Which shared env vars some provider accepted, and who refused each. */
+interface SharedKeyLedger {
+	accepted: Set<string>;
+	refused: Map<string, string[]>;
+}
+
+/** Matched by name: the discovery modules load lazily, so no class import here. */
+function isPlanKeyUnverified(error: unknown): boolean {
+	return error instanceof Error && error.name === "PlanKeyUnverifiedError";
+}
+
+/** A 401/403, or a plan with no list to test the key on. A timeout is neither. */
+function isTentativeKeyMiss(error: unknown): boolean {
+	if (isPlanKeyUnverified(error)) return true;
+	return error instanceof Error && /API error:\s*40[13]\b/.test(error.message);
+}
+
+/**
+ * The provider's public listing, used when a shared key turned out not to be
+ * its key. Quiet: the provider is fine, the key belongs to a sibling.
+ */
+async function listedWithoutKey(
+	state: RegistryState,
+	discoverer: ProviderDiscoverer,
+	timeout: number,
+): Promise<ProviderInfo | null> {
+	try {
+		const models = await discoverer.discover({ source: "none" }, { timeout });
+		if (models.length > 0) {
+			return {
+				id: discoverer.providerId,
+				name: discoverer.providerName,
+				baseUrl: discoverer.baseUrl,
+				authenticated: false,
+				credentialSource: "none",
+				models,
+				lastRefreshed: Date.now(),
+			};
+		}
+	} catch {
+		/* fall back to the last good listing */
+	}
+	const stale = await StaleCachePolicy.getWithStale<ProviderInfo>(
+		state.cache,
+		catalogCacheKey(`${CACHE_KEY_PREFIX}${discoverer.providerId}`),
+	);
+	return stale ? { ...stale.data, authenticated: false, credentialSource: "none" } : null;
+}
+
+/**
+ * One warning per shared env var no provider accepted. It goes on each
+ * listed provider that refused it, so `update` and `doctor` show it, and
+ * names every host that said no.
+ */
+function reportRefusedSharedKeys(state: RegistryState, ledger: SharedKeyLedger): void {
+	for (const [envVar, refusers] of ledger.refused) {
+		if (ledger.accepted.has(envVar)) continue;
+		const families = new Set(refusers.map((id) => getSubscriptionPlan(id)?.family ?? id));
+		const hint = families.has("alibaba")
+			? " If it is an Alibaba Coding Plan key, set ALIBABA_CODING_PLAN_API_KEY instead: that host can't test a key."
+			: "";
+		const message = `${envVar} was refused by every provider that reads it: ${refusers.join(", ")} (API error: 401).${hint}`;
+		for (const id of refusers) {
+			const provider = state.providerMap.get(id);
+			if (provider) state.providerMap.set(id, { ...provider, degradedReason: message, degradedSource: "catalog" });
+		}
+		state.lastDiscoveryErrors.push({
+			providerId: refusers[0],
+			providerName: envVar,
+			error: message,
+			timestamp: Date.now(),
+		});
 	}
 }

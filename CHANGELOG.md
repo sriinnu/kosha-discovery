@@ -13,6 +13,28 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
+## [1.14.0] — 2026-11-12
+
+### Added
+
+- Subscription plans are providers now: 22 "token plans" and "coding plans" from 12 vendors (Alibaba Token Plan and Coding Plan, Kimi For Coding, Z.AI and Zhipu Coding Plan, MiniMax Token Plan, Xiaomi, StepFun Step Plan, Tencent, Volcengine Ark, SCNet, Umans, KUAE). A plan serves from its own host, and often lists models pay-as-you-go doesn't: Alibaba's `qwen4-max-preview` shipped on Token Plan only. One table, `src/subscription-plans.ts`, generates each plan's catalog entry, discoverer and catalog mapping.
+- A plan is listed only when a key resolves for it. Without one, its models stay price-only rows in `catalog-only.json`, and kosha doesn't prompt for a key.
+- A plan's models carry no per-token price, $0 or otherwise; the subscription pays. Under a budget they count as $0 extra. `cheapest` lists them in their own "Included in your plans" group (CLI, `--json`, MCP `includedInPlans`, HTTP), never ranked as free. For a named model, the proxy tries a plan route you hold before the pay-as-you-go one.
+- The proxy speaks the Anthropic Messages wire to any provider whose descriptor declares it, which MiniMax's plan needs.
+- `kosha update` marks a provider whose key was rejected with `!` and the provider's error, and `kosha doctor` has a Credentials section (also in `--json`). Before, a rejected key printed the same green tick as a working one, and the models silently came from the public catalog or an old cache.
+
+### Changed
+
+- A key in an env var several providers read (`QWEN_API_KEY`, `KIMI_API_KEY`, `ZAI_API_KEY`, `MINIMAX_API_KEY`…) goes to whichever of them accepts it. Key shapes rule hosts out first (`sk-sp-` is never Alibaba pay-as-you-go, `sk-kimi-` is only Kimi For Coding). A sibling's refusal is quiet, and a key every reader refuses is reported once, naming each host. Plans whose model list can't test a key read only their dedicated env var. `KOSHA_PLAN_KEY_PROBE=off` keeps every plan to its dedicated var.
+- The fallback credential path reads the same env vars, with the same rules, as the credential resolver.
+
+### Fixed
+
+- A plan key in `QWEN_API_KEY` was sent to pay-as-you-go DashScope, rejected, and the plan's models never appeared.
+- A China-region key under a shared name (moonshot.cn in `KIMI_API_KEY`, SiliconFlow's international key read by `siliconflow-cn`) produced a rejected-key failure on the other region's host.
+- Live cards on a plan no longer pick up a pay-as-you-go price from LiteLLM.
+- "Set QWEN_API_KEY to enable…" no longer appears when that var is set and its key went to a plan.
+
 ## [1.13.0] — 2026-11-04
 
 ### Added

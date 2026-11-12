@@ -7,6 +7,7 @@
  * @module
  */
 
+import { isPlanBilled } from "./discovery/free-tier.js";
 import { extractModelVersion, extractOriginProvider, matchableModelId } from "./normalize.js";
 import { isUnverifiedZeroPrice } from "./price-trust.js";
 import {
@@ -263,8 +264,15 @@ export function registryCheapestModels(state: RegistryState, options?: CheapestM
 	const ranked: CheapestModelMatch[] = [];
 	const unverified: CheapestModelMatch[] = [];
 	const unpriced: CheapestModelMatch[] = [];
+	// A plan's models have no token price: the subscription is already paid.
+	// Ranking them at $0 would call a paid plan "free", so they get their own list.
+	const includedInPlans: ModelCard[] = [];
 
 	for (const model of candidates) {
+		if (isPlanBilled(model)) {
+			includedInPlans.push(model);
+			continue;
+		}
 		const score = computeModelScore(
 			model,
 			priceMetric,
@@ -296,6 +304,7 @@ export function registryCheapestModels(state: RegistryState, options?: CheapestM
 		a.model.provider.localeCompare(b.model.provider) || a.model.id.localeCompare(b.model.id);
 	unverified.sort(byName);
 	unpriced.sort(byName);
+	includedInPlans.sort((a, b) => a.provider.localeCompare(b.provider) || a.id.localeCompare(b.id));
 	const scopedProviderIds = options?.provider
 		? [options.provider]
 		: Array.from(state.providerMap.values()).map((provider) => provider.id);
@@ -304,9 +313,10 @@ export function registryCheapestModels(state: RegistryState, options?: CheapestM
 		matches: [...ranked, ...unverified, ...unpriced].slice(0, normalizeLimit(options?.limit)),
 		candidates: candidates.length,
 		pricedCandidates: ranked.length,
-		skippedNoPricing: candidates.length - ranked.length,
+		skippedNoPricing: candidates.length - ranked.length - includedInPlans.length,
 		priceMetric,
 		missingCredentials: registryMissingCredentialPrompts(state, scopedProviderIds),
+		includedInPlans: includedInPlans.slice(0, normalizeLimit(options?.limit)),
 	};
 }
 

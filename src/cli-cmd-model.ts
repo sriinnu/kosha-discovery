@@ -10,14 +10,24 @@
  * @module cli-cmd-model
  */
 
-import type { ModelRegistry } from "./registry.js";
-import {
-	BOLD, CYAN, DIM, GREEN, RED, YELLOW,
-	c, formatBatchDiscount, formatNumber, formatPrice, formatTimestamp,
-	renderTable,
-} from "./cli-format.js";
-import type { Column } from "./cli-format.js";
 import { ensureDiscovered } from "./cli-commands.js";
+import type { Column } from "./cli-format.js";
+import {
+	BOLD,
+	CYAN,
+	c,
+	DIM,
+	formatBatchDiscount,
+	formatNumber,
+	formatPrice,
+	formatTimestamp,
+	GREEN,
+	RED,
+	renderTable,
+	YELLOW,
+} from "./cli-format.js";
+import { isPlanBilled } from "./discovery/free-tier.js";
+import type { ModelRegistry } from "./registry.js";
 
 // ── model (detail view) ─────────────────────────────────────────────────
 
@@ -32,8 +42,15 @@ import { ensureDiscovered } from "./cli-commands.js";
  * @param idOrAlias  A model id, display name, or alias.
  * @param flags      CLI flags (supports `--json`).
  */
-export async function cmdModel(registry: ModelRegistry, idOrAlias: string, flags: Record<string, string | boolean>): Promise<void> {
-	if (!idOrAlias) { console.error(c(RED, "Usage: kosha model <id|alias>")); process.exit(1); }
+export async function cmdModel(
+	registry: ModelRegistry,
+	idOrAlias: string,
+	flags: Record<string, string | boolean>,
+): Promise<void> {
+	if (!idOrAlias) {
+		console.error(c(RED, "Usage: kosha model <id|alias>"));
+		process.exit(1);
+	}
 
 	await ensureDiscovered(registry);
 	const model = registry.model(idOrAlias);
@@ -42,12 +59,14 @@ export async function cmdModel(registry: ModelRegistry, idOrAlias: string, flags
 		// Fuzzy fallback — substring match across id, name, and aliases so users
 		// can type fragments like "sonnet" without knowing the full canonical ID.
 		const needle = idOrAlias.toLowerCase();
-		const fuzzy = registry.models().filter(
-			(m) =>
-				m.id.toLowerCase().includes(needle) ||
-				m.name.toLowerCase().includes(needle) ||
-				m.aliases.some((a) => a.toLowerCase().includes(needle)),
-		);
+		const fuzzy = registry
+			.models()
+			.filter(
+				(m) =>
+					m.id.toLowerCase().includes(needle) ||
+					m.name.toLowerCase().includes(needle) ||
+					m.aliases.some((a) => a.toLowerCase().includes(needle)),
+			);
 
 		if (fuzzy.length === 1) return cmdModel(registry, fuzzy[0].id, flags);
 		if (fuzzy.length > 1) {
@@ -59,56 +78,68 @@ export async function cmdModel(registry: ModelRegistry, idOrAlias: string, flags
 		process.exit(1);
 	}
 
-	if (flags.json) { console.log(JSON.stringify(model, null, 2)); return; }
+	if (flags.json) {
+		console.log(JSON.stringify(model, null, 2));
+		return;
+	}
 
 	const providerName = registry.provider(model.provider)?.name ?? model.provider;
 	const pricingStr = model.pricing
 		? `${formatPrice(model.pricing.inputPerMillion)} / ${formatPrice(model.pricing.outputPerMillion)} per million tokens (in/out)`
-		: c(DIM, "unknown");
+		: isPlanBilled(model)
+			? c(DIM, "included in the subscription plan (no per-token price)")
+			: c(DIM, "unknown");
 	// Cache pricing is optional — only displayed when the model has it
-	const cacheStr = model.pricing?.cacheReadPerMillion !== undefined
-		? `\nCache Pricing: ${formatPrice(model.pricing.cacheReadPerMillion)} read / ${formatPrice(model.pricing.cacheWritePerMillion)} write per million tokens`
-		: "";
+	const cacheStr =
+		model.pricing?.cacheReadPerMillion !== undefined
+			? `\nCache Pricing: ${formatPrice(model.pricing.cacheReadPerMillion)} read / ${formatPrice(model.pricing.cacheWritePerMillion)} write per million tokens`
+			: "";
 	// Reasoning pricing is optional — shown when providers expose it.
-	const reasoningStr = model.pricing?.reasoningInputPerMillion !== undefined || model.pricing?.reasoningOutputPerMillion !== undefined
-		? `\nReasoning Pricing: ${formatPrice(model.pricing?.reasoningInputPerMillion)} in / ${formatPrice(model.pricing?.reasoningOutputPerMillion)} out per million tokens`
-		: "";
-		// Batch API pricing — shown when providers offer async batch discounts.
-		const batchDiscount = formatBatchDiscount(model.pricing);
-		const batchStr = model.pricing?.batchInputPerMillion !== undefined || model.pricing?.batchOutputPerMillion !== undefined
+	const reasoningStr =
+		model.pricing?.reasoningInputPerMillion !== undefined || model.pricing?.reasoningOutputPerMillion !== undefined
+			? `\nReasoning Pricing: ${formatPrice(model.pricing?.reasoningInputPerMillion)} in / ${formatPrice(model.pricing?.reasoningOutputPerMillion)} out per million tokens`
+			: "";
+	// Batch API pricing — shown when providers offer async batch discounts.
+	const batchDiscount = formatBatchDiscount(model.pricing);
+	const batchStr =
+		model.pricing?.batchInputPerMillion !== undefined || model.pricing?.batchOutputPerMillion !== undefined
 			? `\nBatch Pricing: ${formatPrice(model.pricing?.batchInputPerMillion)} in / ${formatPrice(model.pricing?.batchOutputPerMillion)} out per million tokens${batchDiscount ? ` ${batchDiscount}` : ""}`
 			: "";
-		const originPricingStr = model.originPricing
+	const originPricingStr = model.originPricing
 		? `\nOrigin Pricing: ${formatPrice(model.originPricing.inputPerMillion)} / ${formatPrice(model.originPricing.outputPerMillion)} per million tokens (in/out)` +
-			((model.originPricing.reasoningInputPerMillion !== undefined || model.originPricing.reasoningOutputPerMillion !== undefined)
+			(model.originPricing.reasoningInputPerMillion !== undefined ||
+			model.originPricing.reasoningOutputPerMillion !== undefined
 				? `\nOrigin Reasoning Pricing: ${formatPrice(model.originPricing.reasoningInputPerMillion)} in / ${formatPrice(model.originPricing.reasoningOutputPerMillion)} out per million tokens`
 				: "") +
-			((model.originPricing.batchInputPerMillion !== undefined || model.originPricing.batchOutputPerMillion !== undefined)
+			(model.originPricing.batchInputPerMillion !== undefined || model.originPricing.batchOutputPerMillion !== undefined
 				? `\nOrigin Batch Pricing: ${formatPrice(model.originPricing.batchInputPerMillion)} in / ${formatPrice(model.originPricing.batchOutputPerMillion)} out per million tokens`
 				: "")
 		: "";
 
 	// Origin provider line: only shown when distinct from the serving-layer provider
-	const originLine = model.originProvider && model.originProvider !== model.provider
-		? `\n${c(BOLD, "Origin Provider:")} ${c(CYAN, model.originProvider)}`
-		: "";
+	const originLine =
+		model.originProvider && model.originProvider !== model.provider
+			? `\n${c(BOLD, "Origin Provider:")} ${c(CYAN, model.originProvider)}`
+			: "";
 	// Region and project ID are only shown when present (Bedrock / Vertex models)
 	const regionLine = model.region ? `\n${c(BOLD, "Region:")} ${model.region}` : "";
 	const projectLine = model.projectId ? `\n${c(BOLD, "Project ID:")} ${model.projectId}` : "";
 
-	console.log(`
+	console.log(
+		`
 ${c(BOLD, "Model:")} ${model.id}
 ${c(BOLD, "Name:")} ${model.name}
 ${c(BOLD, "Provider:")} ${providerName}${originLine}${regionLine}${projectLine}
 ${c(BOLD, "Mode:")} ${model.mode}
 ${c(BOLD, "Aliases:")} ${model.aliases.length > 0 ? model.aliases.join(", ") : c(DIM, "none")}
-${c(BOLD, "Context Window:")} ${model.contextWindow > 0 ? formatNumber(model.contextWindow) + " tokens" : c(DIM, "unknown")}
+${c(BOLD, "Context Window:")} ${model.contextWindow > 0 ? `${formatNumber(model.contextWindow)} tokens` : c(DIM, model.source === "api" ? "unknown (the provider doesn't say, and no catalog lists it yet)" : "unknown")}
 ${c(BOLD, "Max Output:")} ${model.maxOutputTokens > 0 ? formatNumber(model.maxOutputTokens) + " tokens" : c(DIM, "unknown")}${model.dimensions ? `\n${c(BOLD, "Dimensions:")} ${formatNumber(model.dimensions)}` : ""}
 ${c(BOLD, "Capabilities:")} ${model.capabilities.join(", ")}
 ${c(BOLD, "Pricing:")} ${pricingStr}${cacheStr}${reasoningStr}${batchStr}${originPricingStr}
 ${c(BOLD, "Source:")} ${model.source}
 ${c(BOLD, "Discovered:")} ${formatTimestamp(model.discoveredAt)}
-`.trim());
+`.trim(),
+	);
 }
 
 // ── resolve ──────────────────────────────────────────────────────────────
@@ -121,8 +152,15 @@ ${c(BOLD, "Discovered:")} ${formatTimestamp(model.discoveredAt)}
  * @param alias     The alias string to resolve.
  * @param flags     CLI flags (supports `--json`).
  */
-export async function cmdResolve(registry: ModelRegistry, alias: string, flags: Record<string, string | boolean>): Promise<void> {
-	if (!alias) { console.error(c(RED, "Usage: kosha resolve <alias>")); process.exit(1); }
+export async function cmdResolve(
+	registry: ModelRegistry,
+	alias: string,
+	flags: Record<string, string | boolean>,
+): Promise<void> {
+	if (!alias) {
+		console.error(c(RED, "Usage: kosha resolve <alias>"));
+		process.exit(1);
+	}
 
 	await ensureDiscovered(registry);
 	const resolved = registry.resolve(alias);
@@ -164,21 +202,25 @@ export async function cmdResolve(registry: ModelRegistry, alias: string, flags: 
 		const base = `${formatPrice(model.pricing.inputPerMillion)} / ${formatPrice(model.pricing.outputPerMillion)} per M tokens (in/out)`;
 		console.log(`${c(DIM, "Pricing:")} ${base}`);
 		if (model.pricing.cacheReadPerMillion !== undefined || model.pricing.cacheWritePerMillion !== undefined) {
-			const read = model.pricing.cacheReadPerMillion !== undefined
-				? formatPrice(model.pricing.cacheReadPerMillion)
-				: c(DIM, "\u2014");
-			const write = model.pricing.cacheWritePerMillion !== undefined
-				? formatPrice(model.pricing.cacheWritePerMillion)
-				: c(DIM, "\u2014");
+			const read =
+				model.pricing.cacheReadPerMillion !== undefined
+					? formatPrice(model.pricing.cacheReadPerMillion)
+					: c(DIM, "\u2014");
+			const write =
+				model.pricing.cacheWritePerMillion !== undefined
+					? formatPrice(model.pricing.cacheWritePerMillion)
+					: c(DIM, "\u2014");
 			console.log(`${c(DIM, "Cache:  ")} ${read} read / ${write} write per M tokens`);
 		}
 		if (model.pricing.batchInputPerMillion !== undefined || model.pricing.batchOutputPerMillion !== undefined) {
-			const bIn = model.pricing.batchInputPerMillion !== undefined
-				? formatPrice(model.pricing.batchInputPerMillion)
-				: c(DIM, "\u2014");
-			const bOut = model.pricing.batchOutputPerMillion !== undefined
-				? formatPrice(model.pricing.batchOutputPerMillion)
-				: c(DIM, "\u2014");
+			const bIn =
+				model.pricing.batchInputPerMillion !== undefined
+					? formatPrice(model.pricing.batchInputPerMillion)
+					: c(DIM, "\u2014");
+			const bOut =
+				model.pricing.batchOutputPerMillion !== undefined
+					? formatPrice(model.pricing.batchOutputPerMillion)
+					: c(DIM, "\u2014");
 			console.log(`${c(DIM, "Batch:  ")} ${bIn} in / ${bOut} out per M tokens`);
 		}
 	}
@@ -199,13 +241,23 @@ export async function cmdResolve(registry: ModelRegistry, alias: string, flags: 
  * @param modelId    Canonical model ID or alias to look up.
  * @param flags      CLI flags (supports `--json`).
  */
-export async function cmdRoutes(registry: ModelRegistry, modelId: string, flags: Record<string, string | boolean>): Promise<void> {
-	if (!modelId) { console.error(c(RED, "Usage: kosha routes <model-id|alias>")); process.exit(1); }
+export async function cmdRoutes(
+	registry: ModelRegistry,
+	modelId: string,
+	flags: Record<string, string | boolean>,
+): Promise<void> {
+	if (!modelId) {
+		console.error(c(RED, "Usage: kosha routes <model-id|alias>"));
+		process.exit(1);
+	}
 
 	await ensureDiscovered(registry);
 	const routes = registry.modelRouteInfo(modelId);
 
-	if (flags.json) { console.log(JSON.stringify(routes, null, 2)); return; }
+	if (flags.json) {
+		console.log(JSON.stringify(routes, null, 2));
+		return;
+	}
 
 	if (routes.length === 0) {
 		console.error(c(RED, `No routes found for model: "${modelId}"`));
@@ -236,7 +288,9 @@ export async function cmdRoutes(registry: ModelRegistry, modelId: string, flags:
 		formatPrice(route.model.pricing?.outputPerMillion),
 	]);
 
-	console.log(`\n${c(BOLD, routes[0].model.name)} ${c(DIM, `(${routes.length} route${routes.length !== 1 ? "s" : ""})`)}\n`);
+	console.log(
+		`\n${c(BOLD, routes[0].model.name)} ${c(DIM, `(${routes.length} route${routes.length !== 1 ? "s" : ""})`)}\n`,
+	);
 	console.log(renderTable(columns, rows));
 	const preferred = routes.find((route) => route.isPreferred);
 	if (preferred) {

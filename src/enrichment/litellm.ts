@@ -7,11 +7,11 @@
  * @module
  */
 
-import type { Enricher, ModelCard, ModelMode, ModelPricing, ModelStatus } from "../types.js";
-import { applyFreeTierFlag } from "../discovery/free-tier.js";
-import { normalizeModelId } from "../normalize.js";
+import { applyFreeTierFlag, isPlanBilled } from "../discovery/free-tier.js";
 import { inferParallelToolCalls, inferStructuredOutputModes, inferToolDialect } from "../model-features.js";
+import { normalizeModelId } from "../normalize.js";
 import { inferTokenizerFamily } from "../tokenizer-family.js";
+import type { Enricher, ModelCard, ModelMode, ModelPricing, ModelStatus } from "../types.js";
 import { type LiteLLMModelEntry, loadLiteLLMCatalog } from "./litellm-catalog.js";
 
 /**
@@ -63,41 +63,31 @@ export class LiteLLMEnricher implements Enricher {
 		// often provides input/output rates but skips cache_read/cache_write,
 		// while litellm has them — so I merge per-field rather than all-or-nothing.
 		const entryPricing = this.extractPricing(entry);
-		if (entryPricing) {
+		// A plan-billed route has no per-token price; the same model's rate
+		// elsewhere is still useful, as originPricing below.
+		if (entryPricing && !isPlanBilled(enriched)) {
 			if (!enriched.pricing) {
 				enriched.pricing = entryPricing;
 			} else {
-				if (
-					enriched.pricing.cacheReadPerMillion === undefined &&
-					entryPricing.cacheReadPerMillion !== undefined
-				) {
+				if (enriched.pricing.cacheReadPerMillion === undefined && entryPricing.cacheReadPerMillion !== undefined) {
 					enriched.pricing = {
 						...enriched.pricing,
 						cacheReadPerMillion: entryPricing.cacheReadPerMillion,
 					};
 				}
-				if (
-					enriched.pricing.cacheWritePerMillion === undefined &&
-					entryPricing.cacheWritePerMillion !== undefined
-				) {
+				if (enriched.pricing.cacheWritePerMillion === undefined && entryPricing.cacheWritePerMillion !== undefined) {
 					enriched.pricing = {
 						...enriched.pricing,
 						cacheWritePerMillion: entryPricing.cacheWritePerMillion,
 					};
 				}
-				if (
-					enriched.pricing.batchInputPerMillion === undefined &&
-					entryPricing.batchInputPerMillion !== undefined
-				) {
+				if (enriched.pricing.batchInputPerMillion === undefined && entryPricing.batchInputPerMillion !== undefined) {
 					enriched.pricing = {
 						...enriched.pricing,
 						batchInputPerMillion: entryPricing.batchInputPerMillion,
 					};
 				}
-				if (
-					enriched.pricing.batchOutputPerMillion === undefined &&
-					entryPricing.batchOutputPerMillion !== undefined
-				) {
+				if (enriched.pricing.batchOutputPerMillion === undefined && entryPricing.batchOutputPerMillion !== undefined) {
 					enriched.pricing = {
 						...enriched.pricing,
 						batchOutputPerMillion: entryPricing.batchOutputPerMillion,
@@ -107,7 +97,12 @@ export class LiteLLMEnricher implements Enricher {
 		}
 
 		// Preserve proxy-route pricing while surfacing direct-origin reference pricing.
-		if (entryPricing && enriched.originProvider && enriched.originProvider !== enriched.provider && !enriched.originPricing) {
+		if (
+			entryPricing &&
+			enriched.originProvider &&
+			enriched.originProvider !== enriched.provider &&
+			!enriched.originPricing
+		) {
 			enriched.originPricing = entryPricing;
 		}
 
@@ -179,8 +174,7 @@ export class LiteLLMEnricher implements Enricher {
 		// based on origin provider and model ID.
 		if (!enriched.tokenizerFamily) {
 			const localFamily = enriched.localRuntime?.tokenizerFamily;
-			enriched.tokenizerFamily =
-				localFamily ?? inferTokenizerFamily(enriched.originProvider, enriched.id);
+			enriched.tokenizerFamily = localFamily ?? inferTokenizerFamily(enriched.originProvider, enriched.id);
 		}
 
 		// Tool dialect — only fill when missing. The discoverer might know the
@@ -410,9 +404,15 @@ export class LiteLLMEnricher implements Enricher {
 		if (tieredOut !== undefined) {
 			pricing.longContextOutputPerMillion = tieredOut * PER_MILLION;
 		}
-		if (entry.input_cost_per_token_above_128k_tokens !== undefined || entry.output_cost_per_token_above_128k_tokens !== undefined) {
+		if (
+			entry.input_cost_per_token_above_128k_tokens !== undefined ||
+			entry.output_cost_per_token_above_128k_tokens !== undefined
+		) {
 			pricing.longContextThresholdTokens = 128_000;
-		} else if (entry.input_cost_per_token_above_200k_tokens !== undefined || entry.output_cost_per_token_above_200k_tokens !== undefined) {
+		} else if (
+			entry.input_cost_per_token_above_200k_tokens !== undefined ||
+			entry.output_cost_per_token_above_200k_tokens !== undefined
+		) {
 			pricing.longContextThresholdTokens = 200_000;
 		}
 

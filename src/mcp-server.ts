@@ -110,7 +110,7 @@ export const TOOLS = [
 	{
 		name: "kosha_cheapest_model",
 		description:
-			"Find the cheapest AI model that meets your requirements. Returns ranked matches with per-million token pricing. Use this before routing a request to pick the most cost-effective option.",
+			"Find the cheapest AI model that meets your requirements. Returns ranked matches with per-million token pricing; models a subscription plan already pays for come back separately in includedInPlans, never ranked as free. Use this before routing a request to pick the most cost-effective option.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -305,6 +305,13 @@ export async function callTool(
 					...(m.priceUnverified ? { priceUnverified: true } : {}),
 				})),
 				missingCredentials: result.missingCredentials.map((c) => c.providerId),
+				// Paid by a subscription: no per-token price, and not free either.
+				includedInPlans: result.includedInPlans.map((m) => ({
+					id: m.id,
+					provider: m.provider,
+					name: m.name,
+					contextWindow: m.contextWindow,
+				})),
 			};
 		}
 

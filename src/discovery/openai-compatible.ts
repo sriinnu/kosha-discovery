@@ -95,20 +95,14 @@ export abstract class OpenAICompatibleDiscoverer extends BaseDiscoverer {
 		}
 
 		const timeoutMs = this.validateTimeout(options?.timeout);
-		const headers: Record<string, string> = {
-			Authorization: `Bearer ${apiKey}`,
-		};
+		const headers = this.listHeaders(apiKey);
 
 		let response: OpenAICompatibleListResponse | null = null;
 		let firstError: unknown;
 		let allNotFound = true;
 		for (const endpoint of this.modelListEndpoints()) {
 			try {
-				response = await this.fetchJSON<OpenAICompatibleListResponse>(
-					endpoint,
-					headers,
-					timeoutMs,
-				);
+				response = await this.fetchJSON<OpenAICompatibleListResponse>(endpoint, headers, timeoutMs);
 				break;
 			} catch (error: unknown) {
 				firstError ??= error;
@@ -140,9 +134,7 @@ export abstract class OpenAICompatibleDiscoverer extends BaseDiscoverer {
 			throw firstError instanceof Error ? firstError : new Error(`${this.providerName} API request failed`);
 		}
 
-		return response.data
-			.filter((model) => this.isRelevantModel(model))
-			.map((model) => this.toCard(model));
+		return response.data.filter((model) => this.isRelevantModel(model)).map((model) => this.toCard(model));
 	}
 
 	/**
@@ -151,6 +143,11 @@ export abstract class OpenAICompatibleDiscoverer extends BaseDiscoverer {
 	 * Most providers use `/v1/models`. Some OpenAI-compatible APIs expose
 	 * `/models` at versioned base URLs; subclasses can override this.
 	 */
+	/** Auth headers for the model-list call; Bearer unless a subclass says otherwise. */
+	protected listHeaders(apiKey: string): Record<string, string> {
+		return { Authorization: `Bearer ${apiKey}` };
+	}
+
 	protected modelListEndpoints(): string[] {
 		return [`${this.baseUrl}/v1/models`];
 	}
@@ -211,15 +208,27 @@ export abstract class OpenAICompatibleDiscoverer extends BaseDiscoverer {
 
 	/** Check if a lowercase model ID looks like a vision model. */
 	protected looksLikeVision(lower: string): boolean {
-		return lower.includes("vision") || lower.includes("vlm") || lower.includes("llava") ||
-			lower.includes("pixtral") || lower.includes("neva") || lower.includes("fuyu") ||
-			lower.includes("cogvlm") || lower.includes("vila");
+		return (
+			lower.includes("vision") ||
+			lower.includes("vlm") ||
+			lower.includes("llava") ||
+			lower.includes("pixtral") ||
+			lower.includes("neva") ||
+			lower.includes("fuyu") ||
+			lower.includes("cogvlm") ||
+			lower.includes("vila")
+		);
 	}
 
 	/** Check if a lowercase model ID looks like a code model. */
 	protected looksLikeCode(lower: string): boolean {
-		return lower.includes("code") || lower.includes("codestral") ||
-			lower.includes("starcoder") || lower.includes("codellama") || lower.includes("coder");
+		return (
+			lower.includes("code") ||
+			lower.includes("codestral") ||
+			lower.includes("starcoder") ||
+			lower.includes("codellama") ||
+			lower.includes("coder")
+		);
 	}
 
 	/** Check if a lowercase model ID looks like an audio/speech model. */

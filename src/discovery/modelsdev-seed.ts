@@ -11,6 +11,7 @@
  * @module
  */
 
+import { isSubscriptionPlanProvider, SUBSCRIPTION_PLANS } from "../subscription-plans.js";
 import type { ModelCard, ModelMode, ModelPricing, ModelStatus } from "../types.js";
 import {
 	applyFreeTierFlag,
@@ -81,6 +82,8 @@ const PROVIDER_SLUG_ALIASES: Record<string, readonly string[]> = {
 	thinkingmachines: ["thinkingmachines"],
 	vertex: ["google-vertex", "google-vertex-anthropic"],
 	bedrock: ["amazon-bedrock"],
+	// Every plan's provider ID is its models.dev slug.
+	...Object.fromEntries(SUBSCRIPTION_PLANS.map((plan) => [plan.providerId, [plan.providerId]])),
 };
 
 /** Every models.dev slug already served through a mapped kosha provider. */
@@ -93,7 +96,11 @@ export function mappedModelsDevSlugs(): Set<string> {
  * tokens, so the $0 says nothing about what the model costs.
  */
 export function isSubscriptionPlanSlug(slug: string): boolean {
-	return /(^|-)(coding|code|token)-plan(-|$)/.test(slug) || SUBSCRIPTION_BILLED_SLUGS.has(slug);
+	return (
+		isSubscriptionPlanProvider(slug) ||
+		/(^|-)(coding|code|token|step)-plan(-|$)/.test(slug) ||
+		SUBSCRIPTION_BILLED_SLUGS.has(slug)
+	);
 }
 
 /**
@@ -128,14 +135,23 @@ export async function getCatalogOnlySeed(slug: string): Promise<ModelCard[]> {
 function markCatalogOnly(card: ModelCard, plan: boolean): ModelCard {
 	const raw = card.rawCapabilities ?? card.capabilities;
 	if (!plan) return { ...card, rawCapabilities: [...raw, CATALOG_ONLY_CAPABILITY] };
+	return stripPlanPrice(card, [CATALOG_ONLY_CAPABILITY]);
+}
 
+/**
+ * A plan's catalog price is not a price anyone pays per token: $0 means the
+ * subscription pays, and a nonzero figure may be an overage rate or a copied
+ * pay-as-you-go rate, and nothing says which. Drop it and the free-tier tag,
+ * and mark the card as plan-billed.
+ */
+function stripPlanPrice(card: ModelCard, extraRaw: readonly string[] = []): ModelCard {
+	const raw = card.rawCapabilities ?? card.capabilities;
 	const notFree = (capability: string) => capability !== FREE_TIER_CAPABILITY;
-	const { pricing, ...rest } = card;
+	const { pricing: _planPrice, ...rest } = card;
 	return {
 		...rest,
-		...(pricing && !isFreeTier(card) ? { pricing } : {}),
 		capabilities: card.capabilities.filter(notFree),
-		rawCapabilities: [...raw.filter(notFree), CATALOG_ONLY_CAPABILITY, SUBSCRIPTION_PLAN_CAPABILITY],
+		rawCapabilities: [...raw.filter(notFree), ...extraRaw, SUBSCRIPTION_PLAN_CAPABILITY],
 	};
 }
 
@@ -152,6 +168,7 @@ export async function getModelsDevSeed(providerId: string): Promise<ModelCard[]>
 	const seenIds = new Set<string>();
 
 	for (const slug of slugs) {
+		const plan = isSubscriptionPlanSlug(slug);
 		const provider: ModelsDevProvider | undefined = catalog[slug];
 		if (!provider || typeof provider !== "object") continue;
 		const models = provider.models;
@@ -166,7 +183,7 @@ export async function getModelsDevSeed(providerId: string): Promise<ModelCard[]>
 			seenIds.add(id);
 
 			const card = buildSeedCard(id, providerId, entry);
-			if (card) seeds.push(card);
+			if (card) seeds.push(plan ? stripPlanPrice(card) : card);
 		}
 	}
 
