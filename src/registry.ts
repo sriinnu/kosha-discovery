@@ -19,7 +19,7 @@ import type {
 } from "./discovery-contract.js";
 import { normalizeModelId } from "./normalize.js";
 import { sanitizeModelPricing } from "./price-trust.js";
-import { normalizeProviderId } from "./provider-catalog.js";
+import { getProviderConfig, normalizeProviderId } from "./provider-catalog.js";
 import {
 	registryBuildSnapshot,
 	registryClassifyError,
@@ -116,6 +116,11 @@ export class ModelRegistry {
 		if (config && ("catalogSource" in config || "catalogFile" in config)) configureCatalogSource(config);
 		this.state = createRegistryState(config);
 		this.currentCursor = registryMakeCursor(this.state);
+	}
+
+	/** The `providers.<id>.apiKey` from config, which outranks env vars for this provider. */
+	configuredApiKey(providerId: string): string | undefined {
+		return getProviderConfig(this.state.config, providerId)?.apiKey;
 	}
 
 	/** Compatibility accessor retained for existing tests and debug hooks. */

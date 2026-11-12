@@ -28,7 +28,9 @@ Costs are **estimates** — there is no tokenizer in the hot path. kosha approxi
 
 ### Monthly budget gate
 
-Set `KOSHA_MONTHLY_BUDGET_USD` and the proxy enforces it per request. Spend is summed over the **current UTC calendar month** (`readSpendForMonth` reads only that month's partition plus any legacy rows). The cap is **global** — always compared against total spend, never a tenant's slice, so a caller cannot escape it by sending a fresh tenant tag. Set `KOSHA_TENANT_BUDGET_USD` for an additional per-tenant cap on tagged requests. When either cap is hit the proxy returns `429` with two headers:
+Set `KOSHA_MONTHLY_BUDGET_USD` and the proxy enforces it per request. Spend is summed over the **current UTC calendar month** (`readSpendForMonth` reads only that month's partition plus any legacy rows). The cap is **global** — always compared against total spend, never a tenant's slice, so a caller cannot escape it by sending a fresh tenant tag. Set `KOSHA_TENANT_BUDGET_USD` for an additional per-tenant cap; while it is set, requests with no tenant tag share one `untagged` bucket, so leaving the tag off doesn't skip the cap.
+
+Both values are plain dollar amounts (`500`, `12.5`). `0` is a real budget: nothing paid goes through, while $0 routes (local runtimes, plans you hold) still run. Anything else (`$50`, `1,000`, `50usd`, `-3`) stops `kosha serve` at start, and the proxy answers `503` until it's fixed; it is never read as "no budget". When either cap is hit the proxy returns `429` with two headers:
 
 ```
 x-kosha-budget-remaining-usd: 0.0000
@@ -37,7 +39,9 @@ x-kosha-budget-usd: 500.00
 
 If the ledger is unreadable (permissions, partial mount), the proxy **fails closed** with `503 budget enforcement unavailable` — it will not treat an unreadable ledger as "spent $0".
 
-Tenants are opt-in: send `x-kosha-tenant: <name>` on a proxied request (or, when no `KOSHA_PROXY_TOKEN` is set, the legacy `Authorization: Bearer kosha-tenant-<name>`) and that caller's spend is bucketed under the tag. `kosha spend --tenant <name>` reports it; `KOSHA_TENANT_BUDGET_USD` caps it.
+Streamed requests are reconciled too: the proxy asks the upstream for `stream_options.include_usage` and drops that usage chunk again if the caller didn't ask for it. A provider that answers `400` to the option gets the request again without it, and isn't asked again for the life of the process.
+
+Tenants are labels: send `x-kosha-tenant: <name>` on a proxied request (or, when no `KOSHA_PROXY_TOKEN` is set, the legacy `Authorization: Bearer kosha-tenant-<name>`) and that caller's spend is bucketed under the tag. `kosha spend --tenant <name>` reports it; `KOSHA_TENANT_BUDGET_USD` caps it.
 
 Streaming responses write their row **before** the body is relayed, carrying the pre-flight estimate; when the stream ends with a usage block, a second `kind: "adjustment"` row records the delta to the actual cost. Summing every row's contribution (`ledgerRowUsd`) therefore yields actual spend, and a client that disconnects mid-stream is still charged its estimate.
 
@@ -135,7 +139,7 @@ Each proxied upstream fetch must return headers (and, for non-streaming calls, i
 
 ### Clear a quarantined price
 
-On every manifest merge, kosha compares fresh rates to the previous snapshot. A per-million rate that moved by more than 75% in either direction is treated as a suspect publish (provider returns 0, garbage units, a realignment) — the old pricing is kept and the row is tagged `pricing_quarantined` so downstream consumers don't get silently over- or under-charged. Smaller moves (25%+) are logged to `~/.kosha/anomalies.json` as a heads-up without blocking the update.
+On every manifest merge, kosha compares fresh rates to the previous snapshot. A per-million rate that moved by more than 75% in either direction is treated as a suspect publish (provider returns 0, garbage units, a realignment) — the old pricing is kept and the row is tagged `pricing_quarantined` so downstream consumers don't get silently over- or under-charged. The held price is also the one kosha itself uses: it is copied back into the in-memory registry and the cache, so `cheapest`, the MCP tools, the proxy and the budget all see the held rate and the tag. Smaller moves (25%+) are logged to `~/.kosha/anomalies.json` as a heads-up without blocking the update.
 
 To accept a legitimate large price change that quarantine is holding back, clear the previous snapshot so there is nothing to compare against, then re-discover:
 
@@ -144,7 +148,7 @@ mv ~/.kosha/registry.json ~/.kosha/registry.json.pre-quarantine
 curl -X POST http://localhost:3000/api/refresh -H 'content-type: application/json' -d '{}'
 ```
 
-With no previous manifest, the merge takes fresh pricing verbatim and the `pricing_quarantined` tag is gone. Verify the new rate with `kosha model <alias>` before deleting the backup.
+With no previous manifest, the merge takes fresh pricing verbatim and the `pricing_quarantined` tag is gone. Check the new rate in `~/.kosha/registry.json` (or with `kosha model <alias>`, which now shows the same price) before deleting the backup.
 
 ### Boot degraded mode
 

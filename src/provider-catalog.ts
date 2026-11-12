@@ -57,6 +57,12 @@ export interface ProviderDescriptor {
 	/** Path of the Messages endpoint for an `anthropic` wire; default `/v1/messages`. */
 	anthropicMessagesPath?: string;
 	/**
+	 * Path of the OpenAI chat-completions endpoint under `defaultBaseUrl`;
+	 * default `/chat/completions`. Roots that serve it under `/v1` say so here,
+	 * so the proxy doesn't 404 on them (a 404 is returned as-is, no failover).
+	 */
+	chatCompletionsPath?: string;
+	/**
 	 * Billed by a flat subscription: the plan pays for tokens, so its models
 	 * carry no per-token price, and a request costs nothing extra.
 	 */
@@ -132,6 +138,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		isLocal: false,
 		transport: "native-http",
 		defaultBaseUrl: "https://api.openai.com",
+		chatCompletionsPath: "/v1/chat/completions",
 		credentialRequired: true,
 		credentialEnvVars: ["OPENAI_API_KEY"],
 		primaryCredentialEnvVar: "OPENAI_API_KEY",
@@ -211,6 +218,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		isLocal: true,
 		transport: "native-http",
 		defaultBaseUrl: "http://localhost:11434",
+		chatCompletionsPath: "/v1/chat/completions",
 		credentialRequired: false,
 		credentialEnvVars: [],
 		cacheBehavior: {
@@ -228,6 +236,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		isLocal: true,
 		transport: "openai-compatible-http",
 		defaultBaseUrl: "http://127.0.0.1:8080",
+		chatCompletionsPath: "/v1/chat/completions",
 		credentialRequired: false,
 		credentialEnvVars: [],
 		cacheBehavior: {
@@ -245,6 +254,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		isLocal: true,
 		transport: "openai-compatible-http",
 		defaultBaseUrl: "http://127.0.0.1:1234",
+		chatCompletionsPath: "/v1/chat/completions",
 		credentialRequired: false,
 		credentialEnvVars: [],
 		cacheBehavior: {
@@ -262,6 +272,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		isLocal: true,
 		transport: "openai-compatible-http",
 		defaultBaseUrl: "http://127.0.0.1:8000",
+		chatCompletionsPath: "/v1/chat/completions",
 		credentialRequired: false,
 		credentialEnvVars: [],
 		cacheBehavior: {
@@ -458,6 +469,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		// international key cannot authenticate against; `moonshot-cn` now
 		// carries that host explicitly.
 		defaultBaseUrl: "https://api.moonshot.ai",
+		chatCompletionsPath: "/v1/chat/completions",
 		credentialRequired: true,
 		credentialEnvVars: ["MOONSHOT_API_KEY", "KIMI_API_KEY"],
 		primaryCredentialEnvVar: "MOONSHOT_API_KEY",
@@ -505,6 +517,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		isLocal: false,
 		transport: "openai-compatible-http",
 		defaultBaseUrl: "https://api.moonshot.cn",
+		chatCompletionsPath: "/v1/chat/completions",
 		credentialRequired: true,
 		credentialEnvVars: ["MOONSHOT_CN_API_KEY", "MOONSHOT_API_KEY", "KIMI_API_KEY"],
 		primaryCredentialEnvVar: "MOONSHOT_CN_API_KEY",
@@ -525,6 +538,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		isLocal: false,
 		transport: "openai-compatible-http",
 		defaultBaseUrl: "https://api.minimaxi.com",
+		chatCompletionsPath: "/v1/chat/completions",
 		credentialRequired: true,
 		credentialEnvVars: ["MINIMAX_CN_API_KEY", "MINIMAX_API_KEY"],
 		primaryCredentialEnvVar: "MINIMAX_CN_API_KEY",
@@ -816,6 +830,7 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		isLocal: false,
 		transport: "openai-compatible-http",
 		defaultBaseUrl: "https://api.minimax.io",
+		chatCompletionsPath: "/v1/chat/completions",
 		credentialRequired: true,
 		credentialEnvVars: ["MINIMAX_API_KEY"],
 		primaryCredentialEnvVar: "MINIMAX_API_KEY",

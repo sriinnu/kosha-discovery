@@ -413,14 +413,11 @@ function buildUpstreamUrl(model: ModelCard, registry: ModelRegistry): string {
 	} else {
 		base = (descriptor?.defaultBaseUrl ?? "").replace(/\/$/, "");
 	}
-	// Some native/local roots expose the OpenAI-compatible layer under /v1.
-	if (
-		(model.provider === "openai" || model.provider === "ollama" || model.provider === "llama.cpp") &&
-		!base.endsWith("/v1")
-	) {
-		return `${base}/v1/chat/completions`;
-	}
-	return `${base}/chat/completions`;
+	// Roots that serve chat-completions under /v1 declare it on the descriptor.
+	// A configured local base that already ends in /v1 isn't given a second one.
+	let path = descriptor?.chatCompletionsPath ?? "/chat/completions";
+	if (base.endsWith("/v1") && path.startsWith("/v1/")) path = path.slice(3);
+	return `${base}${path}`;
 }
 
 /**
@@ -788,9 +785,23 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			wantsStream && (body.stream_options as { include_usage?: unknown } | undefined)?.include_usage === true;
 
 		for (const model of candidates) {
-			const credential = resolver ? await resolver.resolve(model.provider) : fallbackRegistryCredential(model.provider);
-			const bearerToken = credential.apiKey ?? credential.accessToken;
+			// A key in config outranks env vars, exactly as it does for discovery.
+			const configuredKey = registry.configuredApiKey(model.provider);
+			const credential = resolver
+				? await resolver.resolve(model.provider, configuredKey)
+				: fallbackRegistryCredential(model.provider, configuredKey);
 			const descriptor = getProviderDescriptor(model.provider);
+			// A key from a shared env var (one vendor's regions and plans read the
+			// same one) belongs only to the providers that accepted it at
+			// discovery. Sending it, and the prompt, to a sibling region that
+			// never accepted it leaks both across a data-residency line.
+			if (credential.shared && registry.provider(model.provider)?.authenticated !== true) {
+				attemptChain.push(`${model.provider}:unverified-shared-key`);
+				continue;
+			}
+			// A Claude subscription OAuth token is for Claude's own apps, not for
+			// a proxy to spend: it is not an API key and isn't forwarded.
+			const bearerToken = credential.apiKey ?? (credential.source === "oauth" ? undefined : credential.accessToken);
 			if (descriptor && providerExecutionCredentialRequired(descriptor) && !bearerToken) {
 				const envHint = descriptor.credentialEnvVars.length
 					? descriptor.credentialEnvVars.join(" or ")
@@ -967,17 +978,27 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 
 			// A retryable upstream failure (5xx) rolls over to the next route,
 			// unless we've spent our fetch budget — then we surface it.
-			if (upstream.status >= 500 && fetchAttempts < MAX_FETCHES) {
+			// A shared key that a plan host listed models for may still be a
+			// pay-as-you-go key the plan refuses to bill: then the paid route for
+			// the same model should get the request, not the caller a 401.
+			const planRefusedSharedKey =
+				(isPlanBilled(model) || descriptor?.subscriptionPlan === true) &&
+				credential.shared === true &&
+				(upstream.status === 401 || upstream.status === 403);
+			if ((upstream.status >= 500 || planRefusedSharedKey) && fetchAttempts < MAX_FETCHES) {
 				releaseTimer();
 				attemptChain.push(`${model.provider}:${upstream.status}`);
 				await upstream.body?.cancel().catch(() => {});
-				registry.recordProxyOutcome(model.provider, {
-					ok: false,
-					status: upstream.status,
-					latencyMs: Date.now() - attemptStart,
-					errorType: "transport",
-				});
-				bumpProxyMetric(model.provider, false, Date.now() - attemptStart);
+				// A refused key says nothing about the provider's health.
+				if (!planRefusedSharedKey) {
+					registry.recordProxyOutcome(model.provider, {
+						ok: false,
+						status: upstream.status,
+						latencyMs: Date.now() - attemptStart,
+						errorType: "transport",
+					});
+					bumpProxyMetric(model.provider, false, Date.now() - attemptStart);
+				}
 				continue;
 			}
 
