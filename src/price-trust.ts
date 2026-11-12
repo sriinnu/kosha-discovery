@@ -34,3 +34,70 @@ export function isUnverifiedZeroPrice(model: ModelCard): boolean {
 	if (model.provider === "openrouter" && model.id.endsWith(":free")) return false;
 	return getProviderDescriptor(model.provider)?.isLocal !== true;
 }
+
+const PRICE_RATE_FIELDS = [
+	"inputPerMillion",
+	"outputPerMillion",
+	"reasoningInputPerMillion",
+	"reasoningOutputPerMillion",
+	"cacheReadPerMillion",
+	"cacheWritePerMillion",
+	"cacheWrite1hPerMillion",
+	"batchInputPerMillion",
+	"batchOutputPerMillion",
+	"imageInputPerImage",
+	"imageOutputPerImage",
+	"audioInputPerMillion",
+	"audioOutputPerMillion",
+	"audioInputPerSecond",
+	"audioOutputPerSecond",
+	"videoInputPerSecond",
+	"videoOutputPerSecond",
+	"videoInputPerMillion",
+	"webSearchPerThousandRequests",
+	"mapsSearchPerThousandRequests",
+	"requestPerThousand",
+	"inputPerMillionCharacters",
+	"outputPerMillionCharacters",
+	"longContextInputPerMillion",
+	"longContextOutputPerMillion",
+	"longContextThresholdTokens",
+] as const;
+
+function isSaneRate(value: unknown): boolean {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+/**
+ * Drop rates no catalog can mean: negative, NaN or infinite. A negative rate
+ * would rank first in `cheapest` and write a negative ledger row that erases
+ * the month's budget. If the input or output token rate is bad, the whole
+ * block goes (the model becomes "unpriced", which every consumer already
+ * treats as unknown, never free); a bad optional rate is just removed.
+ * Returns the same object when nothing changed.
+ */
+export function sanitizePricing<P extends Record<string, unknown> | undefined | null>(pricing: P): P | undefined {
+	if (!pricing) return pricing ?? undefined;
+	if (!isSaneRate(pricing.inputPerMillion) || !isSaneRate(pricing.outputPerMillion)) return undefined;
+	let out: Record<string, unknown> | null = null;
+	for (const field of PRICE_RATE_FIELDS) {
+		if (!(field in pricing) || pricing[field] === undefined) continue;
+		if (isSaneRate(pricing[field])) continue;
+		out ??= { ...pricing };
+		delete out[field];
+	}
+	return (out ?? pricing) as P;
+}
+
+/** {@link sanitizePricing} applied to a card's billed and origin prices. */
+export function sanitizeModelPricing(model: ModelCard): ModelCard {
+	const pricing = sanitizePricing(model.pricing as unknown as Record<string, unknown> | undefined);
+	const originPricing = sanitizePricing(model.originPricing as unknown as Record<string, unknown> | undefined);
+	if (pricing === (model.pricing as unknown) && originPricing === (model.originPricing as unknown)) return model;
+	const next = { ...model } as ModelCard;
+	if (pricing) next.pricing = pricing as unknown as ModelCard["pricing"];
+	else delete next.pricing;
+	if (originPricing) next.originPricing = originPricing as unknown as ModelCard["originPricing"];
+	else delete next.originPricing;
+	return next;
+}

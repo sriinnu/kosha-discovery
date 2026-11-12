@@ -75,8 +75,11 @@ export function ledgerRowUsd(row: Pick<LedgerEntry, "estimatedUsd" | "actualUsd"
 	if (row.kind === "adjustment") {
 		return typeof row.adjustmentUsd === "number" && Number.isFinite(row.adjustmentUsd) ? row.adjustmentUsd : 0;
 	}
-	if (typeof row.actualUsd === "number" && Number.isFinite(row.actualUsd)) return row.actualUsd;
-	return typeof row.estimatedUsd === "number" && Number.isFinite(row.estimatedUsd) ? row.estimatedUsd : 0;
+	// A request never pays kosha back. Only an adjustment row (a reconciliation
+	// of an earlier estimate) may be negative; a negative request row means a
+	// bad price got through, and counting it would erase the month's budget.
+	if (typeof row.actualUsd === "number" && Number.isFinite(row.actualUsd)) return Math.max(0, row.actualUsd);
+	return typeof row.estimatedUsd === "number" && Number.isFinite(row.estimatedUsd) ? Math.max(0, row.estimatedUsd) : 0;
 }
 
 /** True for rows that represent a completed request (not a later correction). */
@@ -114,6 +117,7 @@ export function actualCostFromUsage(model: ModelCard, rawUsage: unknown, shape: 
 	const pricing = model.pricing;
 	if (!pricing || typeof pricing.inputPerMillion !== "number" || typeof pricing.outputPerMillion !== "number")
 		return null;
+	if (!(pricing.inputPerMillion >= 0 && pricing.outputPerMillion >= 0)) return null;
 	if (!rawUsage || typeof rawUsage !== "object") return null;
 	const usage = normalizeTokenUsage(rawUsage as Record<string, unknown>);
 	if (!usage) return null;
@@ -199,6 +203,7 @@ export function estimateRequestCost(model: ModelCard, requestBody: Record<string
 	const pricing = model.pricing;
 	if (!pricing) return null;
 	if (typeof pricing.inputPerMillion !== "number" || typeof pricing.outputPerMillion !== "number") return null;
+	if (!(pricing.inputPerMillion >= 0 && pricing.outputPerMillion >= 0)) return null;
 
 	const inputTokens = approximateInputTokens(requestBody);
 	// `max_completion_tokens` is OpenAI's current spelling; `max_tokens` the legacy one.

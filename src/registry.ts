@@ -18,6 +18,7 @@ import type {
 	DiscoverySnapshotV1,
 } from "./discovery-contract.js";
 import { normalizeModelId } from "./normalize.js";
+import { sanitizeModelPricing } from "./price-trust.js";
 import { normalizeProviderId } from "./provider-catalog.js";
 import {
 	registryBuildSnapshot,
@@ -460,7 +461,9 @@ export class ModelRegistry {
 	}): ModelRegistry {
 		const registry = new ModelRegistry({ aliases: data.aliases });
 		for (const provider of data.providers) {
-			registry.providerMap.set(provider.id, provider);
+			// Serialized registries come from disk or another process: drop rates
+			// no catalog can mean (negative, NaN) before anything ranks on them.
+			registry.providerMap.set(provider.id, { ...provider, models: provider.models.map(sanitizeModelPricing) });
 		}
 		registry.discoveredAt = data.discoveredAt;
 		registry.currentCursor = registryMakeCursor(registry.state);
