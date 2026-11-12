@@ -4,3 +4,8 @@
 # at. `--frozen-lockfile` installs are unaffected; this applies when the
 # lockfile is resolved.
 minimumReleaseAge: 10080
+# One exception, for one security fix: hono 4.13.18 patches GHSA-39q9-qp46-w8xg
+# (bodyLimit keeps every body chunk in memory; `kosha serve` uses bodyLimit).
+# Published 2026-11-11. Remove this once it is a week old (2026-11-18).
+minimumReleaseAgeExclude:
+  - hono

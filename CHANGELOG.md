@@ -35,6 +35,14 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 - Live cards on a plan no longer pick up a pay-as-you-go price from LiteLLM.
 - "Set QWEN_API_KEY to enable…" no longer appears when that var is set and its key went to a plan.
 
+### Security
+
+- `hono` 4.13.13 → 4.13.18. The one advisory here that reaches kosha is GHSA-39q9-qp46-w8xg: `bodyLimit()` kept every chunk of a request body in memory, so a body sent in tiny chunks could exhaust it, and `kosha serve` uses `bodyLimit`. The release also fixes `mount()`, `RegExpRouter`, `validator`, `css` and `csrf` advisories (GHSA-4m76-xfj5-7975, GHSA-h7mg-cq63-vhpq, GHSA-4h7h-rv7c-7m2v, GHSA-92p4-j3wq-jmqx, GHSA-3gg2-335m-rxc6, GHSA-h25j-2p75-qj33, GHSA-46wx-v44x-9hh2), which kosha doesn't use.
+- 4.13.18 is a day old, under the 7-day `minimumReleaseAge`, so `hono` alone is exempted in `pnpm-workspace.yaml` for this fix. Before taking it I checked it by hand: published by GitHub Actions with SLSA provenance, its `gitHead` is the commit of the signed `v4.13.18` tag, and it has no install scripts. The exemption comes out on 2026-11-18.
+- `@hono/node-server` 2.1.5 → 2.1.6: a backslash in the request path no longer reaches the app as `/` (GHSA-jpvv-r467-5p4w), plus two `upgradeWebSocket` fixes kosha doesn't use (GHSA-7v5p-43qr-wch5, GHSA-qv5m-9pm6-hqp3).
+- Dev dependencies: biome 2.6.5, vitest 5.1.0, vite 8.3.6, @types/node 26.6.6.
+- CI actions: pnpm/action-setup v6.1.1 and github/codeql-action v4.39.3, each pinned to the commit its tag names.
+
 ## [1.13.0] — 2026-11-04
 
 ### Added
