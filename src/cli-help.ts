@@ -75,6 +75,7 @@ ${c(BOLD, "COMMANDS")}
     --tenant <name>               Only rows tagged with this tenant
     --ledger <path>               Ledger file (default ~/.kosha/ledger.jsonl + monthly partitions)
   ${c(CYAN, "registry export")}               Write the catalog in snapshot format (for local mode)
+  ${c(CYAN, "registry accept <prov>/<model>")} Accept a price quarantine is holding, once checked
     --output <file>               Write to a file instead of stdout
     --provider <name>             Export only one provider
   ${c(CYAN, "serve")} [--port 3000]           Start HTTP API server (binds 127.0.0.1)

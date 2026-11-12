@@ -139,16 +139,22 @@ Each proxied upstream fetch must return headers (and, for non-streaming calls, i
 
 ### Clear a quarantined price
 
-On every manifest merge, kosha compares fresh rates to the previous snapshot. A per-million rate that moved by more than 75% in either direction is treated as a suspect publish (provider returns 0, garbage units, a realignment) — the old pricing is kept and the row is tagged `pricing_quarantined` so downstream consumers don't get silently over- or under-charged. The held price is also the one kosha itself uses: it is copied back into the in-memory registry and the cache, so `cheapest`, the MCP tools, the proxy and the budget all see the held rate and the tag. Smaller moves (25%+) are logged to `~/.kosha/anomalies.json` as a heads-up without blocking the update.
+On every manifest merge, kosha compares fresh rates to the previous snapshot. Every rate that bills or ranks is compared: per-token, cache, batch, image, audio, video, per-character, per-request and long-context. A rate that moved by 75% or more in either direction is treated as a suspect publish (a provider returning 0, garbage units, a realignment). The old pricing is kept, and the row is tagged `pricing_quarantined` so downstream consumers aren't silently over- or undercharged. The held price is also the one kosha itself uses. It's copied back into the in-memory registry and the cache, so `cheapest`, the MCP tools, the proxy and the budget all see the held rate and the tag. Smaller moves (25%+) are logged to `~/.kosha/anomalies.json` as a heads-up and don't block the update.
 
-To accept a legitimate large price change that quarantine is holding back, clear the previous snapshot so there is nothing to compare against, then re-discover:
+A hold is released by waiting: after a day if two sources agree on the new rate, three days if only one lists it, and seven while they disagree. There are two exceptions. A billed input or output rate that falls to `$0`, and any rate cut to under 1% of the last one, are never released by waiting. While a row is held, or its sources disagree, kosha routes and budgets on the highest rate any source reports. A suspect rise therefore applies right away; a suspect drop waits.
+
+A secondary rate (cache, audio, image…) that a catalog suddenly reports as `0` keeps its last real value. A `$0` cache-read rate on a paid model is costed as unknown (half or a tenth of input, depending on the API shape), not as free.
+
+To accept a large price change once you've checked it against the provider's own pricing page:
 
 ```bash
-mv ~/.kosha/registry.json ~/.kosha/registry.json.pre-quarantine
-curl -X POST http://localhost:3000/api/refresh -H 'content-type: application/json' -d '{}'
+kosha registry accept anthropic/claude-opus-4-7
+kosha update
 ```
 
-With no previous manifest, the merge takes fresh pricing verbatim and the `pricing_quarantined` tag is gone. Check the new rate in `~/.kosha/registry.json` (or with `kosha model <alias>`, which now shows the same price) before deleting the backup.
+The acceptance covers exactly the rates the hold is waiting on. If the catalog publishes something different afterwards, that's judged afresh.
+
+The manifest is also the baseline every price is checked against. So a manifest that can't be read falls back to its newest `.bak.<YYYY-MM-DD>` copy rather than accepting every fresh price unchecked. Deleting `registry.json` doesn't clear holds while backups exist.
 
 ### Boot degraded mode
 

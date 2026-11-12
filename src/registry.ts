@@ -52,6 +52,8 @@ import {
 	rankCandidatesByStrategy,
 } from "./registry-routing.js";
 import {
+	type AcceptHeldPriceResult,
+	acceptHeldPrice,
 	type EnrichOnlyResult,
 	enrichRegistryModels,
 	fallbackRegistryCredential,
@@ -121,6 +123,11 @@ export class ModelRegistry {
 	/** The `providers.<id>.apiKey` from config, which outranks env vars for this provider. */
 	configuredApiKey(providerId: string): string | undefined {
 		return getProviderConfig(this.state.config, providerId)?.apiKey;
+	}
+
+	/** Accept the price quarantine is holding for one model (see `kosha registry accept`). */
+	acceptHeldPrice(providerId: string, modelId: string): Promise<AcceptHeldPriceResult> {
+		return acceptHeldPrice(this.state, providerId, modelId);
 	}
 
 	/** Compatibility accessor retained for existing tests and debug hooks. */

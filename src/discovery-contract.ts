@@ -119,11 +119,16 @@ export interface DiscoveryModelV1 {
 	releaseDate: string | null;
 	/**
 	 * Number of consecutive discovery passes in which this model was absent
-	 * from the fresh fetch. Reset to 0 when the model reappears. Once it
-	 * exceeds the lifecycle TTL (see `registry-runtime.ts`) the model is
-	 * dropped from the merged manifest entirely. Absent in fresh entries.
+	 * from the fresh fetch. Reset to 0 when the model reappears. Informational:
+	 * the lifecycle TTL runs on `lastSeenAt`.
 	 */
 	missingRunCount?: number;
+	/**
+	 * When discovery last saw this model (epoch ms). A model unseen for longer
+	 * than the lifecycle TTL (see `registry-runtime.ts`) is dropped from the
+	 * merged manifest. Optional: manifests written before 1.15 lack it.
+	 */
+	lastSeenAt?: number;
 }
 
 /** Normalized provider health exposed by the v1 discovery snapshot. */

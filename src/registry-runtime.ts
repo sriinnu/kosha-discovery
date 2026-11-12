@@ -13,11 +13,11 @@ import { dirname, join } from "path";
 import { catalogCacheKey, loadActiveCatalog, resolveCatalogSource } from "./catalog-source.js";
 import { buildCatalogOnlyRows } from "./discovery/catalog-only.js";
 import { type PriceEvidence, priceAgreement } from "./discovery/price-evidence.js";
-import { applyPriceSchedules } from "./discovery/price-schedules.js";
+import { applyPriceSchedules, SCHEDULED_PRICES } from "./discovery/price-schedules.js";
 import { applyPromoOverrides } from "./discovery/promo-overrides.js";
 import type { DiscoverySnapshotV1 } from "./discovery-contract.js";
 import { DISCOVERY_SCHEMA_VERSION } from "./discovery-contract.js";
-import { sanitizeModelPricing } from "./price-trust.js";
+import { PRICE_RATE_FIELDS, sanitizeModelPricing } from "./price-trust.js";
 import {
 	getProviderConfig,
 	getProviderDescriptor,
@@ -36,6 +36,7 @@ import type {
 	DiscoveryOptions,
 	Enricher,
 	ModelCard,
+	ModelPricing,
 	ProviderDiscoverer,
 	ProviderInfo,
 } from "./types.js";
@@ -495,8 +496,10 @@ export async function exportRegistryManifest(
 	let manifestPath: string | null = null;
 	let lockReleased = true;
 	let lockPath: string | null = null;
+	let fresh: DiscoverySnapshotV1 | null = null;
+	let merged: DiscoverySnapshotV1 | null = null;
 	try {
-		const fresh = state.lastSnapshotCache ?? registryDiscoverySnapshot(state);
+		fresh = state.lastSnapshotCache ?? registryDiscoverySnapshot(state);
 		state.lastSnapshotCache = fresh;
 		// Honour state.config.cacheDir so isolated tests (and any other caller
 		// that pins a custom cache root) don't clobber the user's real
@@ -532,7 +535,7 @@ export async function exportRegistryManifest(
 		// the user's pricing for those models — they retain their last-known
 		// values until a successful fetch supersedes them.
 		const previousManifest = await readPreviousManifest(manifestPath);
-		const merged = mergeManifests(previousManifest, fresh);
+		merged = mergeManifests(previousManifest, fresh);
 
 		// Pricing-diff alerts. The most dangerous failure mode isn't "kosha
 		// returned null" (we already detect that). It's "kosha returned a
@@ -585,7 +588,18 @@ export async function exportRegistryManifest(
 		// gated on a successful export.
 		const reason = err instanceof Error ? err.message : String(err);
 		console.warn(`[kosha] manifest export failed (${manifestPath ?? "unknown path"}): ${reason}`);
-		return null;
+		// The write failed, but the price verdicts must not: compute the merge in
+		// memory so the caller still applies its holds. Without this a lock
+		// timeout or a full disk let a suspect price straight into routing.
+		if (!merged && fresh) {
+			try {
+				const previous = manifestPath ? await readPreviousManifest(manifestPath) : null;
+				merged = mergeManifests(previous, fresh);
+			} catch {
+				// Nothing left to judge against; the caller keeps what it has.
+			}
+		}
+		return merged;
 	} finally {
 		if (!lockReleased && lockPath) {
 			await unlink(lockPath).catch(() => {});
@@ -836,14 +850,25 @@ export function applyManifestHolds(state: RegistryState, manifest: DiscoverySnap
 			}
 			let differs = tags !== (model.rawCapabilities ?? []);
 			if (tags.length > 0) next.rawCapabilities = tags;
-			if ((row.rawCapabilities ?? []).includes("pricing_quarantined")) {
-				const held = row.pricing
-					? (sanitizeModelPricing({ ...model, pricing: row.pricing } as ModelCard).pricing ?? null)
+			const quarantined = (row.rawCapabilities ?? []).includes("pricing_quarantined");
+			const disputed = (row.rawCapabilities ?? []).includes(PRICING_SOURCES_DISAGREE);
+			if (quarantined || disputed) {
+				// While a price is held or disputed, kosha routes and budgets on the
+				// highest rate anyone reported: the held one, the fresh one and each
+				// source's. Overpaying in the estimate is safe; undercounting isn't.
+				const base = quarantined ? (row.pricing ?? null) : (model.pricing ?? null);
+				const evidence = model.priceEvidence ?? row.priceEvidence ?? [];
+				const held = base
+					? (sanitizeModelPricing({ ...model, pricing: highestRates(base, model.pricing ?? null, evidence) }).pricing ??
+						null)
 					: null;
 				if (JSON.stringify(held) !== JSON.stringify(model.pricing ?? null)) {
 					differs = true;
 					if (held) next.pricing = held;
 					else delete next.pricing;
+				}
+				if (quarantined && JSON.stringify(row.originPricing ?? null) !== JSON.stringify(model.originPricing ?? null)) {
+					differs = true;
 					if (row.originPricing) next.originPricing = row.originPricing;
 					else delete next.originPricing;
 				}
@@ -858,6 +883,67 @@ export function applyManifestHolds(state: RegistryState, manifest: DiscoverySnap
 		}
 	}
 	return changed;
+}
+
+/** Each rate at the highest of `base`, `other` and the sources' headline
+ *  rates. Fields `base` doesn't price stay unpriced. */
+function highestRates(base: ModelPricing, other: ModelPricing | null, evidence: PriceEvidence[]): ModelPricing {
+	const out: Record<string, unknown> = { ...base };
+	for (const field of QUARANTINE_FIELDS) {
+		const current = out[field];
+		if (typeof current !== "number") continue;
+		let highest = current;
+		const fresh = (other as Record<string, unknown> | null)?.[field];
+		if (typeof fresh === "number" && Number.isFinite(fresh)) highest = Math.max(highest, fresh);
+		if (field === "inputPerMillion" || field === "outputPerMillion") {
+			for (const entry of evidence) {
+				if (Number.isFinite(entry[field])) highest = Math.max(highest, entry[field]);
+			}
+		}
+		out[field] = highest;
+	}
+	return out as unknown as ModelPricing;
+}
+
+/** What `kosha registry accept` found for a model. */
+export type AcceptHeldPriceResult =
+	| { status: "accepted"; held: ModelPricing | null; waitingSince: number }
+	| { status: "not-held" }
+	| { status: "not-found" };
+
+/**
+ * Accept the price a quarantine is holding for one model. The hold remembers
+ * exactly which rates it's waiting on, so the acceptance covers those rates
+ * only: the next discovery pass takes them, and a different publish after
+ * that is judged afresh. Writes the manifest under the export lock.
+ */
+export async function acceptHeldPrice(
+	state: RegistryState,
+	providerId: string,
+	modelId: string,
+): Promise<AcceptHeldPriceResult> {
+	const manifestPath = resolveManifestPath(state);
+	const lockPath = `${manifestPath}.lock`;
+	await acquireExportLock(lockPath);
+	try {
+		const manifest = await readManifestFile(manifestPath);
+		const row = manifest?.models.find((m) => m.providerId === providerId && m.modelId === modelId);
+		if (!manifest || !row) return { status: "not-found" };
+		const hold = (row as { pricingHold?: PricingHold }).pricingHold;
+		if (!hold || !(row.rawCapabilities ?? []).includes("pricing_quarantined")) return { status: "not-held" };
+		(row as { pricingHold?: PricingHold }).pricingHold = { ...hold, accepted: true };
+		const tmpPath = `${manifestPath}.${randomBytes(4).toString("hex")}.tmp`;
+		try {
+			await writeFile(tmpPath, JSON.stringify(manifest, null, 2), { encoding: "utf-8", mode: 0o600 });
+			await rename(tmpPath, manifestPath);
+		} catch (err) {
+			await unlink(tmpPath).catch(() => {});
+			throw err;
+		}
+		return { status: "accepted", held: row.pricing ?? null, waitingSince: hold.since };
+	} finally {
+		await unlink(lockPath).catch(() => {});
+	}
 }
 
 /** Resolve the on-disk path for the registry manifest. Tests + custom callers
@@ -884,18 +970,47 @@ function resolveManifestPath(state: RegistryState): string {
  * fresh snapshot as-is (first run / corrupted file).
  */
 async function readPreviousManifest(manifestPath: string): Promise<DiscoverySnapshotV1 | null> {
+	const current = await readManifestFile(manifestPath);
+	if (current) return current;
+	// The manifest holds every price baseline. Losing it to a corrupt write, a
+	// schema bump or a failed scan would accept every fresh price unchecked, so
+	// fall back to the newest readable backup in the rollback ring.
+	for (const backup of await listBackups(manifestPath)) {
+		const parsed = await readManifestFile(backup);
+		if (parsed) return parsed;
+	}
+	return null;
+}
+
+async function readManifestFile(path: string): Promise<DiscoverySnapshotV1 | null> {
 	try {
 		const { readFile } = await import("fs/promises");
-		const raw = await readFile(manifestPath, "utf-8");
+		const raw = await readFile(path, "utf-8");
 		const parsed = JSON.parse(raw) as DiscoverySnapshotV1;
 		if (!parsed?.models) return null;
 		// Schema-version guard. A different version on disk means we can't
-		// trust the field shapes — caller falls through to fresh-only.
+		// trust the field shapes.
 		if (parsed.schemaVersion !== DISCOVERY_SCHEMA_VERSION) return null;
 		assertCleanPayload(parsed, "registry manifest");
 		return parsed;
 	} catch {
 		return null; // missing or unreadable
+	}
+}
+
+/** The manifest's `.bak.<YYYY-MM-DD>` copies, newest first. */
+async function listBackups(manifestPath: string): Promise<string[]> {
+	const dir = dirname(manifestPath);
+	const base = manifestPath.slice(dir.length + 1);
+	const bakRe = new RegExp(`^${escapeRegExp(base)}\\.bak\\.\\d{4}-\\d{2}-\\d{2}$`);
+	try {
+		return (await readdir(dir))
+			.filter((name) => bakRe.test(name))
+			.sort()
+			.reverse()
+			.map((name) => join(dir, name));
+	} catch {
+		return [];
 	}
 }
 
@@ -926,11 +1041,10 @@ const PRICING_SINGLE_SOURCE = "pricing_single_source";
 /** Sources list different prices for this model. */
 const PRICING_SOURCES_DISAGREE = "pricing_sources_disagree";
 
-/** After this many consecutive discovery passes in which a previously-known
- *  model is missing from the fresh snapshot, the model is dropped from the
- *  merged manifest. Prevents the manifest from becoming a graveyard of
- *  deprecated SKUs while still riding through transient outages. */
-const MISSING_RUNS_TTL = 14;
+/** A previously-known model missing from fresh snapshots for longer than this
+ *  is dropped from the merged manifest. Prevents the manifest from becoming a
+ *  graveyard of deprecated SKUs while still riding through outages. */
+const MISSING_MODEL_TTL_MS = 30 * DAY_MS;
 
 export function mergeManifests(previous: DiscoverySnapshotV1 | null, fresh: DiscoverySnapshotV1): DiscoverySnapshotV1 {
 	if (!previous) return fresh;
@@ -943,8 +1057,8 @@ export function mergeManifests(previous: DiscoverySnapshotV1 | null, fresh: Disc
 	}
 
 	// Per-model merge with three rules:
-	//   (1) Old entries fresh dropped entirely → keep until missingRunCount
-	//       exceeds MISSING_RUNS_TTL (model lifecycle TTL).
+	//   (1) Old entries fresh dropped entirely → keep until unseen for
+	//       MISSING_MODEL_TTL_MS (model lifecycle TTL).
 	//   (2) Fresh entries that came back with NO pricing while the old entry
 	//       HAD pricing → keep the old pricing block (degraded-fresh defence).
 	//   (3) Fresh entries whose rates moved beyond PRICING_QUARANTINE_THRESHOLD
@@ -953,25 +1067,33 @@ export function mergeManifests(previous: DiscoverySnapshotV1 | null, fresh: Disc
 	//       can't silently overcharge or underprice downstream consumers.
 	//       The same rates are accepted after a day if two sources agree on them,
 	//       after three days if only one lists them, and not while sources disagree.
+	const now = fresh.discoveredAt ?? Date.now();
 	const freshModelKeys = new Set<string>();
 	const mergedModels: (typeof fresh.models)[number][] = [];
 	for (const f of fresh.models ?? []) {
 		if (f.key) freshModelKeys.add(f.key);
 		const old = f.key ? previousByKey.get(f.key) : undefined;
 
-		let kept = { ...f, missingRunCount: 0 } as (typeof fresh.models)[number] & { missingRunCount?: number };
+		let kept = { ...f, missingRunCount: 0, lastSeenAt: now } as (typeof fresh.models)[number] & {
+			missingRunCount?: number;
+		};
+		// A secondary rate (cache, audio, image…) that falls from a price to 0
+		// reads as "not reported" in the catalogs, but billing it at 0 would
+		// undercount spend. Keep the last real rate instead.
+		if (old) kept = keepReportedSecondaryRates(old, kept);
 		if (old && !hasUsablePricing(f) && hasUsablePricing(old)) {
 			// Keep all of fresh's metadata but restore pricing from old.
 			kept = { ...kept, pricing: old.pricing, originPricing: old.originPricing };
-		} else if (old && !f.pricing?.schedule && quarantinePricingMove(old, f)) {
+		} else if (old && !isCuratedSchedule(f) && quarantinePricingMove(old, kept)) {
 			// A scheduled price is curated and cited, not a catalog's publish, so
 			// it skips quarantine. Otherwise the first move to it would be refused
-			// on every run.
-			//
-			const now = fresh.discoveredAt ?? Date.now();
-			const rates = pricingFingerprint(f);
+			// on every run. Only kosha's own schedule table counts: a `schedule`
+			// field carried in by a snapshot or a local file proves nothing.
+			const rates = pricingFingerprint(kept);
 			const hold = (old as { pricingHold?: PricingHold }).pricingHold;
-			const since = hold?.rates === rates ? hold.since : now;
+			const same = hold !== undefined && (hold.rates === rates || hold.rates === legacyPricingFingerprint(kept));
+			const since = same ? hold.since : now;
+			const accepted = same && hold.accepted === true;
 			const agreement = priceAgreement((f as { priceEvidence?: PriceEvidence[] }).priceEvidence);
 			const window =
 				agreement === "agree"
@@ -979,9 +1101,10 @@ export function mergeManifests(previous: DiscoverySnapshotV1 | null, fresh: Disc
 					: agreement === "disagree"
 						? PRICING_DISPUTED_HOLD_MS
 						: PRICING_SINGLE_SOURCE_HOLD_MS;
-			// A billed rate of $0 is never accepted this way: it poisons cheapest
-			// routing however long it's published.
-			if (billedRateDroppedToZero(old, f) || now - since < window) {
+			// A billed rate that collapses to $0, or to under 1% of what it was, is
+			// never accepted by waiting: it poisons cheapest routing however long
+			// it's published. Only `kosha registry accept` releases it.
+			if (!accepted && (billedRateCollapsed(old, kept) || now - since < window)) {
 				// Quarantine the suspect rates: keep the old pricing block and
 				// tag the operational `rawCapabilities` array (the trusted
 				// `capabilities` taxonomy stays clean, since this isn't a routing
@@ -999,7 +1122,7 @@ export function mergeManifests(previous: DiscoverySnapshotV1 | null, fresh: Disc
 				const flag = agreement === "single" ? PRICING_SINGLE_SOURCE : PRICING_SOURCES_DISAGREE;
 				kept = { ...kept, rawCapabilities: tagCapability(kept.rawCapabilities, flag) };
 			}
-		} else if (old && !f.pricing?.schedule) {
+		} else if (old && !isCuratedSchedule(f)) {
 			// Below the quarantine line a price still takes effect, but a move its
 			// sources dispute is the believable lie, so it carries a flag. Flags
 			// from an earlier move last until the rates change or the evidence does.
@@ -1020,9 +1143,13 @@ export function mergeManifests(previous: DiscoverySnapshotV1 | null, fresh: Disc
 	for (const old of previous.models) {
 		if (!old.key || freshModelKeys.has(old.key)) continue;
 		const prevMissing = (old as { missingRunCount?: number }).missingRunCount ?? 0;
-		const nextMissing = prevMissing + 1;
-		if (nextMissing > MISSING_RUNS_TTL) continue; // drop after TTL
-		mergedModels.push({ ...old, missingRunCount: nextMissing } as typeof old);
+		// The row is the baseline a returning model's price is checked against,
+		// so it ages by time, not by how often discovery ran: an hourly loop
+		// would otherwise drop it in under a day. Rows written before lastSeenAt
+		// existed date from the previous run.
+		const lastSeenAt = (old as { lastSeenAt?: number }).lastSeenAt ?? previous.discoveredAt ?? now;
+		if (now - lastSeenAt > MISSING_MODEL_TTL_MS) continue; // drop after TTL
+		mergedModels.push({ ...old, missingRunCount: prevMissing + 1, lastSeenAt } as typeof old);
 	}
 
 	const freshProviderIds = new Set((fresh.providers ?? []).map((p) => p.providerId));
@@ -1040,16 +1167,39 @@ export function mergeManifests(previous: DiscoverySnapshotV1 | null, fresh: Disc
 	};
 }
 
-/** The rates a quarantined row is waiting on, and when they were first seen. */
+/** The rates a quarantined row is waiting on, when they were first seen, and
+ *  whether someone accepted them with `kosha registry accept`. */
 interface PricingHold {
 	rates: string;
 	since: number;
+	accepted?: boolean;
 }
 
 type PricedSides = { pricing?: unknown; originPricing?: unknown };
-type BilledRates = { inputPerMillion?: number; outputPerMillion?: number } | null | undefined;
+type Rates = Record<string, unknown> | null | undefined;
+
+/** Every rate that bills or ranks. The long-context threshold is a token
+ *  count, not a price, so it isn't compared. */
+const QUARANTINE_FIELDS = PRICE_RATE_FIELDS.filter((field) => field !== "longContextThresholdTokens");
+
+/** The billed rates that decide a model's headline price. */
+const HEADLINE_FIELDS = new Set<string>(["inputPerMillion", "outputPerMillion"]);
+
+/** A billed rate below this share of the one it replaces counts as a collapse,
+ *  like $0: never accepted by waiting. */
+const PRICING_COLLAPSE_RATIO = 0.01;
 
 function pricingFingerprint(model: PricedSides): string {
+	return JSON.stringify(
+		[model.pricing, model.originPricing].map((side) =>
+			QUARANTINE_FIELDS.map((field) => (side as Rates)?.[field] ?? null),
+		),
+	);
+}
+
+/** The five-field fingerprint holds recorded before every rate was compared.
+ *  Matching it keeps an upgrade from restarting every hold's clock. */
+function legacyPricingFingerprint(model: PricedSides): string {
 	const fields = [
 		"inputPerMillion",
 		"outputPerMillion",
@@ -1058,56 +1208,65 @@ function pricingFingerprint(model: PricedSides): string {
 		"cacheWrite1hPerMillion",
 	];
 	return JSON.stringify(
-		[model.pricing, model.originPricing].map((side) =>
-			fields.map((field) => (side as Record<string, unknown> | null | undefined)?.[field] ?? null),
-		),
+		[model.pricing, model.originPricing].map((side) => fields.map((field) => (side as Rates)?.[field] ?? null)),
 	);
 }
 
-/** True if a priced model's billed input or output rate fell to zero. */
-function billedRateDroppedToZero(previous: PricedSides, fresh: PricedSides): boolean {
-	const a = previous.pricing as BilledRates;
-	const b = fresh.pricing as BilledRates;
-	if (!a || !b) return false;
-	return (["inputPerMillion", "outputPerMillion"] as const).some((field) => (a[field] ?? 0) > 0 && b[field] === 0);
+/** True when the fresh row's pricing is kosha's own cited schedule for that model. */
+function isCuratedSchedule(row: DiscoverySnapshotV1["models"][number]): boolean {
+	if (!row.pricing?.schedule) return false;
+	const match = SCHEDULED_PRICES.find((s) => s.providerId === row.providerId && s.modelId === row.modelId);
+	return (
+		match !== undefined &&
+		row.pricing.inputPerMillion === match.peak.inputPerMillion &&
+		row.pricing.outputPerMillion === match.peak.outputPerMillion
+	);
 }
 
-/** True if any defined per-million rate moved by more than the quarantine
- *  threshold (either direction), compared to the previous snapshot. */
-function quarantinePricingMove(
-	previous: { pricing?: unknown; originPricing?: unknown },
-	fresh: { pricing?: unknown; originPricing?: unknown },
-): boolean {
-	type Rates =
-		| {
-				inputPerMillion?: number;
-				outputPerMillion?: number;
-				cacheReadPerMillion?: number;
-				cacheWritePerMillion?: number;
-				cacheWrite1hPerMillion?: number;
-		  }
-		| null
-		| undefined;
-	const fields: Array<keyof NonNullable<Rates>> = [
-		"inputPerMillion",
-		"outputPerMillion",
-		"cacheReadPerMillion",
-		"cacheWritePerMillion",
-		"cacheWrite1hPerMillion",
-	];
+/** Restore a secondary billed rate that went from a price to 0. */
+function keepReportedSecondaryRates<T extends PricedSides>(previous: PricedSides, fresh: T): T {
+	const a = previous.pricing as Rates;
+	const b = fresh.pricing as Rates;
+	if (!a || !b) return fresh;
+	let pricing: Record<string, unknown> | null = null;
+	for (const field of QUARANTINE_FIELDS) {
+		if (HEADLINE_FIELDS.has(field)) continue;
+		const prev = a[field];
+		if (typeof prev === "number" && prev > 0 && b[field] === 0) {
+			pricing ??= { ...b };
+			pricing[field] = prev;
+		}
+	}
+	return pricing ? { ...fresh, pricing } : fresh;
+}
+
+/** True if a billed rate fell to zero (input or output) or to under 1% of the
+ *  rate it replaces (any field). */
+function billedRateCollapsed(previous: PricedSides, fresh: PricedSides): boolean {
+	const a = previous.pricing as Rates;
+	const b = fresh.pricing as Rates;
+	if (!a || !b) return false;
+	return QUARANTINE_FIELDS.some((field) => {
+		const prev = a[field];
+		const next = b[field];
+		if (typeof prev !== "number" || typeof next !== "number" || prev <= 0) return false;
+		if (next === 0) return HEADLINE_FIELDS.has(field);
+		return next < prev * PRICING_COLLAPSE_RATIO;
+	});
+}
+
+/** True if any defined rate moved by more than the quarantine threshold
+ *  (either direction), compared to the previous snapshot. */
+function quarantinePricingMove(previous: PricedSides, fresh: PricedSides): boolean {
+	if (billedRateCollapsed(previous, fresh)) return true;
 	for (const side of ["pricing", "originPricing"] as const) {
 		const a = (previous[side] as Rates) ?? null;
 		const b = (fresh[side] as Rates) ?? null;
 		if (!a || !b) continue;
-		for (const field of fields) {
+		for (const field of QUARANTINE_FIELDS) {
 			const prev = a[field];
 			const next = b[field];
 			if (typeof prev !== "number" || typeof next !== "number") continue;
-			// A priced model whose billed input or output rate drops to zero is
-			// the cheapest-routing poison case, not a placeholder. originPricing
-			// zeros stay placeholders ("no direct price known").
-			if (side === "pricing" && prev > 0 && next === 0 && (field === "inputPerMillion" || field === "outputPerMillion"))
-				return true;
 			if (prev === 0 || next === 0) continue; // zero on either side is a "not reported" placeholder, not a price move
 			if (prev === next) continue;
 			if (Math.abs((next - prev) / prev) >= PRICING_QUARANTINE_THRESHOLD) return true;
