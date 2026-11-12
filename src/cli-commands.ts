@@ -516,7 +516,14 @@ export async function cmdServe(flags: Record<string, string | boolean>): Promise
 
 	// Dynamic import keeps Hono out of the critical path for non-serve commands
 	const { startServer } = await import("./server.js");
-	await startServer(port, host);
+	const { BudgetConfigError } = await import("./cost.js");
+	try {
+		await startServer(port, host);
+	} catch (err) {
+		if (!(err instanceof BudgetConfigError)) throw err;
+		console.error(c(RED, err.message));
+		process.exit(1);
+	}
 }
 
 // ---------------------------------------------------------------------------

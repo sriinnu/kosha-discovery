@@ -17,6 +17,7 @@ import { applyPriceSchedules } from "./discovery/price-schedules.js";
 import { applyPromoOverrides } from "./discovery/promo-overrides.js";
 import type { DiscoverySnapshotV1 } from "./discovery-contract.js";
 import { DISCOVERY_SCHEMA_VERSION } from "./discovery-contract.js";
+import { sanitizeModelPricing } from "./price-trust.js";
 import {
 	getProviderConfig,
 	getProviderDescriptor,
@@ -78,10 +79,14 @@ export async function registryDiscover(
 			// Only refresh the canonical manifest for full-registry cache hits.
 			// Scoped provider rehydration can carry cache-derived state that should
 			// not be published as a fresh top-level manifest snapshot.
+			sanitizeRegistryPricing(state);
 			if (!providers || providers.length === 0) {
-				// A cache hit makes no network calls, and that includes this file:
-				// it waits for the next real discovery.
-				await exportRegistryManifest(state, { catalogOnly: false });
+				// A cache hit is not a discovery pass, so it doesn't rewrite the
+				// manifest (that would advance missingRunCount and reset price
+				// holds on every `kosha list`). It does read the manifest, so a
+				// price held there is the price kosha routes and budgets with.
+				const manifest = await readPreviousManifest(resolveManifestPath(state));
+				if (manifest && applyManifestHolds(state, manifest)) state.lastSnapshotCache = null;
 			}
 			return Array.from(state.providerMap.values());
 		}
@@ -132,7 +137,7 @@ export async function registryDiscover(
 	for (const [providerId, providerInfo] of state.providerMap) {
 		state.providerMap.set(providerId, {
 			...providerInfo,
-			models: applyPriceSchedules(applyPromoOverrides(providerInfo.models)),
+			models: applyPriceSchedules(applyPromoOverrides(providerInfo.models)).map(sanitizeModelPricing),
 		});
 	}
 
@@ -147,7 +152,14 @@ export async function registryDiscover(
 	// Write the consumer-facing manifest last, after recordDiscoveryMutation
 	// has advanced the cursor — that way the snapshot's cursor reflects the
 	// post-discovery revision instead of a stale pre-mutation value.
-	await exportRegistryManifest(state);
+	const merged = await exportRegistryManifest(state);
+	// Quarantine decides in the merge, so carry its verdict back into memory
+	// and the cache: kosha's own routing, `cheapest`, MCP and the budget must
+	// use the held price, not the suspect one the merge refused.
+	if (merged && applyManifestHolds(state, merged)) {
+		state.lastSnapshotCache = null;
+		await dependencies.saveToCache();
+	}
 	return Array.from(state.providerMap.values());
 }
 
@@ -306,13 +318,17 @@ export async function registryEnrichOnly(state: RegistryState): Promise<EnrichOn
 	for (const [providerId, providerInfo] of state.providerMap) {
 		state.providerMap.set(providerId, {
 			...providerInfo,
-			models: applyPriceSchedules(applyPromoOverrides(providerInfo.models)),
+			models: applyPriceSchedules(applyPromoOverrides(providerInfo.models)).map(sanitizeModelPricing),
 		});
 	}
 	attributePricingSources(state, preEnrichmentPriced);
 	populateRegistryModelAliases(state);
 	await saveRegistryToCache(state);
-	await exportRegistryManifest(state);
+	const merged = await exportRegistryManifest(state);
+	if (merged && applyManifestHolds(state, merged)) {
+		state.lastSnapshotCache = null;
+		await saveRegistryToCache(state);
+	}
 
 	const after = countPricingFields(state);
 	return {
@@ -472,7 +488,10 @@ export async function saveRegistryToCache(state: RegistryState): Promise<void> {
  * still completed successfully, so I swallow errors rather than failing
  * the whole command.
  */
-export async function exportRegistryManifest(state: RegistryState, options?: { catalogOnly?: boolean }): Promise<void> {
+export async function exportRegistryManifest(
+	state: RegistryState,
+	options?: { catalogOnly?: boolean },
+): Promise<DiscoverySnapshotV1 | null> {
 	let manifestPath: string | null = null;
 	let lockReleased = true;
 	let lockPath: string | null = null;
@@ -558,6 +577,7 @@ export async function exportRegistryManifest(state: RegistryState, options?: { c
 		warnOnNewlyDisputedPrices(previousManifest, merged);
 		if (options?.catalogOnly !== false)
 			await exportCatalogOnlyManifest(manifestPath, new Set(state.providerMap.keys()));
+		return merged;
 	} catch (err) {
 		// Manifest export is best-effort — the cache still works either way.
 		// But silent failure was making permission/disk-full bugs invisible
@@ -565,6 +585,7 @@ export async function exportRegistryManifest(state: RegistryState, options?: { c
 		// gated on a successful export.
 		const reason = err instanceof Error ? err.message : String(err);
 		console.warn(`[kosha] manifest export failed (${manifestPath ?? "unknown path"}): ${reason}`);
+		return null;
 	} finally {
 		if (!lockReleased && lockPath) {
 			await unlink(lockPath).catch(() => {});
@@ -773,6 +794,70 @@ async function exportCatalogOnlyManifest(manifestPath: string, listedIds: Readon
 		if (tmpPath) await unlink(tmpPath).catch(() => {});
 		console.warn(`[kosha] ${CATALOG_ONLY_FILE} not updated: ${err instanceof Error ? err.message : String(err)}`);
 	}
+}
+
+/** Tags the manifest merge puts on a price that isn't settled. */
+const PRICE_HOLD_TAGS = ["pricing_quarantined", "pricing_sources_disagree", "pricing_single_source"];
+
+/** Run {@link sanitizeModelPricing} over every model in memory. */
+function sanitizeRegistryPricing(state: RegistryState): void {
+	for (const [providerId, providerInfo] of state.providerMap) {
+		const models = providerInfo.models.map(sanitizeModelPricing);
+		if (models.some((m, i) => m !== providerInfo.models[i]))
+			state.providerMap.set(providerId, { ...providerInfo, models });
+	}
+}
+
+/**
+ * Copy the merge's price verdicts onto the in-memory registry. A quarantined
+ * row carries the held (previous) price, which replaces the suspect one in
+ * memory; dispute and single-source flags are copied onto rawCapabilities so
+ * every reader sees them. Rows the manifest kept for a model this run didn't
+ * see are ignored. Returns true when anything in memory changed.
+ */
+export function applyManifestHolds(state: RegistryState, manifest: DiscoverySnapshotV1): boolean {
+	const rows = new Map<string, DiscoverySnapshotV1["models"][number]>();
+	for (const row of manifest.models ?? []) {
+		if ((row.rawCapabilities ?? []).some((tag) => PRICE_HOLD_TAGS.includes(tag))) {
+			rows.set(`${row.providerId}\u0000${row.modelId}`, row);
+		}
+	}
+	if (rows.size === 0) return false;
+	let changed = false;
+	for (const [providerId, providerInfo] of state.providerMap) {
+		let touched = false;
+		const models = providerInfo.models.map((model) => {
+			const row = rows.get(`${providerId}\u0000${model.id}`);
+			if (!row) return model;
+			const next: ModelCard = { ...model };
+			let tags = model.rawCapabilities ?? [];
+			for (const tag of PRICE_HOLD_TAGS) {
+				if ((row.rawCapabilities ?? []).includes(tag) && !tags.includes(tag)) tags = [...tags, tag];
+			}
+			let differs = tags !== (model.rawCapabilities ?? []);
+			if (tags.length > 0) next.rawCapabilities = tags;
+			if ((row.rawCapabilities ?? []).includes("pricing_quarantined")) {
+				const held = row.pricing
+					? (sanitizeModelPricing({ ...model, pricing: row.pricing } as ModelCard).pricing ?? null)
+					: null;
+				if (JSON.stringify(held) !== JSON.stringify(model.pricing ?? null)) {
+					differs = true;
+					if (held) next.pricing = held;
+					else delete next.pricing;
+					if (row.originPricing) next.originPricing = row.originPricing;
+					else delete next.originPricing;
+				}
+			}
+			if (!differs) return model;
+			touched = true;
+			return next;
+		});
+		if (touched) {
+			state.providerMap.set(providerId, { ...providerInfo, models });
+			changed = true;
+		}
+	}
+	return changed;
 }
 
 /** Resolve the on-disk path for the registry manifest. Tests + custom callers

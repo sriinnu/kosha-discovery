@@ -13,6 +13,28 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
+Fixes from an independent review of the whole codebase.
+
+### Fixed
+
+- A price the manifest merge quarantines is now the price kosha itself uses. Before, the hold lived only in `registry.json`: `cheapest`, the MCP tools, the proxy and the budget all used the suspect fresh rate. The held price and the `pricing_quarantined`, `pricing_sources_disagree` and `pricing_single_source` tags are copied back into memory and the cache.
+- A cache hit (`kosha list` and friends) no longer rewrites the manifest. Each one counted as a discovery pass, so 15 runs dropped a model meant to survive 14 discoveries, and it reset price holds.
+- Negative, NaN and infinite rates are dropped at discovery and when a registry is loaded. A negative price ranked first in `cheapest` and wrote a negative ledger row that erased the month's budget. A request row now never counts below $0.
+- Budget env vars are parsed strictly. `0` used to mean "no budget", `$50` too, and `1,000` meant $1. Now `0` means nothing paid, and anything that isn't a plain amount stops `kosha serve` and makes the proxy answer `503`.
+- A tenant cap applies to requests without a tenant tag (they share an `untagged` bucket).
+- Streamed requests record real usage: the proxy asks for `include_usage` and hides that chunk from callers who didn't. They were all recorded at a 512-output-token guess. The input estimate now counts tool definitions, earlier tool-call arguments and images.
+- Failover no longer sends a shared env var's key, and the prompt, to a sibling region that never accepted it (seen with `MOONSHOT_API_KEY` going to `api.moonshot.cn`).
+- A plan that refuses a borrowed pay-as-you-go key with `401`/`403` fails over to the paid route.
+- The proxy uses `providers.<id>.apiKey` from config, like discovery does, and never forwards a Claude subscription OAuth token.
+- Moonshot, MiniMax, LM Studio and vLLM requests go to `/v1/chat/completions`; they went to `/chat/completions` and 404ed.
+- MiniMax's China Token Plan now points at `api.minimaxi.com`, like every other MiniMax China entry, instead of `api.minimax.cn`.
+- The proxy accepts `[::1]` for a local runtime.
+
+### Tests
+
+- Tests can't reach the network or see your shell's provider keys. The suite was making real requests to models.dev.
+- New tests fail when the SSRF allowlist, the loopback-only rule or the ledger fail-closed path is removed. Before, you could delete any of the three and the suite still passed.
+
 ## [1.14.0] — 2026-11-12
 
 ### Added

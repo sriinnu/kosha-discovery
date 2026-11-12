@@ -44,11 +44,13 @@ import {
 	type ActualUsageCost,
 	actualCostFromUsage,
 	appendLedgerEntry,
+	BudgetConfigError,
 	estimateRequestCost,
 	type LedgerEntry,
 	readMonthlyBudgetUsd,
 	readSpendForMonth,
 	readTenantBudgetUsd,
+	UNTAGGED_TENANT,
 } from "./cost.js";
 import { isPlanBilled } from "./discovery/free-tier.js";
 import { isUnverifiedZeroPrice } from "./price-trust.js";
@@ -160,7 +162,7 @@ const ALLOWED_UPSTREAM_HOSTS: readonly string[] = (() => {
  * explicit `===` checks against literal strings so static taint analysis
  * recognizes this function as a sanitizer.
  */
-function safeUpstreamUrl(rawUrl: string, isLocalProvider: boolean): URL | null {
+export function safeUpstreamUrl(rawUrl: string, isLocalProvider: boolean): URL | null {
 	let parsed: URL;
 	try {
 		parsed = new URL(rawUrl);
@@ -175,7 +177,8 @@ function safeUpstreamUrl(rawUrl: string, isLocalProvider: boolean): URL | null {
 		// comparisons let CodeQL recognize this as a sanitizer.
 		if (host === "localhost") return parsed;
 		if (host === "127.0.0.1") return parsed;
-		if (host === "::1") return parsed;
+		// WHATWG URL keeps IPv6 hostnames bracketed: new URL("http://[::1]").hostname === "[::1]".
+		if (host === "[::1]") return parsed;
 		if (host === "0.0.0.0") return parsed;
 		return null;
 	}
@@ -410,14 +413,11 @@ function buildUpstreamUrl(model: ModelCard, registry: ModelRegistry): string {
 	} else {
 		base = (descriptor?.defaultBaseUrl ?? "").replace(/\/$/, "");
 	}
-	// Some native/local roots expose the OpenAI-compatible layer under /v1.
-	if (
-		(model.provider === "openai" || model.provider === "ollama" || model.provider === "llama.cpp") &&
-		!base.endsWith("/v1")
-	) {
-		return `${base}/v1/chat/completions`;
-	}
-	return `${base}/chat/completions`;
+	// Roots that serve chat-completions under /v1 declare it on the descriptor.
+	// A configured local base that already ends in /v1 isn't given a second one.
+	let path = descriptor?.chatCompletionsPath ?? "/chat/completions";
+	if (base.endsWith("/v1") && path.startsWith("/v1/")) path = path.slice(3);
+	return `${base}${path}`;
 }
 
 /**
@@ -438,10 +438,14 @@ function headerSafe(value: string, max = 400): string {
  * usage seen, or null when the stream never carried one — on every terminal
  * path, including the client cancelling or the upstream erroring.
  */
-function observeOpenAIStreamUsage(upstream: ReadableStream<Uint8Array>): {
+function observeOpenAIStreamUsage(
+	upstream: ReadableStream<Uint8Array>,
+	options: { dropUsageChunk?: boolean } = {},
+): {
 	stream: ReadableStream<Uint8Array>;
 	usage: Promise<unknown | null>;
 } {
+	if (options.dropUsageChunk) return relayDroppingUsageChunk(upstream);
 	const decoder = new TextDecoder();
 	let buffer = "";
 	let lastUsage: unknown | null = null;
@@ -488,11 +492,87 @@ function observeOpenAIStreamUsage(upstream: ReadableStream<Uint8Array>): {
 	return { stream, usage };
 }
 
+/**
+ * The stream relay for a request kosha asked usage for on the caller's
+ * behalf: re-frames the SSE stream event by event, records the usage, and
+ * drops the usage-only chunk (`choices: []` plus `usage`) the caller didn't
+ * ask for. Every other event passes through byte for byte.
+ */
+function relayDroppingUsageChunk(upstream: ReadableStream<Uint8Array>): {
+	stream: ReadableStream<Uint8Array>;
+	usage: Promise<unknown | null>;
+} {
+	const decoder = new TextDecoder();
+	const encoder = new TextEncoder();
+	let buffer = "";
+	let lastUsage: unknown | null = null;
+	let resolve!: (value: unknown | null) => void;
+	const usage = new Promise<unknown | null>((r) => {
+		resolve = r;
+	});
+	const keep = (event: string): boolean => {
+		for (const line of event.split(/\r?\n/)) {
+			if (!line.startsWith("data:")) continue;
+			const data = line.slice(5).trim();
+			if (!data || data === "[DONE]") continue;
+			try {
+				const evt = JSON.parse(data) as { usage?: unknown; choices?: unknown };
+				if (evt && typeof evt === "object" && evt.usage && typeof evt.usage === "object") {
+					lastUsage = evt.usage;
+					if (Array.isArray(evt.choices) && evt.choices.length === 0) return false;
+				}
+			} catch {
+				// partial / non-JSON line — pass it through
+			}
+		}
+		return true;
+	};
+	const emit = (controller: TransformStreamDefaultController<Uint8Array>, flushAll: boolean): void => {
+		const separator = /\r?\n\r?\n/g;
+		let start = 0;
+		for (let match = separator.exec(buffer); match; match = separator.exec(buffer)) {
+			const end = match.index + match[0].length;
+			const event = buffer.slice(start, end);
+			if (keep(event)) controller.enqueue(encoder.encode(event));
+			start = end;
+		}
+		buffer = buffer.slice(start);
+		if (flushAll && buffer) {
+			if (keep(buffer)) controller.enqueue(encoder.encode(buffer));
+			buffer = "";
+		}
+		// An event bigger than this has no business in a chat stream: pass it on.
+		if (buffer.length > 1_048_576) {
+			controller.enqueue(encoder.encode(buffer));
+			buffer = "";
+		}
+	};
+	const stream = upstream.pipeThrough(
+		new TransformStream<Uint8Array, Uint8Array>({
+			transform(chunk, controller) {
+				buffer += decoder.decode(chunk, { stream: true });
+				emit(controller, false);
+			},
+			flush(controller) {
+				buffer += decoder.decode();
+				emit(controller, true);
+				resolve(lastUsage);
+			},
+			cancel() {
+				resolve(lastUsage);
+			},
+		}),
+	);
+	return { stream, usage };
+}
+
 // ---------------------------------------------------------------------------
 // Route registration
 // ---------------------------------------------------------------------------
 
 export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdownSignal?: AbortSignal): void {
+	// Providers that answered 400 to stream_options.include_usage.
+	const streamUsageRefused = new Set<string>();
 	// Spend rows that didn't reach the ledger. Budgets are enforced against
 	// the ledger, so while any are held, budgeted requests are refused, like a
 	// failed read. Each budgeted request first writes the held rows again, in
@@ -607,7 +687,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 		// We don't trust the value as authentication — it just buckets ledger
 		// rows and per-tenant budgets. The proxy still resolves real upstream
 		// credentials from env / CLI files as usual.
-		const tenant = parseTenantTag(ctx.req.header("authorization"), ctx.req.header("x-kosha-tenant"));
+		const taggedTenant = parseTenantTag(ctx.req.header("authorization"), ctx.req.header("x-kosha-tenant"));
 
 		// ── Budget gate ────────────────────────────────────────────────
 		// When a budget is configured we MUST fail closed: if the ledger is
@@ -618,8 +698,20 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 		// The global cap is always checked against TOTAL spend — never a
 		// tenant's slice — so a caller cannot escape it by inventing a fresh
 		// tenant tag per request. A per-tenant cap is an additional gate.
-		const budget = readMonthlyBudgetUsd();
-		const tenantBudget = tenant ? readTenantBudgetUsd() : null;
+		let budget: number | null;
+		let tenantBudget: number | null;
+		try {
+			budget = readMonthlyBudgetUsd();
+			tenantBudget = readTenantBudgetUsd();
+		} catch (err) {
+			// A budget kosha can't read is not "no budget": refuse until it's fixed.
+			const message = err instanceof BudgetConfigError ? err.message : "budget could not be read";
+			console.error(`kosha: ${message}`);
+			return ctx.json({ error: `budget enforcement unavailable — ${message}` }, 503);
+		}
+		// Leaving the tenant tag off must not skip a tenant cap: untagged
+		// requests share one bucket.
+		const tenant = taggedTenant ?? (tenantBudget !== null ? UNTAGGED_TENANT : null);
 		let spent = 0;
 		let tenantSpent = 0;
 		if (budget !== null || tenantBudget !== null) {
@@ -647,13 +739,16 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 					503,
 				);
 			}
-			if (budget !== null && spent >= budget) {
+			// A $0 budget refuses paid routes one by one below, so free ones
+			// (local runtimes, plans you hold) still run; any other reached cap
+			// stops everything here.
+			if (budget !== null && spent >= budget && (budget > 0 || spent > 0)) {
 				return ctx.json({ error: "monthly budget exceeded", spentUsd: spent, budgetUsd: budget }, 429, {
 					"x-kosha-budget-remaining-usd": Math.max(0, budget - spent).toFixed(4),
 					"x-kosha-budget-usd": budget.toFixed(2),
 				});
 			}
-			if (tenantBudget !== null && tenantSpent >= tenantBudget) {
+			if (tenantBudget !== null && tenantSpent >= tenantBudget && (tenantBudget > 0 || tenantSpent > 0)) {
 				return ctx.json(
 					{ error: "tenant monthly budget exceeded", tenant, spentUsd: tenantSpent, budgetUsd: tenantBudget },
 					429,
@@ -690,9 +785,23 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			wantsStream && (body.stream_options as { include_usage?: unknown } | undefined)?.include_usage === true;
 
 		for (const model of candidates) {
-			const credential = resolver ? await resolver.resolve(model.provider) : fallbackRegistryCredential(model.provider);
-			const bearerToken = credential.apiKey ?? credential.accessToken;
+			// A key in config outranks env vars, exactly as it does for discovery.
+			const configuredKey = registry.configuredApiKey(model.provider);
+			const credential = resolver
+				? await resolver.resolve(model.provider, configuredKey)
+				: fallbackRegistryCredential(model.provider, configuredKey);
 			const descriptor = getProviderDescriptor(model.provider);
+			// A key from a shared env var (one vendor's regions and plans read the
+			// same one) belongs only to the providers that accepted it at
+			// discovery. Sending it, and the prompt, to a sibling region that
+			// never accepted it leaks both across a data-residency line.
+			if (credential.shared && registry.provider(model.provider)?.authenticated !== true) {
+				attemptChain.push(`${model.provider}:unverified-shared-key`);
+				continue;
+			}
+			// A Claude subscription OAuth token is for Claude's own apps, not for
+			// a proxy to spend: it is not an API key and isn't forwarded.
+			const bearerToken = credential.apiKey ?? (credential.source === "oauth" ? undefined : credential.accessToken);
 			if (descriptor && providerExecutionCredentialRequired(descriptor) && !bearerToken) {
 				const envHint = descriptor.credentialEnvVars.length
 					? descriptor.credentialEnvVars.join(" or ")
@@ -753,6 +862,11 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			let upstreamBody: string;
 			let upstreamUrlString: string;
 			let wireNotes: string[] = [];
+			// Without include_usage an OpenAI stream carries no usage, and the
+			// ledger would keep a guess (512 output tokens by default). Ask for
+			// it; the usage-only chunk is dropped again if the caller didn't.
+			const injectUsage = !usesAnthropicWire && wantsStream && !includeUsage && !streamUsageRefused.has(model.provider);
+			let plainBody: string | null = null;
 			if (usesAnthropicWire) {
 				// Anthropic /v1/messages: auth via x-api-key + anthropic-version,
 				// body translated from OpenAI chat-completions on the way in,
@@ -793,6 +907,16 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			} else {
 				if (bearerToken) upstreamHeaders.authorization = `Bearer ${bearerToken}`;
 				upstreamBody = JSON.stringify({ ...body, model: model.id });
+				if (injectUsage) {
+					plainBody = upstreamBody;
+					const callerOptions =
+						body.stream_options && typeof body.stream_options === "object" ? (body.stream_options as object) : {};
+					upstreamBody = JSON.stringify({
+						...body,
+						model: model.id,
+						stream_options: { ...callerOptions, include_usage: true },
+					});
+				}
 				upstreamUrlString = safeUrl.toString();
 			}
 			fetchAttempts += 1;
@@ -823,6 +947,20 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 					body: upstreamBody,
 					signal,
 				});
+				// A 400 here may be the provider refusing stream_options rather
+				// than the caller's request: retry once as the caller sent it, and
+				// stop asking this provider for the rest of the process.
+				if (plainBody !== null && upstream.status === 400) {
+					await upstream.body?.cancel().catch(() => {});
+					streamUsageRefused.add(model.provider);
+					upstream = await fetch(upstreamUrlString, {
+						method: "POST",
+						headers: upstreamHeaders,
+						body: plainBody,
+						signal,
+					});
+					plainBody = null;
+				}
 			} catch (err) {
 				releaseTimer();
 				attemptChain.push(`${model.provider}:error`);
@@ -840,17 +978,27 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 
 			// A retryable upstream failure (5xx) rolls over to the next route,
 			// unless we've spent our fetch budget — then we surface it.
-			if (upstream.status >= 500 && fetchAttempts < MAX_FETCHES) {
+			// A shared key that a plan host listed models for may still be a
+			// pay-as-you-go key the plan refuses to bill: then the paid route for
+			// the same model should get the request, not the caller a 401.
+			const planRefusedSharedKey =
+				(isPlanBilled(model) || descriptor?.subscriptionPlan === true) &&
+				credential.shared === true &&
+				(upstream.status === 401 || upstream.status === 403);
+			if ((upstream.status >= 500 || planRefusedSharedKey) && fetchAttempts < MAX_FETCHES) {
 				releaseTimer();
 				attemptChain.push(`${model.provider}:${upstream.status}`);
 				await upstream.body?.cancel().catch(() => {});
-				registry.recordProxyOutcome(model.provider, {
-					ok: false,
-					status: upstream.status,
-					latencyMs: Date.now() - attemptStart,
-					errorType: "transport",
-				});
-				bumpProxyMetric(model.provider, false, Date.now() - attemptStart);
+				// A refused key says nothing about the provider's health.
+				if (!planRefusedSharedKey) {
+					registry.recordProxyOutcome(model.provider, {
+						ok: false,
+						status: upstream.status,
+						latencyMs: Date.now() - attemptStart,
+						errorType: "transport",
+					});
+					bumpProxyMetric(model.provider, false, Date.now() - attemptStart);
+				}
 				continue;
 			}
 
@@ -1042,7 +1190,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 				// usage chunk (present when the caller asked for include_usage).
 				// Estimate now; reconcile when the stream ends with usage.
 				recordSpend(null);
-				const { stream, usage } = observeOpenAIStreamUsage(upstream.body);
+				const { stream, usage } = observeOpenAIStreamUsage(upstream.body, { dropUsageChunk: plainBody !== null });
 				usage.then((u) => recordAdjustment(actualCostFromUsage(model, u, "openai"))).catch(() => {});
 				releaseTimer();
 				return new Response(stream, { status: upstream.status, headers: responseHeaders });

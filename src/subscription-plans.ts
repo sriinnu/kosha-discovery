@@ -177,7 +177,9 @@ export const SUBSCRIPTION_PLANS: readonly SubscriptionPlan[] = [
 		providerId: "minimax-cn-coding-plan",
 		name: "MiniMax Token Plan (China)",
 		family: "minimax",
-		baseUrl: "https://api.minimax.cn/anthropic/v1",
+		// MiniMax China is api.minimaxi.com everywhere else in kosha (and in its docs).
+		// minimax.cn hides its registrant, so the shared MINIMAX key is not sent there.
+		baseUrl: "https://api.minimaxi.com/anthropic/v1",
 		dedicatedEnvVars: ["MINIMAX_TOKEN_PLAN_CN_API_KEY"],
 		sharedEnvVars: ["MINIMAX_CN_API_KEY", "MINIMAX_API_KEY"],
 		listing: "validates",

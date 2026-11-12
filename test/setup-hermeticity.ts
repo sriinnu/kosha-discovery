@@ -31,6 +31,35 @@ if (testHome) {
 	delete process.env.KOSHA_LEDGER_PATH;
 }
 
+// Provider keys exported in a developer's shell would let a test that forgot
+// to stub discovery call a real provider with a real key (seen once in 1.14.0).
+// Tests that need a key set their own fake one after this runs.
+const CREDENTIAL_VAR =
+	/(_API_KEY|_API_TOKEN|_ACCESS_TOKEN|_SECRET_ACCESS_KEY|_SESSION_TOKEN|_AUTH_TOKEN)$|^(GOOGLE_APPLICATION_CREDENTIALS|AWS_PROFILE|KOSHA_MONTHLY_BUDGET_USD|KOSHA_TENANT_BUDGET_USD|KOSHA_PROXY_TOKEN)$/;
+for (const name of Object.keys(process.env)) {
+	if (CREDENTIAL_VAR.test(name)) delete process.env[name];
+}
+
+// No test may reach the network. Loopback stays open for the in-process
+// servers tests start; everything else fails like an offline machine. A test
+// that stubs fetch (vi.stubGlobal / vi.spyOn) replaces this for its own scope.
+// Set TEST_ALLOW_NETWORK=1 to run against the real network on purpose.
+if (process.env.TEST_ALLOW_NETWORK !== "1") {
+	const realFetch = globalThis.fetch;
+	const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+	globalThis.fetch = async function hermeticFetch(input: string | URL | Request, init?: RequestInit) {
+		const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+		let host = "";
+		try {
+			host = new URL(raw).hostname;
+		} catch {
+			// Relative or malformed URLs fall through to the real fetch, which rejects them.
+		}
+		if (LOOPBACK.has(host)) return realFetch(input, init);
+		throw new TypeError(`fetch failed (test hermeticity: network blocked for ${host || raw})`);
+	} as typeof fetch;
+}
+
 afterAll(async () => {
 	if (!testHome) return;
 	// Proxy tests return before their spend row is written. Let those writes
