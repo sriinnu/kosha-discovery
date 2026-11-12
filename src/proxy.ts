@@ -160,7 +160,7 @@ const ALLOWED_UPSTREAM_HOSTS: readonly string[] = (() => {
  * explicit `===` checks against literal strings so static taint analysis
  * recognizes this function as a sanitizer.
  */
-function safeUpstreamUrl(rawUrl: string, isLocalProvider: boolean): URL | null {
+export function safeUpstreamUrl(rawUrl: string, isLocalProvider: boolean): URL | null {
 	let parsed: URL;
 	try {
 		parsed = new URL(rawUrl);
@@ -175,7 +175,8 @@ function safeUpstreamUrl(rawUrl: string, isLocalProvider: boolean): URL | null {
 		// comparisons let CodeQL recognize this as a sanitizer.
 		if (host === "localhost") return parsed;
 		if (host === "127.0.0.1") return parsed;
-		if (host === "::1") return parsed;
+		// WHATWG URL keeps IPv6 hostnames bracketed: new URL("http://[::1]").hostname === "[::1]".
+		if (host === "[::1]") return parsed;
 		if (host === "0.0.0.0") return parsed;
 		return null;
 	}

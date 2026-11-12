@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createServer } from "../src/server.js";
 import { ModelRegistry } from "../src/registry.js";
+import { createServer } from "../src/server.js";
 import type { ModelCard, ProviderInfo } from "../src/types.js";
 
 function makeModel(overrides: Partial<ModelCard> & { id: string; provider: string }): ModelCard {
@@ -18,12 +18,7 @@ function makeModel(overrides: Partial<ModelCard> & { id: string; provider: strin
 	};
 }
 
-function makeProvider(
-	id: string,
-	name: string,
-	models: ModelCard[],
-	overrides?: Partial<ProviderInfo>,
-): ProviderInfo {
+function makeProvider(id: string, name: string, models: ModelCard[], overrides?: Partial<ProviderInfo>): ProviderInfo {
 	return {
 		id,
 		name,
@@ -60,16 +55,21 @@ describe("OpenAI-compatible proxy", () => {
 
 		const registry = ModelRegistry.fromJSON({
 			providers: [
-				makeProvider("vercel", "Vercel AI Gateway", [
-					makeModel({
-						id: "anthropic/claude-opus-4.6",
-						provider: "vercel",
-						pricing: { inputPerMillion: 5, outputPerMillion: 25 },
-					}),
-				], {
-					baseUrl: "https://ai-gateway.vercel.sh/v1",
-					authenticated: true,
-				}),
+				makeProvider(
+					"vercel",
+					"Vercel AI Gateway",
+					[
+						makeModel({
+							id: "anthropic/claude-opus-4.6",
+							provider: "vercel",
+							pricing: { inputPerMillion: 5, outputPerMillion: 25 },
+						}),
+					],
+					{
+						baseUrl: "https://ai-gateway.vercel.sh/v1",
+						authenticated: true,
+					},
+				),
 			],
 			aliases: {},
 			discoveredAt: Date.now(),
@@ -146,9 +146,18 @@ describe("OpenAI-compatible proxy", () => {
 
 			const registry = ModelRegistry.fromJSON({
 				providers: [
-					makeProvider("openai", "OpenAI", [
-						makeModel({ id: "gpt-4o-mini", provider: "openai", pricing: { inputPerMillion: 1, outputPerMillion: 2 } }),
-					], { baseUrl: "https://api.openai.com" }),
+					makeProvider(
+						"openai",
+						"OpenAI",
+						[
+							makeModel({
+								id: "gpt-4o-mini",
+								provider: "openai",
+								pricing: { inputPerMillion: 1, outputPerMillion: 2 },
+							}),
+						],
+						{ baseUrl: "https://api.openai.com" },
+					),
 				],
 				aliases: {},
 				discoveredAt: Date.now(),
@@ -200,7 +209,11 @@ describe("proxy failover", () => {
 		return ModelRegistry.fromJSON({
 			providers: [
 				makeProvider("groq", "Groq", [
-					makeModel({ id: "llama-cheap", provider: "groq", pricing: { inputPerMillion: 0.01, outputPerMillion: 0.02 } }),
+					makeModel({
+						id: "llama-cheap",
+						provider: "groq",
+						pricing: { inputPerMillion: 0.01, outputPerMillion: 0.02 },
+					}),
 				]),
 				makeProvider("deepinfra", "DeepInfra", [
 					makeModel({ id: "llama-mid", provider: "deepinfra", pricing: { inputPerMillion: 1, outputPerMillion: 2 } }),
@@ -266,9 +279,12 @@ describe("proxy failover", () => {
 		process.env.OPENAI_API_KEY = "openai-test";
 		const registry = ModelRegistry.fromJSON({
 			providers: [
-				makeProvider("openai", "OpenAI", [
-					makeModel({ id: "gpt-4o-mini", provider: "openai", pricing: { inputPerMillion: 1, outputPerMillion: 2 } }),
-				], { baseUrl: "https://evil.example/v1" }),
+				makeProvider(
+					"openai",
+					"OpenAI",
+					[makeModel({ id: "gpt-4o-mini", provider: "openai", pricing: { inputPerMillion: 1, outputPerMillion: 2 } })],
+					{ baseUrl: "https://evil.example/v1" },
+				),
 			],
 			aliases: {},
 			discoveredAt: Date.now(),
@@ -284,16 +300,11 @@ describe("proxy failover", () => {
 
 		// The catalog's openai defaultBaseUrl (api.openai.com) takes precedence
 		// over the registry's baseUrl for non-local providers, so the request
-		// still goes through. We verify the URL stays inside the allowlist.
-		if (res.status === 200) {
-			const [url] = fn.mock.calls[0];
-			expect(new URL(String(url)).hostname).toBe("api.openai.com");
-		} else {
-			// If the descriptor didn't have a defaultBaseUrl, the proxy must
-			// refuse rather than dial evil.example.
-			expect(fn).not.toHaveBeenCalled();
-			expect(res.status).toBe(502);
-		}
+		// still goes through, and only to the catalog host. (Refusal of a
+		// non-catalog host is covered in proxy-guards.test.ts.)
+		expect(res.status).toBe(200);
+		expect(fn).toHaveBeenCalledOnce();
+		for (const [url] of fn.mock.calls) expect(new URL(String(url)).hostname).toBe("api.openai.com");
 	});
 
 	it("reflects an x-kosha-estimated-cost-usd header on a successful forward", async () => {
@@ -378,11 +389,12 @@ describe("proxy failover", () => {
 });
 
 function installFetchMock() {
-	const fetchMock = vi.fn(async () =>
-		new Response(JSON.stringify({ id: "chatcmpl-test", choices: [] }), {
-			status: 200,
-			headers: { "content-type": "application/json" },
-		})
+	const fetchMock = vi.fn(
+		async () =>
+			new Response(JSON.stringify({ id: "chatcmpl-test", choices: [] }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			}),
 	);
 	globalThis.fetch = fetchMock as unknown as typeof fetch;
 	return fetchMock;
