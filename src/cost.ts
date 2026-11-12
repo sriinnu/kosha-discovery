@@ -228,10 +228,15 @@ export function estimateRequestCost(model: ModelCard, requestBody: Record<string
  * array, falling back to total stringified body length. Intentionally
  * conservative (small CHARS_PER_TOKEN) so the estimate doesn't undershoot.
  */
+/** A rough per-image token charge: OpenAI bills a 1024px high-detail image at
+ *  about 765 tokens, and other providers land in the same range. */
+const TOKENS_PER_IMAGE = 800;
+
 function approximateInputTokens(body: Record<string, unknown>): number {
 	const messages = body.messages;
 	if (Array.isArray(messages)) {
 		let chars = 0;
+		let images = 0;
 		for (const msg of messages) {
 			if (!msg || typeof msg !== "object") continue;
 			const content = (msg as { content?: unknown }).content;
@@ -240,16 +245,39 @@ function approximateInputTokens(body: Record<string, unknown>): number {
 			} else if (Array.isArray(content)) {
 				for (const part of content) {
 					if (typeof part === "string") chars += part.length;
-					else if (part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string") {
-						chars += (part as { text: string }).text.length;
+					else if (part && typeof part === "object") {
+						const typed = part as { type?: unknown; text?: unknown };
+						if (typeof typed.text === "string") chars += typed.text.length;
+						else if (typed.type === "image_url" || typed.type === "input_image" || typed.type === "image") images += 1;
 					}
 				}
 			}
+			// Agent traffic: the arguments of earlier tool calls are input too.
+			const toolCalls = (msg as { tool_calls?: unknown }).tool_calls;
+			if (Array.isArray(toolCalls)) {
+				for (const call of toolCalls) {
+					const args = (call as { function?: { arguments?: unknown } } | null)?.function?.arguments;
+					if (typeof args === "string") chars += args.length;
+				}
+			}
 		}
-		if (chars > 0) return Math.ceil(chars / CHARS_PER_TOKEN);
+		// Tool definitions are sent (and billed) on every request.
+		if (Array.isArray(body.tools)) chars += JSON.stringify(body.tools).length;
+		if (chars > 0 || images > 0) return Math.ceil(chars / CHARS_PER_TOKEN) + images * TOKENS_PER_IMAGE;
 	}
 	const fallback = JSON.stringify(body).length;
 	return Math.ceil(fallback / CHARS_PER_TOKEN);
+}
+
+/** A budget env var whose value kosha can't read as a plain dollar amount. */
+export class BudgetConfigError extends Error {
+	constructor(
+		readonly envVar: string,
+		readonly value: string,
+	) {
+		super(`${envVar}=${JSON.stringify(value)} is not a dollar amount (use digits, e.g. 50 or 12.5)`);
+		this.name = "BudgetConfigError";
+	}
 }
 
 /**
@@ -257,23 +285,37 @@ function approximateInputTokens(body: Record<string, unknown>): number {
  * configured — the proxy's budget gate then becomes a no-op. This cap is
  * global: it is always compared against total spend, never a tenant's slice,
  * so a caller cannot escape it by inventing a fresh tenant tag.
+ *
+ * `0` is a real budget: nothing paid goes through ($0 routes, like local
+ * runtimes and plans you hold, still do). A value that isn't plain digits
+ * (`$50`, `1,000`, `50usd`, `-3`) throws {@link BudgetConfigError} rather than
+ * quietly becoming "no budget" or the wrong one.
  */
 export function readMonthlyBudgetUsd(): number | null {
-	return readPositiveUsd(process.env.KOSHA_MONTHLY_BUDGET_USD);
+	return readBudgetUsd("KOSHA_MONTHLY_BUDGET_USD");
 }
 
 /**
  * Read `KOSHA_TENANT_BUDGET_USD` (if any): an additional per-tenant monthly
- * cap applied on top of the global one to requests that carry a tenant tag.
+ * cap applied on top of the global one. Requests without a tenant tag count
+ * as the {@link UNTAGGED_TENANT} tenant, so leaving the tag off doesn't skip
+ * the cap. Parsed like {@link readMonthlyBudgetUsd}.
  */
 export function readTenantBudgetUsd(): number | null {
-	return readPositiveUsd(process.env.KOSHA_TENANT_BUDGET_USD);
+	return readBudgetUsd("KOSHA_TENANT_BUDGET_USD");
 }
 
-function readPositiveUsd(raw: string | undefined): number | null {
-	if (!raw) return null;
-	const parsed = Number.parseFloat(raw);
-	return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+/** The tenant an untagged request is billed to while a tenant cap is set. */
+export const UNTAGGED_TENANT = "untagged";
+
+function readBudgetUsd(envVar: string): number | null {
+	const raw = process.env[envVar];
+	if (raw === undefined || raw.trim() === "") return null;
+	const value = raw.trim();
+	if (!/^\d+(\.\d+)?$/.test(value)) throw new BudgetConfigError(envVar, raw);
+	const parsed = Number(value);
+	if (!Number.isFinite(parsed)) throw new BudgetConfigError(envVar, raw);
+	return parsed;
 }
 
 /**

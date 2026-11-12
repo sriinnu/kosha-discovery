@@ -291,11 +291,15 @@ describe("readMonthlyBudgetUsd", () => {
 		process.env.KOSHA_MONTHLY_BUDGET_USD = "12.5";
 		expect(readMonthlyBudgetUsd()).toBe(12.5);
 	});
-	it("returns null for a non-positive or NaN value", () => {
-		process.env.KOSHA_MONTHLY_BUDGET_USD = "-3";
-		expect(readMonthlyBudgetUsd()).toBeNull();
-		process.env.KOSHA_MONTHLY_BUDGET_USD = "abc";
-		expect(readMonthlyBudgetUsd()).toBeNull();
+	it("reads 0 as a real budget, not as no budget", () => {
+		process.env.KOSHA_MONTHLY_BUDGET_USD = "0";
+		expect(readMonthlyBudgetUsd()).toBe(0);
+	});
+	it("throws on anything that isn't a plain dollar amount, instead of failing open", () => {
+		for (const bad of ["-3", "abc", "$50", "1,000", "50usd", "1e3", "Infinity"]) {
+			process.env.KOSHA_MONTHLY_BUDGET_USD = bad;
+			expect(() => readMonthlyBudgetUsd(), bad).toThrow(/not a dollar amount/);
+		}
 	});
 });
 

@@ -44,7 +44,7 @@ import { timingSafeEqual } from "node:crypto";
 import { serve } from "@hono/node-server";
 import { Hono, type MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import { readMonthlyBudgetUsd, readSpendForMonth } from "./cost.js";
+import { readMonthlyBudgetUsd, readSpendForMonth, readTenantBudgetUsd } from "./cost.js";
 import { registerDiscoveryRoutes } from "./discovery-routes.js";
 import { isMainModule } from "./entry.js";
 import { extractModelVersion, normalizeModelId } from "./normalize.js";
@@ -687,7 +687,12 @@ export function createServer(
 			// Unreadable ledger → omit the spend gauge rather than fail /metrics.
 		}
 		lines.push(`kosha_spend_usd_month ${monthSpend.toFixed(6)}`);
-		const budget = readMonthlyBudgetUsd();
+		let budget: number | null = null;
+		try {
+			budget = readMonthlyBudgetUsd();
+		} catch {
+			// A malformed budget is reported at boot and by the proxy; omit the gauges.
+		}
 		if (budget !== null) {
 			lines.push("# HELP kosha_budget_remaining_usd Remaining monthly budget in USD.");
 			lines.push("# TYPE kosha_budget_remaining_usd gauge");
@@ -731,6 +736,10 @@ export function createServer(
  *               reach the port.
  */
 export async function startServer(port = 3000, host?: string): Promise<void> {
+	// A budget that doesn't parse would make every proxied request fail with a
+	// 503; say so once, at start, instead of starting a proxy that can't serve.
+	readMonthlyBudgetUsd();
+	readTenantBudgetUsd();
 	const bindHost = resolveBindHost(host);
 	if (!isLoopbackHost(bindHost) && !process.env.KOSHA_PROXY_TOKEN) {
 		console.error(
@@ -815,5 +824,8 @@ export async function startServer(port = 3000, host?: string): Promise<void> {
 
 if (isMainModule(import.meta.url)) {
 	const port = parseInt(process.env.PORT || "3000", 10);
-	startServer(port, process.env.KOSHA_HOST);
+	startServer(port, process.env.KOSHA_HOST).catch((err: unknown) => {
+		console.error(`kosha: ${err instanceof Error ? err.message : String(err)}`);
+		process.exit(1);
+	});
 }
