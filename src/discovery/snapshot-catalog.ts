@@ -47,6 +47,17 @@ export interface SnapshotCatalog {
 
 let inflight: Promise<SnapshotCatalog> | null = null;
 
+/** Hold bookkeeping the snapshot gate (`src/snapshot-gate.ts`) leaves on a
+ *  published card so next week's run can continue it. */
+const GATE_FIELDS = ["pricingHold", "priceAnchor", "lastSeenAt", "missingRunCount"] as const;
+
+function withoutGateFields(card: ModelCard): ModelCard {
+	if (!GATE_FIELDS.some((field) => field in card)) return card;
+	const out = { ...card } as Record<string, unknown>;
+	for (const field of GATE_FIELDS) delete out[field];
+	return out as unknown as ModelCard;
+}
+
 /** Resolve the snapshot URL, honouring the env override when it is sane. */
 export function snapshotCatalogUrl(): string {
 	const override = process.env[SNAPSHOT_CATALOG_URL_ENV];
@@ -77,8 +88,10 @@ export function resetSnapshotCatalogCache(): void {
 export async function getSnapshotSeed(providerId: string): Promise<ModelCard[]> {
 	const catalog = await loadSnapshotCatalog();
 	const now = Date.now();
+	// The gate's hold bookkeeping is the publisher's state, not the reader's:
+	// a local merge keeps its own clock.
 	return (catalog.providers.get(providerId) ?? []).map((card) => ({
-		...card,
+		...withoutGateFields(card),
 		discoveredAt: now,
 		source: "litellm",
 		catalogSource: "snapshot",
