@@ -168,6 +168,8 @@ gh workflow run update-kosha-snapshot.yml -f accept=openrouter/deepseek/deepseek
 
 The hold state rides on each published card (`pricingHold`, `priceAnchor`, `lastSeenAt`) so the next week can continue it. kosha drops those fields when it reads the snapshot; a local install keeps its own clock.
 
+The snapshot is signed. The workflow signs `kosha-latest.json` with the Ed25519 key in the `KOSHA_SNAPSHOT_SIGNING_KEY` secret and publishes the signature as `kosha-latest.json.sig`; without the secret it refuses to publish. kosha loads a snapshot from the default URL only when that signature verifies against a key built into it (`SNAPSHOT_PUBLIC_KEYS` in `src/discovery/snapshot-catalog.ts`); otherwise it's treated as unreachable and the static list stands in. A mirror set with `KOSHA_SNAPSHOT_URL` is loaded unsigned unless `KOSHA_SNAPSHOT_PUBKEY` pins its own key. To rotate, add the new public key to the list, release, switch the secret, then drop the old key in a later release.
+
 ### Boot degraded mode
 
 On startup kosha runs `discover()`, which loads from the on-disk cache under `~/.kosha/` first. If every provider API is down at boot, kosha still comes up serving the last-good catalog from that cache — live discovery never crashes the server, because each provider's outcome is settled independently and a failure simply omits that provider. The worst case is a boot with no prior cache and all providers unreachable: the server binds with an empty catalog rather than refusing connections.

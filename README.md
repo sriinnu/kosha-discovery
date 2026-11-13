@@ -135,7 +135,8 @@ curl -sL https://github.com/sriinnu/kosha-discovery/releases/download/snapshot-l
   | jq '.modelCount, .providerCount'
 ```
 
-Dated `snapshot-YYYY-MM-DD` pre-releases keep a short trail for diffing, pruned to
+It's signed: kosha checks `kosha-latest.json.sig` against a built-in key before
+using it. Dated `snapshot-YYYY-MM-DD` pre-releases keep a short trail for diffing, pruned to
 the two most recent. Each snapshot's release notes list what changed since the
 previous one (new models, repricings, deprecations, removals) and any price the
 gate is holding. The same diff runs locally with
