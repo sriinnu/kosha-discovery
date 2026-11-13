@@ -12,13 +12,16 @@
  *              every run. Edits made in the wiki UI are overwritten; change the
  *              source file instead. Tracked in `.mirrored` so a page whose
  *              source was deleted is removed, and nothing else ever is.
- *   seeded   — copied from `wiki/seed/` only when the wiki has no page of that
- *              name. After that they belong to the wiki and are never touched.
+ *   seeded   — copied from `wiki/seed/`, and refreshed from it while the wiki
+ *              copy is still exactly what was last seeded. Once someone edits
+ *              the page in the wiki UI it belongs to the wiki and is left alone
+ *              (the run says so). Tracked by content hash in `.seeded`.
  *   foreign  — anything else in the wiki. Left alone, and listed in the sidebar.
  *
  * Usage: node scripts/build-wiki.mjs <wiki-checkout-dir> [--repo owner/name] [--ref main]
  */
 
+import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,6 +62,7 @@ const MIRRORED = [
 
 const RESERVED = new Set(["Home", "_Sidebar", "_Footer"]);
 const MANIFEST = ".mirrored";
+const SEED_MANIFEST = ".seeded";
 
 const blobUrl = (path) => `https://github.com/${repo}/blob/${ref}/${path}`;
 const rawUrl = (path) => `https://raw.githubusercontent.com/${repo}/${ref}/${path}`;
@@ -123,16 +127,6 @@ async function readIfPresent(path) {
 	}
 }
 
-/** Create a file only if it does not exist yet; returns whether it was created. */
-async function createIfAbsent(path, content) {
-	try {
-		await writeFile(path, content, { flag: "wx" });
-		return true;
-	} catch (error) {
-		if (error?.code === "EEXIST") return false;
-		throw error;
-	}
-}
 
 const banner = (source) =>
 	`<!-- Mirrored from ${source} by scripts/build-wiki.mjs. Edits made here are overwritten; change the source file. -->\n\n`;
@@ -165,15 +159,44 @@ await writeFile(manifestPath, `${written.join("\n")}\n`);
 // --- seeded pages ---------------------------------------------------------
 const seedDir = join(root, "wiki", "seed");
 const seeded = [];
+const kept = [];
 const seedFiles = await readdir(seedDir).catch((error) => {
 	if (error?.code === "ENOENT") return [];
 	throw error;
 });
+const sha = (text) => createHash("sha256").update(text).digest("hex");
+const seedManifestPath = join(outDir, SEED_MANIFEST);
+const seedRecordText = await readIfPresent(seedManifestPath);
+// `page<TAB>hash of the content last seeded`.
+const seedRecord = new Map(
+	(seedRecordText ?? "")
+		.split("\n")
+		.filter(Boolean)
+		.map((line) => line.split("\t")),
+);
+// Before `.seeded` existed, seeds were written once and never refreshed. On the
+// first run with it, an existing page is adopted as seeded; that was checked
+// against the live wiki (no page there had been edited in the UI).
+const adopting = seedRecordText === undefined;
+const nextRecord = [];
 for (const file of seedFiles.filter((name) => name.endsWith(".md")).sort()) {
-	if (await createIfAbsent(join(outDir, file), await readFile(join(seedDir, file), "utf8"))) {
-		seeded.push(basename(file, ".md"));
+	const page = basename(file, ".md");
+	const content = await readFile(join(seedDir, file), "utf8");
+	const target = join(outDir, file);
+	const current = await readIfPresent(target);
+	const ours = current === undefined || adopting || seedRecord.get(page) === sha(current);
+	if (!ours) {
+		kept.push(page);
+		if (seedRecord.has(page)) nextRecord.push(`${page}\t${seedRecord.get(page)}`);
+		continue;
 	}
+	if (current !== content) {
+		await writeFile(target, content);
+		seeded.push(page);
+	}
+	nextRecord.push(`${page}\t${sha(content)}`);
 }
+await writeFile(seedManifestPath, `${nextRecord.join("\n")}\n`);
 
 // --- navigation -----------------------------------------------------------
 const mirroredNow = MIRRORED.filter((entry) => written.includes(entry.page));
@@ -228,5 +251,6 @@ await writeFile(
 
 console.log(
 	`wiki: ${written.length} mirrored, ${seeded.length} seeded${seeded.length ? ` (${seeded.join(", ")})` : ""}, ` +
+		`${kept.length} edited in the wiki and kept${kept.length ? ` (${kept.join(", ")})` : ""}, ` +
 		`${removed.length} removed${removed.length ? ` (${removed.join(", ")})` : ""}, ${others.length} guide page(s)`,
 );
