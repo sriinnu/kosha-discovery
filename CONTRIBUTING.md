@@ -40,11 +40,54 @@ PRs are squash-merged, so your branch's history doesn't need to be tidy, and the
 
 `main` only accepts signed commits. The squash commit GitHub creates is signed by GitHub, so you don't need a signing key to contribute, though signing your own commits is welcome.
 
+## Project layout
+
+```
+src/
+  cli.ts                 # CLI entry point and arg parsing
+  cli-commands.ts        # command implementations (+ cli-cmd-*.ts for the larger ones)
+  registry.ts            # ModelRegistry public API
+  registry-runtime.ts    # discovery orchestration, enrichment, cache, manifest export
+  registry-query.ts      # model / role / capability queries
+  registry-selection.ts  # cheapest candidates, binding hints
+  registry-routing.ts    # cheapest / fastest / reliable / balanced ranking
+  discovery/             # one discoverer per provider + static and public-seed catalogs
+  enrichment/            # models.dev + LiteLLM pricing enrichment
+  credentials/           # credential resolution (env, CLI files, ADC, OAuth)
+  provider-catalog.ts    # provider descriptors: base URLs, transport, env var names
+  subscription-plans.ts  # token and coding plans, generated into provider descriptors
+  catalog-source.ts      # community / pinned / local catalog modes, export envelope
+  price-trust.ts         # rate sanitising and the $0 / unpriced rules
+  snapshot-gate.ts       # price quarantine for the published weekly snapshot
+  security.ts            # threat scan for every external payload
+  resilience.ts          # circuit breakers and stale-cache fallback
+  aliases.ts             # built-in short names → canonical model IDs
+  claude-generation.ts   # which Claude generation accepts which API parameters
+  model-features.ts      # tool dialect / structured-output inference per model
+  proxy.ts               # OpenAI-compatible proxy: routing, failover, ledger
+  wire-anthropic.ts      # OpenAI ↔ Anthropic request / response / SSE translation
+  cost.ts                # spend ledger, budget gates, usage reconciliation
+  tally.ts               # zero-dependency token usage + USD tally (also exported as ./tally)
+  server.ts              # Hono HTTP API + operator token gate
+  mcp-server.ts          # MCP stdio server
+  types.ts               # shared types
+```
+
 ## Adding a provider
 
-Most providers are OpenAI-compatible and need two table entries plus a seed mapping. The step-by-step is in the README under [Adding a provider](README.md#adding-a-provider). The step people miss is the models.dev / LiteLLM slug in `src/discovery/modelsdev-seed.ts` and `litellm-seed.ts`. Without it, keyless discovery returns nothing for that provider.
+For an OpenAI-compatible provider — most of them — it is two table entries, a catalog mapping and a test:
 
-Document the provider's env vars in `docs/credentials.md`.
+1. Add a descriptor to `PROVIDER_CATALOG` in `src/provider-catalog.ts` (id, base URL, transport, credential env vars).
+2. Add a spec to `GENERIC_OPENAI_PROVIDERS` in `src/discovery/generic-openai.ts`. It registers its own discoverer, resolves credentials from the descriptor's `credentialEnvVars`, and falls back to the public catalog when there is no key.
+3. Map the provider to its models.dev / LiteLLM slug in `src/discovery/modelsdev-seed.ts` and `litellm-seed.ts` so keyless discovery works. **Check the slug** — GLM is published as `zhipuai`, and a missing mapping means no keyless models at all.
+4. Add a case to `test/discovery/generic-openai.test.ts` and document the env vars in `docs/credentials.md`.
+
+Write a discoverer class only when classification genuinely needs code — per-route pricing (OpenRouter), a non-OpenAI response envelope (TypeSafe), or origin remapping (Vercel):
+
+1. Create `src/discovery/<provider>.ts` extending `BaseDiscoverer` or `OpenAICompatibleDiscoverer`; `fetchJSON` and `makeCard` are provided.
+2. Export it from `src/discovery/index.ts` and add a factory entry to `DISCOVERER_REGISTRY`.
+3. Add a resolver branch in `src/credentials/resolver.ts` only for a bespoke search order (CLI files, OAuth, ADC, SSO). A plain API key in env vars needs no branch — the descriptor covers it.
+4. Add `test/discovery/<provider>.test.ts` (mock `fetch`; see `typesafe.test.ts`).
 
 ## Fixing model data
 

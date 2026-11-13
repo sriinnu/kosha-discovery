@@ -175,7 +175,7 @@ On startup kosha runs `discover()`, which loads from the on-disk cache under `~/
 Once the outage passes, a single `POST /api/refresh` (or restart) re-runs discovery and overwrites `~/.kosha/registry.json` atomically (write-to-tmp, then rename), with a `.bak.<YYYY-MM-DD>` ring kept for rollback. If you suspect the cache itself is poisoned, force a bypass:
 
 ```bash
-kosha discover        # force: true — ignores cache and re-fetches every provider
+kosha refresh         # ignores the cache and re-fetches every provider
 ```
 
-Models that disappear from a provider for many consecutive passes are pruned automatically (14-pass TTL), so a transient outage won't leave the catalog full of ghosts, and a restored provider re-populates on the next refresh.
+Models that disappear from a provider for many consecutive passes are pruned automatically once unseen for 30 days, so a transient outage won't leave the catalog full of ghosts, and a restored provider re-populates on the next refresh.

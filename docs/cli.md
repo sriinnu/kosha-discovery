@@ -58,6 +58,7 @@ COMMANDS
   registry export               Write the catalog in snapshot format (for local mode)
     --output <file>               Write to a file instead of stdout
     --provider <name>             Export only one provider
+  registry accept <prov>/<model>  Accept a price quarantine is holding, once checked
   serve [--port 3000]           Start HTTP API server (binds 127.0.0.1)
     --host <address>              Bind address; set KOSHA_PROXY_TOKEN before exposing
 

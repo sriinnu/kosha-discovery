@@ -41,6 +41,8 @@ Fixes from an independent review of the whole codebase.
 - The first run seeds the anchor, so a fresh install's second refresh is already checked.
 - The weekly snapshot gets the same price quarantine, judged against the last published one. It seeds `pinned` users, the outage fallback and first runs, and was published raw, so one bad catalog week reached them unchecked. A suspect cut is published at the previous price and listed in the release notes; a rise goes out at once. A held collapse is released with the workflow's `accept` input.
 
+- `kosha discover --json` printed a progress line before the JSON, so piping it to `jq` failed.
+
 ### Added
 
 - `kosha registry accept <provider>/<model>` accepts the exact rates quarantine is holding, once you've checked them. It replaces moving `registry.json` aside, which cleared every hold at once.

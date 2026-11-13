@@ -240,7 +240,8 @@ export function truncateReason(reason: string, max = 160): string {
  * @param flags     CLI flags (supports `--json`).
  */
 export async function cmdDiscover(registry: ModelRegistry, flags: Record<string, string | boolean>): Promise<void> {
-	console.log(c(DIM, "Discovering providers and models..."));
+	// stdout is the JSON under --json; progress would break `| jq`.
+	if (!flags.json) console.log(c(DIM, "Discovering providers and models..."));
 	const providers = await registry.discover();
 
 	if (flags.json) {

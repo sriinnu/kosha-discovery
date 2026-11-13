@@ -67,17 +67,19 @@ ${c(BOLD, "COMMANDS")}
     --provider <name>             Scope latest fetch to one provider
   ${c(CYAN, "refresh")} ${c(DIM, "(update)")}              Force re-discover all providers (bypass cache)
     --provider <name>             Refresh only one provider
-  ${c(CYAN, "doctor")} ${c(DIM, "(health)")}               Deprecation warnings + provider health, no network
+  ${c(CYAN, "doctor")} ${c(DIM, "(health)")}               Deprecation warnings + provider health (uses the cache when fresh)
     --ci                          Exit non-zero on lifecycle findings (alias: --fail-on-warning)
+    --model <ids>                 Check only these models or aliases (comma-separated)
+    --deprecation-window <days>   How far ahead a sunset counts (default 30)
   ${c(CYAN, "spend")} ${c(DIM, "(usage)")}                 Roll up the proxy spend ledger
     --since <iso-date>            Start of the window (default: all rows)
     --until <iso-date>            End of the window (a bare date includes that day)
     --tenant <name>               Only rows tagged with this tenant
     --ledger <path>               Ledger file (default ~/.kosha/ledger.jsonl + monthly partitions)
   ${c(CYAN, "registry export")}               Write the catalog in snapshot format (for local mode)
-  ${c(CYAN, "registry accept <prov>/<model>")} Accept a price quarantine is holding, once checked
     --output <file>               Write to a file instead of stdout
     --provider <name>             Export only one provider
+  ${c(CYAN, "registry accept <prov>/<model>")} Accept a price quarantine is holding, once checked
   ${c(CYAN, "serve")} [--port 3000]           Start HTTP API server (binds 127.0.0.1)
     --host <address>              Bind address; set KOSHA_PROXY_TOKEN before exposing
 
