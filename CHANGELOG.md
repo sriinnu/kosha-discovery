@@ -13,6 +13,8 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
+## [1.15.0] — 2026-11-13
+
 Fixes from an independent review of the whole codebase.
 
 ### Fixed
@@ -43,6 +45,7 @@ Fixes from an independent review of the whole codebase.
 
 - The weekly snapshot is signed (Ed25519, `kosha-latest.json.sig`), and kosha refuses a snapshot from the default URL whose signature doesn't verify. A mirror can pin its own key with `KOSHA_SNAPSHOT_PUBKEY`.
 - `kosha discover --json` printed a progress line before the JSON, so piping it to `jq` failed.
+- Every other `--json` query command (`list`, `search`, `model`, `routes`, `providers`) printed its "Loaded N models from cache" line to stdout before the JSON. Status lines now go to stderr.
 
 ### Added
 
