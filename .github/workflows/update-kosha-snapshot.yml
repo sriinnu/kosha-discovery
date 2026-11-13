@@ -476,6 +476,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KOSHA_SNAPSHOT_SIGNING_KEY: ${{ secrets.KOSHA_SNAPSHOT_SIGNING_KEY }}
         run: |
           set -euo pipefail
           DATED_TAG="snapshot-$(date -u +%Y-%m-%d)"
@@ -487,6 +488,9 @@ jobs:
           mkdir -p "$STAGE"
           cp "$OUTPUT_PATH" "$STAGE/kosha-latest.json"
           cp "$CHECKSUM_PATH" "$STAGE/kosha-latest.sha256"
+          # kosha refuses a snapshot from the default URL without a valid
+          # signature, so an unsigned one is never published.
+          node scripts/snapshot-sign.mjs "$STAGE/kosha-latest.json" "$STAGE/kosha-latest.json.sig"
 
           # Release notes carry what changed since the last published snapshot
           # (downloaded by the guard step above): new models, price changes,
@@ -505,10 +509,10 @@ jobs:
           publish_to() {
             local tag="$1" title="$2"
             if gh release view "$tag" >/dev/null 2>&1; then
-              gh release upload "$tag" "$STAGE/kosha-latest.json" "$STAGE/kosha-latest.sha256" --clobber
+              gh release upload "$tag" "$STAGE/kosha-latest.json" "$STAGE/kosha-latest.sha256" "$STAGE/kosha-latest.json.sig" --clobber
               gh release edit "$tag" --notes-file "$NOTES"
             else
-              gh release create "$tag" "$STAGE/kosha-latest.json" "$STAGE/kosha-latest.sha256" \
+              gh release create "$tag" "$STAGE/kosha-latest.json" "$STAGE/kosha-latest.sha256" "$STAGE/kosha-latest.json.sig" \
                 --title "$title" --prerelease --notes-file "$NOTES"
             fi
           }

@@ -12,6 +12,7 @@ import {
 	SNAPSHOT_CATALOG_URL_ENV,
 	snapshotCatalogUrl,
 } from "../../src/discovery/snapshot-catalog.js";
+import { forgetTestKey, snapshotResponse, trustTestKey } from "../helpers/signed-snapshot.js";
 
 const card = (provider: string, id: string, extra: Record<string, unknown> = {}) => ({
 	id,
@@ -43,11 +44,20 @@ const SNAPSHOT = {
 };
 
 function mockFetch(body: unknown, init: ResponseInit = { status: 200 }) {
-	return vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify(body), init));
+	const text = JSON.stringify(body);
+	return vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => snapshotResponse(String(url), text, init));
 }
 
-beforeEach(() => resetSnapshotCatalogCache());
+/** Calls for the snapshot itself, not its signature. */
+const snapshotCalls = (spy: ReturnType<typeof mockFetch>) =>
+	spy.mock.calls.filter(([url]) => !String(url).endsWith(".sig"));
+
+beforeEach(() => {
+	resetSnapshotCatalogCache();
+	trustTestKey();
+});
 afterEach(() => {
+	forgetTestKey();
 	vi.restoreAllMocks();
 	delete process.env[SNAPSHOT_CATALOG_URL_ENV];
 });
@@ -57,7 +67,7 @@ describe("snapshot catalog", () => {
 		const fetchSpy = mockFetch(SNAPSHOT);
 		const anthropic = await getSnapshotSeed("anthropic");
 		const openai = await getSnapshotSeed("openai");
-		expect(fetchSpy).toHaveBeenCalledTimes(1);
+		expect(snapshotCalls(fetchSpy)).toHaveLength(1);
 		expect(fetchSpy.mock.calls[0][0]).toBe(SNAPSHOT_CATALOG_URL);
 		expect(anthropic.map((c) => c.id)).toEqual(["claude-opus-5-5", "claude-sonnet-5-5"]);
 		// The stray row and the half card are dropped; the real one survives.
@@ -82,7 +92,7 @@ describe("snapshot catalog", () => {
 	it("rejects a payload that is not a snapshot, and retries on the next call", async () => {
 		const fetchSpy = mockFetch({ not: "a snapshot" });
 		await expect(loadSnapshotCatalog()).rejects.toThrow(/providers array/);
-		fetchSpy.mockResolvedValue(new Response(JSON.stringify(SNAPSHOT), { status: 200 }));
+		fetchSpy.mockImplementation(async (url) => snapshotResponse(String(url), JSON.stringify(SNAPSHOT)));
 		expect((await getSnapshotSeed("anthropic")).length).toBe(2);
 	});
 

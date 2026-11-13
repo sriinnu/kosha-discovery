@@ -41,6 +41,7 @@ Fixes from an independent review of the whole codebase.
 - The first run seeds the anchor, so a fresh install's second refresh is already checked.
 - The weekly snapshot gets the same price quarantine, judged against the last published one. It seeds `pinned` users, the outage fallback and first runs, and was published raw, so one bad catalog week reached them unchecked. A suspect cut is published at the previous price and listed in the release notes; a rise goes out at once. A held collapse is released with the workflow's `accept` input.
 
+- The weekly snapshot is signed (Ed25519, `kosha-latest.json.sig`), and kosha refuses a snapshot from the default URL whose signature doesn't verify. A mirror can pin its own key with `KOSHA_SNAPSHOT_PUBKEY`.
 - `kosha discover --json` printed a progress line before the JSON, so piping it to `jq` failed.
 
 ### Added

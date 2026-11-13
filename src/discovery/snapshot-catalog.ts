@@ -13,6 +13,7 @@
  * @module
  */
 
+import { createPublicKey, verify } from "node:crypto";
 import { quarantineEntries } from "../security.js";
 import type { ModelCard } from "../types.js";
 
@@ -22,6 +23,23 @@ export const SNAPSHOT_CATALOG_URL =
 
 /** Env override for forks and air-gapped mirrors; must be an https URL. */
 export const SNAPSHOT_CATALOG_URL_ENV = "KOSHA_SNAPSHOT_URL";
+
+/**
+ * The Ed25519 keys the snapshot workflow signs with (SPKI PEM). A snapshot from
+ * the default URL must carry a valid signature by one of them in
+ * `kosha-latest.json.sig`, or it is refused. More than one is listed only
+ * while a key is being rotated.
+ */
+export const SNAPSHOT_PUBLIC_KEYS: readonly string[] = [
+	"-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA/nM7HYtoUrh+Uwz7VEOvcSKpvqlwHnsuv/79ZeG3sR0=\n-----END PUBLIC KEY-----\n",
+];
+
+/** A mirror's own public key (SPKI PEM). When set, every snapshot URL,
+ *  the default included, must be signed by it. */
+export const SNAPSHOT_PUBLIC_KEY_ENV = "KOSHA_SNAPSHOT_PUBKEY";
+
+/** Cap on the detached signature file (base64 of 64 bytes, plus slack). */
+const MAX_SIGNATURE_BYTES = 1024;
 
 /** Hard cap on the payload; the snapshot is ~3 MB today. */
 const MAX_PAYLOAD_BYTES = 16 * 1024 * 1024;
@@ -113,7 +131,51 @@ async function fetchAndValidate(): Promise<SnapshotCatalog> {
 		throw new Error(`Failed to fetch kosha snapshot: ${response.status} ${response.statusText}`);
 	}
 
-	return parseSnapshotCatalog(await readBoundedText(response, MAX_PAYLOAD_BYTES), "kosha snapshot");
+	const text = await readBoundedText(response, MAX_PAYLOAD_BYTES);
+	const keys = snapshotTrustedKeys(url);
+	if (keys) await verifySnapshotSignature(url, text, keys);
+	return parseSnapshotCatalog(text, "kosha snapshot");
+}
+
+/**
+ * The keys a snapshot from `url` must be signed by, or null when it needs
+ * none: a mirror set with `KOSHA_SNAPSHOT_URL` and no `KOSHA_SNAPSHOT_PUBKEY`
+ * is the operator's own choice of source.
+ */
+export function snapshotTrustedKeys(url: string): readonly string[] | null {
+	const pinned = process.env[SNAPSHOT_PUBLIC_KEY_ENV];
+	if (pinned?.trim()) return [pinned.replace(/\\n/g, "\n")];
+	return url === SNAPSHOT_CATALOG_URL ? SNAPSHOT_PUBLIC_KEYS : null;
+}
+
+/** Fetch `<url>.sig` and check it signs exactly `text`. Throws otherwise. */
+async function verifySnapshotSignature(url: string, text: string, keys: readonly string[]): Promise<void> {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+	let response: Response;
+	try {
+		response = await fetch(`${url}.sig`, { signal: controller.signal });
+	} finally {
+		clearTimeout(timer);
+	}
+	if (!response.ok) throw new Error(`kosha snapshot signature missing: ${response.status} ${response.statusText}`);
+	const signature = Buffer.from((await readBoundedText(response, MAX_SIGNATURE_BYTES)).trim(), "base64");
+	if (!snapshotSignatureValid(text, signature, keys)) {
+		throw new Error("kosha snapshot signature does not verify — refusing to load");
+	}
+}
+
+/** True if `signature` is an Ed25519 signature of `text` by one of `keys`. */
+export function snapshotSignatureValid(text: string, signature: Buffer, keys: readonly string[]): boolean {
+	if (signature.length !== 64) return false;
+	const data = Buffer.from(text, "utf8");
+	return keys.some((pem) => {
+		try {
+			return verify(null, data, createPublicKey(pem), signature);
+		} catch {
+			return false; // a malformed key never verifies
+		}
+	});
 }
 
 /**

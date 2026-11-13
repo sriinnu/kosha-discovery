@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CatalogEnvelope } from "../src/catalog-source.js";
 import { getSnapshotSeed, resetSnapshotCatalogCache } from "../src/discovery/snapshot-catalog.js";
 import { gateSnapshot } from "../src/snapshot-gate.js";
+import { forgetTestKey, snapshotResponse, trustTestKey } from "./helpers/signed-snapshot.js";
 
 const DAY = 24 * 60 * 60 * 1000;
 const WEEK = 7 * DAY;
@@ -147,6 +148,7 @@ describe("gateSnapshot", () => {
 describe("reading a gated snapshot", () => {
 	afterEach(() => {
 		vi.unstubAllGlobals();
+		forgetTestKey();
 		resetSnapshotCatalogCache();
 	});
 
@@ -157,9 +159,11 @@ describe("reading a gated snapshot", () => {
 			lastSeenAt: 0,
 			missingRunCount: 2,
 		});
+		trustTestKey();
+		const text = JSON.stringify(envelope(0, [gated]));
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async () => new Response(JSON.stringify(envelope(0, [gated])), { status: 200 })),
+			vi.fn(async (url: string) => snapshotResponse(url, text)),
 		);
 		const [seeded] = await getSnapshotSeed("openai");
 		expect(seeded.pricing?.inputPerMillion).toBe(10);
