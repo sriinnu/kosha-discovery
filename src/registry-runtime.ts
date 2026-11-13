@@ -887,7 +887,7 @@ export function applyManifestHolds(state: RegistryState, manifest: DiscoverySnap
 
 /** Each rate at the highest of `base`, `other` and the sources' headline
  *  rates. Fields `base` doesn't price stay unpriced. */
-function highestRates(base: ModelPricing, other: ModelPricing | null, evidence: PriceEvidence[]): ModelPricing {
+export function highestRates(base: ModelPricing, other: ModelPricing | null, evidence: PriceEvidence[]): ModelPricing {
 	const out: Record<string, unknown> = { ...base };
 	for (const field of QUARANTINE_FIELDS) {
 		const current = out[field];

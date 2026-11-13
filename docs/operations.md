@@ -158,6 +158,16 @@ The acceptance covers exactly the rates the hold is waiting on. If the catalog p
 
 The manifest is also the baseline every price is checked against. So a manifest that can't be read falls back to its newest `.bak.<YYYY-MM-DD>` copy rather than accepting every fresh price unchecked. Deleting `registry.json` doesn't clear holds while backups exist.
 
+#### The weekly snapshot
+
+The published snapshot (`snapshot-latest`) goes through the same quarantine, judged against the snapshot published before it, because it seeds `pinned` users, the catalog-outage fallback and first runs. A suspect cut is published at the previous price, tagged `pricing_quarantined`, and listed under "Prices held" in that week's release notes. A suspect rise is published at the higher price right away. The snapshot runs weekly, so every hold window has passed by the next run: a real cut reaches snapshot users a week late. A collapse to `$0` or under 1% waits until a maintainer releases it from the workflow's manual run:
+
+```bash
+gh workflow run update-kosha-snapshot.yml -f accept=openrouter/deepseek/deepseek-v4.1-flash-1017
+```
+
+The hold state rides on each published card (`pricingHold`, `priceAnchor`, `lastSeenAt`) so the next week can continue it. kosha drops those fields when it reads the snapshot; a local install keeps its own clock.
+
 ### Boot degraded mode
 
 On startup kosha runs `discover()`, which loads from the on-disk cache under `~/.kosha/` first. If every provider API is down at boot, kosha still comes up serving the last-good catalog from that cache — live discovery never crashes the server, because each provider's outcome is settled independently and a failure simply omits that provider. The worst case is a boot with no prior cache and all providers unreachable: the server binds with an empty catalog rather than refusing connections.

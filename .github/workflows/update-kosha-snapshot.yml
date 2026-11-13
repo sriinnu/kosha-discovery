@@ -12,6 +12,10 @@ on:
         required: false
         default: "data/kosha-latest.json"
         type: string
+      accept:
+        description: "Comma-separated provider/model refs whose held price you checked and want released (e.g. openai/gpt-6.1-sol)."
+        required: false
+        type: string
   schedule:
     - cron: "0 6 * * 1"
 
@@ -108,6 +112,39 @@ jobs:
           else
             pnpm run autofetch:once -- --output "$OUTPUT_PATH" |& tee -a "$OBS_LOG"
           fi
+
+      # The snapshot seeds `pinned` users, the catalog-outage fallback and first
+      # runs, so it gets the same price quarantine as a local manifest, judged
+      # against the last published snapshot: a suspect move is published at the
+      # previous price and listed in the release notes. Runs before validation
+      # and the checksum, so both cover what is actually published.
+      - name: Gate prices against the published snapshot
+        id: gate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SNAPSHOT_ACCEPT: ${{ github.event.inputs.accept }}
+        run: |
+          set -euo pipefail
+          # The previous snapshot lives on the `snapshot-latest` release rather
+          # than in git, so the weekly refresh adds nothing to the repo history.
+          COMMITTED_PATH="$RUNNER_TEMP/previous-snapshot.json"
+          if gh release download snapshot-latest --pattern "kosha-latest.json" \
+               --output "$COMMITTED_PATH" --clobber 2>/dev/null; then
+            echo "comparing against the published snapshot-latest asset" >> "$OBS_LOG"
+          else
+            rm -f "$COMMITTED_PATH"
+            echo "no published snapshot to compare against yet" >> "$OBS_LOG"
+          fi
+          echo "COMMITTED_PATH=$COMMITTED_PATH" >> "$GITHUB_ENV"
+          HELD_PATH="$RUNNER_TEMP/held-prices.md"
+          echo "HELD_PATH=$HELD_PATH" >> "$GITHUB_ENV"
+          # The health guard judges what discovery returned, before the gate
+          # carries forward rows a thin run dropped.
+          RAW_PATH="$RUNNER_TEMP/raw-snapshot.json"
+          cp "$OUTPUT_PATH" "$RAW_PATH"
+          echo "RAW_PATH=$RAW_PATH" >> "$GITHUB_ENV"
+          node scripts/snapshot-gate.mjs "$OUTPUT_PATH" "$HELD_PATH" "$COMMITTED_PATH" |& tee -a "$OBS_LOG"
 
       - name: Validate snapshot schema
         id: validate
@@ -359,17 +396,8 @@ jobs:
           # data most consumers get anyway. So the guard now asks the question
           # that actually matters: is this snapshot healthy, and is it not a
           # material regression on the one already committed?
-          # Compare against the last published snapshot. It lives on the
-          # `snapshot-latest` release rather than in git, so the weekly refresh
-          # does not add megabytes to the repo's history every Monday.
-          COMMITTED_PATH="$RUNNER_TEMP/previous-snapshot.json"
-          if gh release download snapshot-latest --pattern "kosha-latest.json" \
-               --output "$COMMITTED_PATH" --clobber 2>/dev/null; then
-            echo "comparing against the published snapshot-latest asset" >> "$OBS_LOG"
-          else
-            rm -f "$COMMITTED_PATH"
-            echo "no published snapshot to compare against yet" >> "$OBS_LOG"
-          fi
+          # Compare against the last published snapshot, downloaded by the gate
+          # step above.
           export COMMITTED_PATH
           DECISION="$(node --input-type=module <<'NODE'
           import { readFile } from "node:fs/promises";
@@ -378,7 +406,7 @@ jobs:
           const MIN_PROVIDERS = 10;
           const MAX_SHRINK = 0.2; // refuse a snapshot >20% thinner than the current one
 
-          const fresh = JSON.parse(await readFile(process.env.OUTPUT_PATH, "utf8"));
+          const fresh = JSON.parse(await readFile(process.env.RAW_PATH || process.env.OUTPUT_PATH, "utf8"));
           const authed = fresh.providers.filter((p) => p.authenticated === true).length;
           const withModels = fresh.providers.filter((p) => (p.models?.length ?? 0) > 0).length;
           const reasons = [];
@@ -468,6 +496,7 @@ jobs:
           {
             echo "Model/provider snapshot generated $(date -u +%Y-%m-%dT%H:%M:%SZ) by the scheduled discovery run. Not a code release."
             echo
+            cat "$HELD_PATH" 2>/dev/null || true
             if [[ -f "$PREVIOUS" ]]; then
               node scripts/snapshot-diff.mjs "$PREVIOUS" "$OUTPUT_PATH" || echo "_Diff against the previous snapshot was unavailable._"
             fi
@@ -521,6 +550,7 @@ jobs:
         shell: bash
         env:
           GENERATE_OUTCOME: ${{ steps.generate.outcome }}
+          GATE_OUTCOME: ${{ steps.gate.outcome }}
           VALIDATE_OUTCOME: ${{ steps.validate.outcome }}
           CHECKSUM_OUTCOME: ${{ steps.checksum.outcome }}
           SCAN_OUTCOME: ${{ steps.scan.outcome }}
@@ -533,6 +563,7 @@ jobs:
 
           const outcomes = [
             ["generate", process.env.GENERATE_OUTCOME ?? "unknown"],
+            ["gate", process.env.GATE_OUTCOME ?? "unknown"],
             ["validate", process.env.VALIDATE_OUTCOME ?? "unknown"],
             ["checksum", process.env.CHECKSUM_OUTCOME ?? "unknown"],
             ["scan", process.env.SCAN_OUTCOME ?? "unknown"],

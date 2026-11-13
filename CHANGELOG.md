@@ -39,6 +39,7 @@ Fixes from an independent review of the whole codebase.
 - A price can no longer walk down in steps under the quarantine threshold. Each move was compared only with the last accepted price, so three 74% cuts took $10 to $0.18 unchecked. Now the input and output rates are also compared with an anchor, the highest price accepted in the last 30 days. Under half of it, or over 4×, is held. One real 50% cut still goes straight through.
 - A move back up toward the anchor is taken at once, even past the threshold. A wrong low price that got in used to be protected by its own hold.
 - The first run seeds the anchor, so a fresh install's second refresh is already checked.
+- The weekly snapshot gets the same price quarantine, judged against the last published one. It seeds `pinned` users, the outage fallback and first runs, and was published raw, so one bad catalog week reached them unchecked. A suspect cut is published at the previous price and listed in the release notes; a rise goes out at once. A held collapse is released with the workflow's `accept` input.
 
 ### Added
 

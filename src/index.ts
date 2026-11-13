@@ -80,6 +80,8 @@ export {
 	parseRouteStrategy,
 	ROUTE_STRATEGIES,
 } from "./registry-routing.js";
+export type { HeldSnapshotPrice, SnapshotGateResult } from "./snapshot-gate.js";
+export { gateSnapshot } from "./snapshot-gate.js";
 export type {
 	NormalizedTokenUsage,
 	TallyCall,
