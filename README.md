@@ -11,15 +11,17 @@
 [![Sponsor](https://img.shields.io/badge/sponsor-%E2%9D%A4-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/sriinnu)
 [![Buy Me a Coffee](https://img.shields.io/badge/buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/sriinnu)
 
-kosha discovers models across 46 providers and local runtimes, finds your API keys
+kosha discovers models across 46 providers and local runtimes, plus 22 subscription
+plans (token and coding plans) when you hold a key for one. It finds your API keys
 wherever they already live (env vars, Claude CLI, Codex, gcloud ADC, AWS SSO), fills
 in pricing and context limits, and answers questions like *the cheapest model with
 tool use and 128k context that I actually hold a key for*. It ships as a TypeScript
 library, a CLI, an HTTP API, an OpenAI-compatible proxy with a spend ledger, and an
 MCP server.
 
-It works with no API keys at all — discovery falls back to the public models.dev and
-LiteLLM catalogs, so `kosha list` is useful on a fresh machine.
+It works with no API keys at all: discovery falls back to the public models.dev and
+LiteLLM catalogs, so `kosha list` is useful on a fresh machine. Pass `keyless: true`
+to `createKosha()` to skip credential lookup entirely.
 
 ## Install
 
@@ -43,26 +45,30 @@ const kosha = await createKosha();
 const models   = kosha.models();                          // ModelCard[] across every provider
 const cheapest = kosha.cheapestModels({ role: "image" }); // ranked by price, with missingCredentials
 const sonnet   = kosha.model("sonnet");                   // alias → canonical ID; undefined if unknown
-console.log(sonnet?.pricing); // { inputPerMillion: 2, outputPerMillion: 10, cacheReadPerMillion: 0.2, ... }
+console.log(sonnet?.pricing); // { inputPerMillion, outputPerMillion, cacheReadPerMillion, ... } in USD per 1M tokens
 ```
 
 ### CLI
 
 ```bash
-kosha discover                       # query every provider; writes ~/.kosha/cache and the manifest
+kosha discover                       # load the 24 h cache, or query every provider when it's cold
 kosha list --provider anthropic      # read from the local cache
 kosha model sonnet                   # one model, alias-aware
 kosha routes claude-opus-5-5         # every serving route for a model (direct, OpenRouter, Bedrock, …)
 kosha cheapest --role embeddings     # rank by price for a role
 kosha doctor --ci --model opus,gpt6  # fail CI if a model you pin is deprecated, retiring, or gone
 kosha spend --since 2026-09-01       # roll up the proxy's spend ledger
-kosha refresh                        # bypass the cache and re-discover
+kosha ranked --strategy fastest      # routes in the order kosha:<strategy> tries them
+kosha providers                      # every provider, with credential status
+kosha refresh                        # bypass the cache and re-discover (alias: update)
+kosha registry accept openai/gpt-6.1-sol  # release a held price once you've checked it
+kosha registry export --output catalog.json  # the catalog as a file, for local mode
 kosha serve --port 3000              # HTTP API + proxy; binds 127.0.0.1 (see Proxy below)
 ```
 
-Every command takes `--json`. `kosha --help` lists the rest.
+Every query command takes `--json`. `kosha --help` lists the rest.
 
-After each discovery, a stable v1 manifest lands at `~/.kosha/registry.json`:
+After each live discovery (not a cache hit), a stable v1 manifest lands at `~/.kosha/registry.json`:
 
 ```bash
 jq '.models[] | select(.pricing.inputPerMillion < 0.1) | .modelId' ~/.kosha/registry.json
@@ -78,7 +84,7 @@ or listed by no provider any more:
   with:
     models: |
       claude-opus-5-5
-      gpt-6-sol
+      gpt-6.1-sol
       sonnet
 ```
 
@@ -92,6 +98,33 @@ model. A reseller retiring one of its routes is reported but does not fail the
 build while the model's own provider still serves it; `deprecation-window`
 (default 30 days) sets how far ahead a sunset counts.
 
+### Why trust the prices
+
+Prices come from the provider's own API where it publishes them, then models.dev
+and LiteLLM, then kosha's weekly snapshot. `pricingSource` on each card says which.
+Catalogs are sometimes wrong, so kosha doesn't take a new price on faith:
+
+- A rate that moves 75% or more in one step is held at the old price and the row
+  is tagged `pricing_quarantined`. The new price is accepted after 1 to 7 days,
+  depending on whether its sources agree.
+- A price under half, or over 4×, the highest price of the last 30 days is held
+  too, so it can't walk down in small steps.
+- A billed rate that falls to `$0`, or under 1% of the last one, is never released
+  by waiting. A catalog `$0` is never ranked cheapest and is refused under a budget.
+- While a price is held or its sources disagree, kosha routes and budgets on the
+  highest rate anyone reports, so a suspect rise applies at once and a cut waits.
+- Negative, NaN and infinite rates are dropped.
+
+Checked a held price against the provider's pricing page? Release it:
+
+```bash
+kosha registry accept <provider>/<model>
+kosha update
+```
+
+The weekly snapshot gets the same gate. Details:
+[docs/operations.md](docs/operations.md#clear-a-quarantined-price).
+
 ### Public snapshot
 
 A weekly discovery run publishes a full snapshot — every provider, model, price
@@ -102,14 +135,10 @@ curl -sL https://github.com/sriinnu/kosha-discovery/releases/download/snapshot-l
   | jq '.modelCount, .providerCount'
 ```
 
-It is a release asset rather than a file in the repository: at ~2.8 MB growing
-with every provider added, committing it weekly would put roughly 150 MB of
-already-stale data a year into a repo people are meant to clone. Dated
-`snapshot-YYYY-MM-DD` pre-releases keep a short trail for diffing, pruned to the
-two most recent, and an older one is only removed once a newer one exists.
-
-Each snapshot's release notes list what changed since the previous one — new
-models, repricings, new deprecations, removals. The same diff runs locally with
+Dated `snapshot-YYYY-MM-DD` pre-releases keep a short trail for diffing, pruned to
+the two most recent. Each snapshot's release notes list what changed since the
+previous one (new models, repricings, deprecations, removals) and any price the
+gate is holding. The same diff runs locally with
 `pnpm snapshot:diff old.json new.json`.
 
 ### HTTP API
@@ -140,7 +169,7 @@ import OpenAI from "openai";
 
 const client = new OpenAI({
   baseURL: "http://localhost:3000/proxy/v1",
-  apiKey:  "not-used",   // kosha resolves credentials from env
+  apiKey:  "not-used",   // ignored on loopback; set it to KOSHA_PROXY_TOKEN when one is configured
 });
 
 // Use any canonical model ID or alias
@@ -172,18 +201,26 @@ const routed = await client.chat.completions.create({
 
 `kosha:fastest`, `kosha:reliable`, and `kosha:balanced` take the same filters and rank on observed latency and circuit-breaker state instead of price.
 
-Every response carries `x-kosha-model`, `x-kosha-provider`, `x-kosha-requested`, `x-kosha-attempt-chain`, and `x-kosha-estimated-cost-usd`; non-streaming responses add `x-kosha-actual-cost-usd` when the upstream returned a usage block.
+Every response carries `x-kosha-model`, `x-kosha-provider`, `x-kosha-requested` and `x-kosha-attempt-chain`, plus `x-kosha-estimated-cost-usd` except on plan-billed routes. Non-streaming responses add `x-kosha-actual-cost-usd` when the upstream returned a usage block. The full list, including `x-kosha-usage-source` and `x-kosha-wire-notes`, is in [docs/operations.md](docs/operations.md).
 
 What the proxy can forward:
 
 | Upstream wire format | Providers | Support |
 |---|---|---|
 | OpenAI-compatible | OpenAI, Ollama, OpenRouter, Vercel, Groq, Together, Fireworks, DeepInfra, … | passthrough, streaming included |
-| Anthropic Messages | Anthropic | translated: streaming, tools, `image_url`, `response_format`, `reasoning_effort`; audio input and non-function tools fail over to an OpenAI-compatible route for the same model |
+| Anthropic Messages | Anthropic, MiniMax Token Plan | translated: streaming, tools, `image_url`, `response_format`, `reasoning_effort`; audio input and non-function tools fail over to an OpenAI-compatible route for the same model |
 | Cloud SDKs | Google, Bedrock, Vertex | discovery only, not proxied yet |
 | Non-chat / other wire | TypeSafe, Thinking Machines | discovery only — TypeSafe's System One endpoint is not a chat API, and Tinker's Anthropic-wire path differs from Anthropic's own |
 
-Defaults that matter before you expose it: the server binds `127.0.0.1`. Pass `--host 0.0.0.0` (or `KOSHA_HOST`) to listen on a network interface, and set `KOSHA_PROXY_TOKEN` so `/proxy/*` and `POST /api/refresh` require `Authorization: Bearer <token>` or `x-kosha-token`. `KOSHA_MONTHLY_BUDGET_USD` caps spend per calendar month. Reference: [docs/api.md](docs/api.md#openai-compatible-proxy), [docs/operations.md](docs/operations.md).
+Defaults that matter before you expose it:
+
+- The server binds `127.0.0.1`. Pass `--host 0.0.0.0` (or `KOSHA_HOST`) to listen on a network interface.
+- Set `KOSHA_PROXY_TOKEN` so `/proxy/*` and `POST /api/refresh` require `Authorization: Bearer <token>` or `x-kosha-token`.
+- `/metrics` is open unless `KOSHA_METRICS_TOKEN` is set. `KOSHA_ALLOWED_HOSTS` restricts which `Host` names are answered.
+- `KOSHA_MONTHLY_BUDGET_USD` caps spend per calendar month and `KOSHA_TENANT_BUDGET_USD` per tenant. `0` lets nothing paid through; a value that isn't a plain amount stops `kosha serve`.
+- The proxy never forwards a Claude subscription OAuth token, and a key is only sent to the host it belongs to.
+
+Reference: [docs/api.md](docs/api.md#openai-compatible-proxy), [docs/operations.md](docs/operations.md), [docs/security.md](docs/security.md).
 
 ### MCP server
 
@@ -197,17 +234,14 @@ It is published to the [MCP registry](https://github.com/modelcontextprotocol/re
 as `io.github.sriinnu/kosha-discovery`, so clients that read the registry can
 install it without a manual command. The manifest is [`server.json`](server.json).
 
-Every provider key is optional. With no credentials at all the server still
-answers from the public models.dev and LiteLLM catalogs plus a curated offline
-list, so it is useful on a fresh machine.
-
 Tools and protocol details: [docs/mcp.md](docs/mcp.md).
 
 ## Supported providers
 
-46 providers. Each has a descriptor in `src/provider-catalog.ts`; most OpenAI-compatible
-ones are driven from `GENERIC_OPENAI_PROVIDERS` in `src/discovery/generic-openai.ts`
-rather than a hand-written class.
+46 pay-as-you-go providers and local runtimes, plus 22 subscription plans generated
+from `src/subscription-plans.ts`. Each has a descriptor in `src/provider-catalog.ts`;
+most OpenAI-compatible ones are driven from `GENERIC_OPENAI_PROVIDERS` in
+`src/discovery/generic-openai.ts` rather than a hand-written class.
 
 | Provider | Discovery | Credential sources |
 |----------|-----------|--------------------|
@@ -227,11 +261,20 @@ rather than a hand-written class.
 | Alibaba Model Studio (Qwen), Volcengine Ark (Doubao), Inception (Mercury), AI21 (Jamba), Upstage (Solar), StepFun, Meta (Muse Spark) | OpenAI-compatible API | `DASHSCOPE_API_KEY`, `ARK_API_KEY`, `INCEPTION_API_KEY`, `AI21_API_KEY`, `UPSTAGE_API_KEY`, `STEPFUN_API_KEY`, `META_MODEL_API_KEY` |
 | Baseten, Nebius Token Factory, Novita AI, SiliconFlow, Hugging Face, Ollama Cloud | OpenAI-compatible API | `<PROVIDER>_API_KEY`, `HF_TOKEN` |
 
+### Subscription plans
+
+A token or coding plan (MiniMax, Moonshot, GLM, Alibaba and others) is listed as
+its own provider, but only when a key for it resolves. A plan route has no
+per-token price: `kosha cheapest` shows it in an "Included in your plans" group
+(`includedInPlans` in the library), and the proxy prefers a plan route you hold.
+A plan can borrow the provider's pay-as-you-go key; `KOSHA_PLAN_KEY_PROBE=off`
+keeps each plan to its own env vars.
+
 ### Regional pairs
 
 Several providers run separate hosts for international and mainland-China
-traffic, with separate keys and **separate price sheets** — Qwen 2.5 72B is
-$1.40/M input internationally against $0.574/M in China. Merging them would make
+traffic, with separate keys and **separate price sheets**: the same model can
+cost several times more on one host than the other. Merging them would make
 a model's price depend on which host answered last, so each region is its own
 provider:
 
@@ -247,7 +290,9 @@ provider:
 `kosha routes <model>` lists every region a model is served from, so you can
 compare prices across them directly.
 
-Without a key, providers fall back to the public models.dev + LiteLLM catalog, then to kosha's own weekly [snapshot](#public-snapshot) if those are unreachable, then to a curated static list, so `kosha list` works on a fresh machine. The same fallback applies when a key is present but rejected: the provider stays listed from the public catalog, shows as unauthenticated, and the error is kept for `kosha doctor`. Exact env var names: [docs/credentials.md](docs/credentials.md).
+Without a key, providers fall back to the public models.dev + LiteLLM catalog, then to kosha's own weekly [snapshot](#public-snapshot) if those are unreachable, then to a curated static list. The same fallback applies when a key is present but rejected: the provider stays listed from the public catalog, shows as unauthenticated, and the error is kept for `kosha doctor`. Exact env var names: [docs/credentials.md](docs/credentials.md).
+
+Config lives in `~/.kosharc.json`, with a per-project `kosha.config.json`. The project file can only make kosha stricter, never point keys somewhere else. See [docs/configuration.md](docs/configuration.md).
 
 To take models.dev and LiteLLM out of the loop, set `KOSHA_CATALOG_SOURCE=pinned` (kosha's snapshot only) or `local` (a file from `kosha registry export`, no network). See [Catalog Source](docs/configuration.md#catalog-source).
 
@@ -262,7 +307,7 @@ to one would be a category error.
 
 ```bash
 kosha cheapest --role judgment    # rank judgment models by price
-kosha model jev                   # mode: judgment, $0.042/M in, $0 out
+kosha model jev                   # mode: judgment
 ```
 
 ## How it works
@@ -294,48 +339,7 @@ hand. `aliases:check` compares it against a snapshot, and the weekly snapshot
 run annotates itself with the result, so a bare alias like `opus` falling behind
 shows up there rather than in a bug report.
 
-### Project layout
-
-```
-src/
-  cli.ts                 # CLI entry point and arg parsing
-  cli-commands.ts        # command implementations (+ cli-cmd-*.ts for the larger ones)
-  registry.ts            # ModelRegistry public API
-  registry-runtime.ts    # discovery orchestration, enrichment, cache, manifest export
-  registry-query.ts      # model / role / capability queries
-  registry-selection.ts  # cheapest candidates, binding hints
-  registry-routing.ts    # cheapest / fastest / reliable / balanced ranking
-  discovery/             # one discoverer per provider + static and public-seed catalogs
-  enrichment/            # models.dev + LiteLLM pricing enrichment
-  credentials/           # credential resolution (env, CLI files, ADC, OAuth)
-  provider-catalog.ts    # provider descriptors: base URLs, transport, env var names
-  aliases.ts             # built-in short names → canonical model IDs
-  claude-generation.ts   # which Claude generation accepts which API parameters
-  model-features.ts      # tool dialect / structured-output inference per model
-  proxy.ts               # OpenAI-compatible proxy: routing, failover, ledger
-  wire-anthropic.ts      # OpenAI ↔ Anthropic request / response / SSE translation
-  cost.ts                # spend ledger, budget gates, usage reconciliation
-  tally.ts               # zero-dependency token usage + USD tally (also exported as ./tally)
-  server.ts              # Hono HTTP API + operator token gate
-  mcp-server.ts          # MCP stdio server
-  types.ts               # shared types
-```
-
-### Adding a provider
-
-For an OpenAI-compatible provider — most of them — it is two table entries:
-
-1. Add a descriptor to `PROVIDER_CATALOG` in `src/provider-catalog.ts` (id, base URL, transport, credential env vars).
-2. Add a spec to `GENERIC_OPENAI_PROVIDERS` in `src/discovery/generic-openai.ts`. It registers its own discoverer, resolves credentials from the descriptor's `credentialEnvVars`, and falls back to the public catalog when there is no key.
-3. Map the provider to its models.dev / LiteLLM slug in `src/discovery/modelsdev-seed.ts` and `litellm-seed.ts` so keyless discovery works. **Check the slug** — GLM is published as `zhipuai`, and a missing mapping means no keyless models at all.
-4. Add a case to `test/discovery/generic-openai.test.ts` and document the env vars in `docs/credentials.md`.
-
-Write a discoverer class only when classification genuinely needs code — per-route pricing (OpenRouter), a non-OpenAI response envelope (TypeSafe), or origin remapping (Vercel):
-
-1. Create `src/discovery/<provider>.ts` extending `BaseDiscoverer` or `OpenAICompatibleDiscoverer`; `fetchJSON` and `makeCard` are provided.
-2. Export it from `src/discovery/index.ts` and add a factory entry to `DISCOVERER_REGISTRY`.
-3. Add a resolver branch in `src/credentials/resolver.ts` only for a bespoke search order (CLI files, OAuth, ADC, SSO). A plain API key in env vars needs no branch — the descriptor covers it.
-4. Add `test/discovery/<provider>.test.ts` (mock `fetch`; see `typesafe.test.ts`).
+Contributing, the project layout and adding a provider: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Docs
 
@@ -349,19 +353,19 @@ Write a discoverer class only when classification genuinely needs code — per-r
 | [Architecture](docs/architecture.md) | Discovery flow, module map, adding providers |
 | [Resilience](docs/resilience.md) | Circuit breakers, stale cache, health |
 | [Operations](docs/operations.md) | Deployment sizing, metrics, spend ledger, recovery recipes |
-| [Security](docs/security.md) | Threat catalogue, runtime scanning, pre-commit hook |
+| [Security](docs/security.md) | Threat catalogue, runtime scanning, pre-commit hook; report issues per [SECURITY.md](SECURITY.md) |
 | [Discovery Plane v1](docs/discovery-plane-v1.md) | Stable daemon contract (deltas, SSE watch, binding hints) |
 
 The same pages are mirrored to the [wiki](https://github.com/sriinnu/kosha-discovery/wiki), alongside guides that only live there (troubleshooting, the release runbook). `docs/` is the source: the mirror is regenerated on every push to `main`, so edit here, not there.
 
 ## Release
 
-1. Bump `version` in `package.json` and `server.json` (both places), and date the `[Unreleased]` section in `CHANGELOG.md`; merge that as a PR.
+1. Bump the version in `package.json`, in `server.json` (twice: top level and `packages[0]`), and the `default` in `action.yml`. Date the `[Unreleased]` section in `CHANGELOG.md`, and merge that as a PR.
 2. Tag and push:
 
 ```bash
 git tag -s vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
-gh workflow run release-npm.yml --ref vX.Y.Z -f tag=vX.Y.Z
+gh workflow run release-npm.yml --ref vX.Y.Z -f tag=vX.Y.Z -f publish_mcp=false
 ```
 
 The workflow checks that the tag matches `package.json`, runs lint / build / test, stages the package on npm with provenance, and creates the GitHub Release. Staging authenticates through npm trusted publishing (OIDC); there is no npm token. The version goes live only after a maintainer approves it with 2FA:
@@ -369,8 +373,10 @@ The workflow checks that the tag matches `package.json`, runs lint / build / tes
 ```bash
 npm stage list @sriinnu/kosha-discovery
 npm stage approve <id>
-gh workflow run release-npm.yml --ref vX.Y.Z -f tag=vX.Y.Z -f publish_npm=false -f create_github_release=false   # then publish to the MCP registry
+gh workflow run release-npm.yml --ref vX.Y.Z -f tag=vX.Y.Z -f publish_npm=false -f create_github_release=false   # publish to the MCP registry once npm is live
 ```
+
+Every step, with the parts that are easy to forget: the [release runbook](https://github.com/sriinnu/kosha-discovery/wiki/Release-Runbook).
 
 ## Support
 

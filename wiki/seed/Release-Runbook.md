@@ -6,6 +6,7 @@ The short version is in the [README](https://github.com/sriinnu/kosha-discovery#
 
 - Bump `version` in `package.json`.
 - Bump `version` in `server.json` — it appears **twice**, once at the top level and once under `packages[0]`.
+- Bump the `default` version in `action.yml`. The action runs the kosha version it was released with, so a stale default ships the old CLI.
 - In `CHANGELOG.md`, add a dated `## [X.Y.Z] — YYYY-MM-DD` heading under `[Unreleased]` so the pending entries fall beneath it.
 - `pnpm run check` (lint, build, test) and `pnpm run typecheck`.
 

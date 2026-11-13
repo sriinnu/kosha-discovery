@@ -53,5 +53,6 @@ if (held.length > 0) {
 	if (held.length > 40) lines.push("", `_…and ${held.length - 40} more._`);
 	lines.push("");
 }
-await writeFile(heldPath, lines.join("\n"), "utf8");
+// Trailing blank line: the diff that follows in the notes must not join the table.
+await writeFile(heldPath, `${lines.join("\n")}\n`, "utf8");
 console.log(`[snapshot-gate] ${held.length} price(s) held; accepted ${accept.length} ref(s)`);
