@@ -36,6 +36,9 @@ Fixes from an independent review of the whole codebase.
 - A held price applies even when the manifest write fails (lock timeout, full disk), and an unreadable manifest falls back to its newest `.bak` instead of dropping every price baseline.
 - A model missing from discovery keeps its price baseline for 30 days, not 14 runs (about 15 hours on an hourly loop).
 - While a price is held or its sources disagree, kosha routes and budgets on the highest rate any source reports. The `pricing_sources_disagree` flag used to change nothing.
+- A price can no longer walk down in steps under the quarantine threshold. Each move was compared only with the last accepted price, so three 74% cuts took $10 to $0.18 unchecked. Now the input and output rates are also compared with an anchor, the highest price accepted in the last 30 days. Under half of it, or over 4×, is held. One real 50% cut still goes straight through.
+- A move back up toward the anchor is taken at once, even past the threshold. A wrong low price that got in used to be protected by its own hold.
+- The first run seeds the anchor, so a fresh install's second refresh is already checked.
 
 ### Added
 
