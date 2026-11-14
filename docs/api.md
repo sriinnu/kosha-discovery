@@ -56,6 +56,9 @@ Useful for assistant routers asking: _"For embeddings, what is cheapest right no
 | `outputWeight`   | number | Output weight for `blended` scoring |
 | `includeUnpriced`| bool   | Include unpriced models after ranked matches |
 | `minContext`     | number | Only models with at least this many tokens of context, applied before `limit` |
+| `callable`       | bool   | Only routes you can call now (a key the provider accepted, or no key needed and it answered), applied before `limit` |
+
+Every match carries `callable`, `credentialSource`, `keyVerified` and, when it can't be called, `uncallableReason`. Without `callable=true`, `cheapest` is the market's cheapest route, which may need a key you don't have.
 
 ```bash
 curl "http://localhost:3000/api/models/cheapest?role=embeddings&limit=3"

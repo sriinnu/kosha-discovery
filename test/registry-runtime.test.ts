@@ -529,8 +529,41 @@ describe("registryDiscover — credentialed failure degrades to the public catal
 			force: true,
 		});
 
-		expect(providers.find((p) => p.id === "moonshot")?.degradedReason).toBeUndefined();
+		const moonshot = providers.find((p) => p.id === "moonshot");
+		expect(moonshot?.degradedReason).toBeUndefined();
 		expect(state.lastDiscoveryErrors).toHaveLength(0);
+		// Quiet, but marked: a provider that didn't answer isn't callable (a
+		// local runtime that is down would otherwise rank first on $0).
+		expect(moonshot?.unreachableReason).toBe("network down");
+	});
+
+	it("drops a cached credential once the key is gone, so the stale listing can't read as callable", async () => {
+		const state = createRegistryState({ cacheDir: join(workDir, "cache") });
+		await state.cache.set(catalogCacheKey("provider_moonshot"), {
+			id: "moonshot",
+			name: "Moonshot",
+			baseUrl: "https://api.moonshot.ai/v1",
+			authenticated: true,
+			credentialSource: "env",
+			models: [makeModelCard({ id: "kimi-k3", source: "api" })],
+			lastRefreshed: 1,
+		});
+		const discoverer: ProviderDiscoverer = {
+			providerId: "moonshot",
+			providerName: "Moonshot",
+			baseUrl: "https://api.moonshot.ai/v1",
+			async discover() {
+				throw new Error("Moonshot API error: 500 Internal Server Error");
+			},
+		};
+
+		const providers = await registryDiscover(state, dependenciesFor(state, discoverer, { source: "none" }), {
+			force: true,
+		});
+
+		const moonshot = providers.find((p) => p.id === "moonshot");
+		expect(moonshot).toMatchObject({ authenticated: false, credentialSource: "none" });
+		expect(moonshot?.unreachableReason).toBe("Moonshot API error: 500 Internal Server Error");
 	});
 
 	it("still fails when the keyless path has nothing either", async () => {

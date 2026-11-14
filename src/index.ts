@@ -77,6 +77,7 @@ export {
 } from "./provider-catalog.js";
 export { ModelRegistry } from "./registry.js";
 export type { RankedRoute, RouteHealth, RouteStrategy } from "./registry-routing.js";
+export { providerAccess, routeAccessHint } from "./route-access.js";
 export {
 	parseRouteStrategy,
 	ROUTE_STRATEGIES,
@@ -96,6 +97,8 @@ export { inferTokenizerFamily } from "./tokenizer-family.js";
 export type {
 	CapabilitySummary,
 	CheapestModelMatch,
+	RouteAccess,
+	UncallableReason,
 	CheapestModelOptions,
 	CheapestModelResult,
 	ComputeTarget,

@@ -519,10 +519,45 @@ export interface CheapestModelOptions extends RoleQueryOptions {
 	minContextWindow?: number;
 	/** Extra candidate filter, also applied before `limit` (e.g. "has a key"). */
 	where?: (model: ModelCard) => boolean;
+	/**
+	 * Only routes you can call now (see {@link RouteAccess}). Applied before
+	 * `limit`. Default false: every route is listed, each marked `callable`.
+	 */
+	callableOnly?: boolean;
+}
+
+/** Why a route can't be called now. */
+export type UncallableReason =
+	/** The provider needs a key and none was found. */
+	| "no-key"
+	/** A key was found, and the provider refused it on the last discovery. */
+	| "key-refused"
+	/** Only a Claude subscription OAuth token was found: it is for Claude's own apps, not API calls. */
+	| "subscription-oauth"
+	/** The provider didn't answer on the last discovery (a local runtime that isn't up, a timeout). */
+	| "unreachable";
+
+/**
+ * Whether a route can be called with what this machine holds. kosha lists
+ * every route whether or not you hold a key; this says which you can use.
+ */
+export interface RouteAccess {
+	/** True when kosha found what this provider needs, and the provider didn't refuse it. */
+	callable: boolean;
+	/** Where the provider's credential came from ("none" when there is none). */
+	credentialSource: "env" | "cli" | "config" | "oauth" | "none";
+	/**
+	 * True when the key was checked: the provider's live list answered with it.
+	 * A key can be callable but unverified (a seed-only provider, or a list
+	 * served from the catalog). Always false for providers that need no key.
+	 */
+	keyVerified: boolean;
+	/** Set when `callable` is false. */
+	uncallableReason?: UncallableReason;
 }
 
 /** A ranked cheapest-model match with its computed score. */
-export interface CheapestModelMatch {
+export interface CheapestModelMatch extends Partial<RouteAccess> {
 	/** Ranked model candidate. */
 	model: ModelCard;
 	/** Computed cost score (undefined when model has no usable pricing). */
@@ -630,6 +665,12 @@ export interface ProviderInfo {
 	degradedReason?: string;
 	/** Where the models came from instead: the public catalog or the last good cache. */
 	degradedSource?: "catalog" | "cache";
+	/**
+	 * Set when a provider that needs no key (a local runtime) didn't answer and
+	 * its models came from the last good cache. Holds the error. Its routes
+	 * aren't callable until it answers again.
+	 */
+	unreachableReason?: string;
 }
 
 /**

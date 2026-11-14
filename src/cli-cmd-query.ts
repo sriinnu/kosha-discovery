@@ -25,7 +25,7 @@ import {
 } from "./cli-format.js";
 import type { ModelRegistry } from "./registry.js";
 import { parseRouteStrategy, ROUTE_STRATEGIES } from "./registry-routing.js";
-import type { CheapestModelMatch, ModelCard, ModelMode } from "./types.js";
+import type { CheapestModelMatch, ModelCard, ModelMode, RouteAccess } from "./types.js";
 
 async function ensureDiscovered(registry: ModelRegistry): Promise<void> {
 	const candidate = registry as unknown as {
@@ -211,6 +211,7 @@ export async function cmdCheapest(registry: ModelRegistry, flags: Record<string,
 		outputWeight: parseNumberFlag(flags, "output-weight"),
 		includeUnpriced: flags["include-unpriced"] === true,
 		minContextWindow: parseMinContextFlag(flags),
+		callableOnly: flags.mine === true,
 	});
 
 	if (flags.json) {
@@ -219,7 +220,14 @@ export async function cmdCheapest(registry: ModelRegistry, flags: Record<string,
 	}
 
 	if (result.matches.length === 0) {
-		console.log(c(YELLOW, "No priced models found for the requested filters."));
+		console.log(
+			c(
+				YELLOW,
+				flags.mine === true
+					? "No priced route you can call matches. Drop --mine to see what a key would add."
+					: "No priced models found for the requested filters.",
+			),
+		);
 		printIncludedInPlans(result.includedInPlans);
 		if (result.missingCredentials.length > 0) {
 			console.log(c(DIM, "\nMissing provider credentials:"));
@@ -234,6 +242,7 @@ export async function cmdCheapest(registry: ModelRegistry, flags: Record<string,
 		const columns: Column[] = [
 			{ header: "Provider", width: 12 },
 			{ header: "Model", width: 30 },
+			{ header: "Key", width: 11 },
 			{ header: "Metric", width: 8 },
 			{ header: "Tier", width: 6 },
 			{ header: "Score", width: 8, align: "right" },
@@ -247,6 +256,7 @@ export async function cmdCheapest(registry: ModelRegistry, flags: Record<string,
 		const rows = result.matches.map((match) => [
 			c(CYAN, match.model.provider),
 			match.model.id,
+			keyLabel(match),
 			match.priceMetric,
 			formatPricingTier(match.model.pricing),
 			scoreLabel(match),
@@ -262,6 +272,7 @@ export async function cmdCheapest(registry: ModelRegistry, flags: Record<string,
 		const columns: Column[] = [
 			{ header: "Provider", width: 12 },
 			{ header: "Model", width: 38 },
+			{ header: "Key", width: 11 },
 			{ header: "Mode", width: 10 },
 			{ header: "Metric", width: 8 },
 			{ header: "Score", width: 10, align: "right" },
@@ -271,6 +282,7 @@ export async function cmdCheapest(registry: ModelRegistry, flags: Record<string,
 		const rows = result.matches.map((match) => [
 			c(CYAN, match.model.provider),
 			match.model.id,
+			keyLabel(match),
 			match.model.mode,
 			match.priceMetric,
 			scoreLabel(match),
@@ -281,6 +293,7 @@ export async function cmdCheapest(registry: ModelRegistry, flags: Record<string,
 	}
 
 	console.log(c(DIM, `\n${result.pricedCandidates}/${result.candidates} candidates had usable pricing.`));
+	printCallableFooter(result.matches, flags.mine === true);
 	printIncludedInPlans(result.includedInPlans);
 
 	if (result.missingCredentials.length > 0) {
@@ -412,6 +425,36 @@ function parseMinContextFlag(flags: Record<string, string | boolean>): number | 
  * Plan-billed models, apart from the price ranking: the subscription already
  * pays for them, which is neither a price nor "free".
  */
+/** The Key column: can you call this route, and was the key checked. */
+function keyLabel(access: Partial<RouteAccess>): string {
+	if (access.callable) {
+		if (access.keyVerified) return c(GREEN, "\u2713 key");
+		return access.credentialSource && access.credentialSource !== "none"
+			? c(YELLOW, "\u2713 unchecked")
+			: c(GREEN, "\u2713 no key");
+	}
+	switch (access.uncallableReason) {
+		case "key-refused":
+			return c(RED, "refused");
+		case "subscription-oauth":
+			return c(YELLOW, "oauth only");
+		case "unreachable":
+			return c(RED, "down");
+		default:
+			return c(DIM, "needs key");
+	}
+}
+
+/** How many listed routes you can call, and how to see only those. */
+function printCallableFooter(routes: Partial<RouteAccess>[], mine: boolean): void {
+	if (mine || routes.length === 0) return;
+	const callable = routes.filter((route) => route.callable).length;
+	if (callable === routes.length) return;
+	console.log(
+		c(DIM, `${callable}/${routes.length} listed routes are callable with your keys; --mine shows only those.`),
+	);
+}
+
 function printIncludedInPlans(models: ModelCard[]): void {
 	if (models.length === 0) return;
 	console.log(`\n${c(BOLD, "Included in your plans")} ${c(DIM, "(paid by subscription, no per-token price)")}`);
@@ -453,6 +496,7 @@ export async function cmdRanked(registry: ModelRegistry, flags: Record<string, s
 			capability: typeof flags.capability === "string" ? flags.capability : undefined,
 			minContextWindow: parseMinContextFlag(flags),
 			limit: parseNumberFlag(flags, "limit", 10),
+			callableOnly: flags.mine === true,
 		},
 		strategy,
 	);
@@ -468,6 +512,7 @@ export async function cmdRanked(registry: ModelRegistry, flags: Record<string, s
 		{ header: "#", width: 3, align: "right" },
 		{ header: "Provider", width: 12 },
 		{ header: "Model", width: 38 },
+		{ header: "Key", width: 11 },
 		{ header: "Context", width: 9, align: "right" },
 		{ header: "Price", width: 10, align: "right" },
 		{ header: "Health", width: 9 },
@@ -476,10 +521,17 @@ export async function cmdRanked(registry: ModelRegistry, flags: Record<string, s
 		String(index + 1),
 		c(CYAN, route.providerId),
 		route.model.id,
+		keyLabel(route),
 		`${Math.round(route.model.contextWindow / 1_000)}k`,
 		route.priceUnverified ? c(YELLOW, "unverified") : route.price === null ? "\u2014" : formatPrice(route.price),
 		route.health.available ? c(GREEN, route.health.breakerState) : c(RED, route.health.breakerState),
 	]);
 	console.log(renderTable(columns, rows));
-	console.log(c(DIM, `\nStrategy: ${strategy}. Same order the proxy tries for kosha:${strategy}.`));
+	console.log(
+		c(
+			DIM,
+			`\nStrategy: ${strategy}. The proxy tries the routes you can call first, in this order, for kosha:${strategy}.`,
+		),
+	);
+	printCallableFooter(routes, flags.mine === true);
 }

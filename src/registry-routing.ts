@@ -14,7 +14,8 @@
 import { isRetired } from "./lifecycle.js";
 import type { ProviderObservation, RegistryState } from "./registry-state.js";
 import type { CircuitState } from "./resilience.js";
-import type { CheapestModelMatch, ModelCard } from "./types.js";
+import { registryRouteAccess } from "./route-access.js";
+import type { CheapestModelMatch, ModelCard, RouteAccess } from "./types.js";
 
 /** Selection strategy applied on top of the price-filtered candidate set. */
 export type RouteStrategy = "cheapest" | "fastest" | "reliable" | "balanced";
@@ -48,8 +49,11 @@ export interface RouteHealth {
 	lastErrorType: ProviderObservation["lastErrorType"];
 }
 
-/** A candidate route annotated with price + health + a strategy-specific score. */
-export interface RankedRoute {
+/**
+ * A candidate route annotated with price + health + a strategy-specific score,
+ * and whether you can call it ({@link RouteAccess}; kosha always sets it).
+ */
+export interface RankedRoute extends Partial<RouteAccess> {
 	model: ModelCard;
 	providerId: string;
 	/** Price score (lower is cheaper); null when the model has no usable pricing. */
@@ -139,6 +143,7 @@ export function rankCandidatesByStrategy(
 		providerId: row.providerId,
 		price: row.price,
 		...(routable[index].priceUnverified ? { priceUnverified: true } : {}),
+		...registryRouteAccess(state, row.model),
 		health: row.health,
 		compositeScore: compositeFor(strategy, row, index, {
 			minPrice,

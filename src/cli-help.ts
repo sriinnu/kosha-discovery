@@ -57,9 +57,11 @@ ${c(BOLD, "COMMANDS")}
     --output-weight <n>           Weight for blended metric output price
     --include-unpriced            Include unpriced models after ranked matches
     --min-context <k>             Only models with at least k thousand tokens of context
+    --mine                        Only routes you can call (a key it accepted, or a runtime that answered)
   ${c(CYAN, "ranked")}                        Routes in the order kosha:<strategy> tries them
     --strategy <name>             cheapest | fastest | reliable | balanced (default cheapest)
     --min-context <k>             Only models with at least k thousand tokens of context
+    --mine                        Only routes you can call
   ${c(CYAN, "routes")} <id|alias>             Show all provider routes for a model
   ${c(CYAN, "providers")}                     List all providers and their status
   ${c(CYAN, "resolve")} <alias>               Resolve an alias to canonical model ID

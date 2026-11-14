@@ -59,6 +59,7 @@ kosha cheapest --role embeddings     # rank by price for a role
 kosha doctor --ci --model opus,gpt6  # fail CI if a model you pin is deprecated, retiring, or gone
 kosha spend --since 2026-09-01       # roll up the proxy's spend ledger
 kosha ranked --strategy fastest      # routes in the order kosha:<strategy> tries them
+kosha cheapest --mine                # only routes you hold a working key for
 kosha providers                      # every provider, with credential status
 kosha refresh                        # bypass the cache and re-discover (alias: update)
 kosha registry accept openai/gpt-6.1-sol  # release a held price once you've checked it

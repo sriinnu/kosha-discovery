@@ -203,11 +203,27 @@ google       text-embedding-004                      embedding  embedding
 ### `kosha cheapest --role image --limit 2`
 
 ```
-Provider     Model                                   Mode       Metric      Score    $/M in  $/M out
-──────────── ─────────────────────────────────────── ────────── ──────── ────────── ──────── ────────
-openrouter   openai/dall-e-3                         image      blended     $8.00    $8.00    $0.00
-openrouter   black-forest-labs/flux-1-schnell        image      blended    $10.00   $10.00    $0.00
+Provider     Model                                   Key        Mode       Metric      Score    $/M in  $/M out
+──────────── ─────────────────────────────────────── ────────── ────────── ──────── ────────── ──────── ────────
+openrouter   openai/dall-e-3                         ✓ key      image      blended     $8.00    $8.00    $0.00
+together     black-forest-labs/flux-1-schnell        needs key  image      blended    $10.00   $10.00    $0.00
+
+1/2 listed routes are callable with your keys; --mine shows only those.
 ```
+
+`cheapest` and `ranked` list every route. The Key column says whether you can call it:
+
+| Key | Meaning |
+|---|---|
+| `✓ key` | A key the provider's live list accepted |
+| `✓ unchecked` | A key that was never tested against a live list (a seed-only provider, or a list served from the catalog) |
+| `✓ no key` | The provider needs no key (a local runtime that answered) |
+| `needs key` | No key found |
+| `refused` | The provider refused the key on the last discovery |
+| `oauth only` | Only a Claude subscription token, which can't make API calls |
+| `down` | The provider didn't answer on the last discovery |
+
+`--mine` shows only the routes you can call; the proxy tries those first. With `--json`, every match carries `callable`, `credentialSource`, `keyVerified` and `uncallableReason`.
 
 ### `kosha capabilities`
 

@@ -186,6 +186,8 @@ export interface DiscoveryCheapestCandidateV1 {
 	score: number | null;
 	priceMetric: string;
 	capabilities: TrustedCapability[];
+	/** Whether this machine can call the route now (additive in schema v1, kosha 1.16). */
+	callable?: boolean;
 }
 
 /** Cheapest-candidate response for a normalized query. */
