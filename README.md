@@ -11,7 +11,7 @@
 [![Sponsor](https://img.shields.io/badge/sponsor-%E2%9D%A4-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/sriinnu)
 [![Buy Me a Coffee](https://img.shields.io/badge/buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/sriinnu)
 
-kosha discovers models across 46 providers and local runtimes, plus 22 subscription
+kosha discovers models across 46 providers and local runtimes, plus 21 subscription
 plans (token and coding plans) when you hold a key for one. It finds your API keys
 wherever they already live (env vars, Claude CLI, Codex, gcloud ADC, AWS SSO), fills
 in pricing and context limits, and answers questions like *the cheapest model with
@@ -239,7 +239,7 @@ Tools and protocol details: [docs/mcp.md](docs/mcp.md).
 
 ## Supported providers
 
-46 pay-as-you-go providers and local runtimes, plus 22 subscription plans generated
+46 pay-as-you-go providers and local runtimes, plus 21 subscription plans generated
 from `src/subscription-plans.ts`. Each has a descriptor in `src/provider-catalog.ts`;
 most OpenAI-compatible ones are driven from `GENERIC_OPENAI_PROVIDERS` in
 `src/discovery/generic-openai.ts` rather than a hand-written class.
