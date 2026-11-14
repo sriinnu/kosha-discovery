@@ -53,6 +53,7 @@ import {
 	UNTAGGED_TENANT,
 } from "./cost.js";
 import { isPlanBilled } from "./discovery/free-tier.js";
+import { isRetired } from "./lifecycle.js";
 import { isUnverifiedZeroPrice } from "./price-trust.js";
 import {
 	getProviderDescriptor,
@@ -258,7 +259,7 @@ function parseKoshaHint(model: string): KoshaHint | null {
 function isForwardable(model: ModelCard): boolean {
 	// Retired models are no longer served upstream — never offer them as a
 	// proxy route, even when their transport would otherwise be forwardable.
-	if (model.status === "retired") return false;
+	if (isRetired(model)) return false;
 	const descriptor = getProviderDescriptor(model.provider);
 	if (!descriptor) return false;
 	if (descriptor.transport === "openai-compatible-http") return true;
@@ -948,17 +949,19 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 					signal,
 				});
 				// A 400 here may be the provider refusing stream_options rather
-				// than the caller's request: retry once as the caller sent it, and
-				// stop asking this provider for the rest of the process.
+				// than the caller's request: retry once as the caller sent it. Only
+				// when that retry gets past the 400 was it the option, so only then
+				// stop asking this provider; a bad request (any caller can send
+				// one) used to turn off usage reconciliation until restart.
 				if (plainBody !== null && upstream.status === 400) {
 					await upstream.body?.cancel().catch(() => {});
-					streamUsageRefused.add(model.provider);
 					upstream = await fetch(upstreamUrlString, {
 						method: "POST",
 						headers: upstreamHeaders,
 						body: plainBody,
 						signal,
 					});
+					if (upstream.status !== 400) streamUsageRefused.add(model.provider);
 					plainBody = null;
 				}
 			} catch (err) {

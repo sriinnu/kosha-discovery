@@ -145,6 +145,15 @@ export class VercelAIGatewayDiscoverer extends BaseDiscoverer {
 			case "reranking":
 			case "rerank":
 				return "rerank";
+			// Speech, transcription and realtime models don't serve
+			// /chat/completions and bill per second or per character, so as
+			// `chat` they topped `cheapest` at $0.00.
+			case "speech":
+			case "transcription":
+			case "realtime":
+				return "audio";
+			case "evaluation":
+				return "judgment";
 			default:
 				return "chat";
 		}
@@ -155,6 +164,13 @@ export class VercelAIGatewayDiscoverer extends BaseDiscoverer {
 		if (mode === "rerank") return ["rerank"];
 		if (mode === "image") return ["image_generation"];
 		if (mode === "video") return ["video_generation"];
+		if (mode === "judgment") return ["judgment"];
+		if (mode === "audio") {
+			const type = (model.type ?? "").toLowerCase();
+			if (type === "transcription") return ["speech_to_text"];
+			if (type === "speech") return ["text_to_speech"];
+			return ["audio"];
+		}
 
 		const lowerId = model.id.toLowerCase();
 		const tags = new Set((model.tags ?? []).map((tag) => tag.toLowerCase()));
@@ -244,7 +260,8 @@ export class VercelAIGatewayDiscoverer extends BaseDiscoverer {
 		if (videoOutputPerSecond !== undefined) result.videoOutputPerSecond = videoOutputPerSecond;
 		if (videoInputPerMillion !== undefined) result.videoInputPerMillion = videoInputPerMillion;
 		if (webSearchPerThousandRequests !== undefined) result.webSearchPerThousandRequests = webSearchPerThousandRequests;
-		if (mapsSearchPerThousandRequests !== undefined) result.mapsSearchPerThousandRequests = mapsSearchPerThousandRequests;
+		if (mapsSearchPerThousandRequests !== undefined)
+			result.mapsSearchPerThousandRequests = mapsSearchPerThousandRequests;
 		if (requestPerThousand !== undefined) result.requestPerThousand = requestPerThousand;
 
 		const longInput = this.longTier(pricing.input_tiers);
@@ -280,9 +297,10 @@ export class VercelAIGatewayDiscoverer extends BaseDiscoverer {
 
 	private parseImagePerOutput(pricing: VercelModelPricing): number | undefined {
 		const flat = this.parseDollar(pricing.image_output) ?? this.parseDollar(pricing.image);
-		const dimensionPrices = pricing.image_dimension_quality_pricing
-			?.map((entry) => this.parseDollar(entry.cost))
-			.filter((value): value is number => value !== undefined) ?? [];
+		const dimensionPrices =
+			pricing.image_dimension_quality_pricing
+				?.map((entry) => this.parseDollar(entry.cost))
+				.filter((value): value is number => value !== undefined) ?? [];
 		const allPrices = flat === undefined ? dimensionPrices : [flat, ...dimensionPrices];
 		if (allPrices.length === 0) return undefined;
 		return Math.min(...allPrices);

@@ -64,6 +64,8 @@ interface HealthFinding {
 	reliabilityScore: number;
 	p95LatencyMs: number | null;
 	timeoutRate: number;
+	/** Calls observed; 0 means kosha has never called this provider. */
+	samples: number;
 }
 
 export async function cmdDoctor(registry: ModelRegistry, flags: Record<string, string | boolean>): Promise<void> {
@@ -308,6 +310,7 @@ function projectHealth(registry: ModelRegistry, providerId: string): HealthFindi
 			reliabilityScore: h.reliabilityScore,
 			p95LatencyMs: h.p95LatencyMs,
 			timeoutRate: h.timeoutRate,
+			samples: h.samples,
 		};
 	} catch {
 		return null;
@@ -339,25 +342,43 @@ function renderCredentials(findings: CredentialFinding[]): void {
 	process.stdout.write("\n");
 }
 
+/** Lifecycle rows shown before `doctor` summarises the rest. */
+const LIFECYCLE_ROWS_SHOWN = 25;
+
+function lifecycleTag(f: DeprecationFinding): { tag: string; rank: number; kind: string } {
+	const days = f.daysUntilSunset;
+	if (f.status === "missing") return { tag: c(RED, "missing"), rank: 0, kind: "missing" };
+	if (days !== null && days < 0) return { tag: c(RED, `sunset ${-days}d ago`), rank: 1, kind: "past sunset" };
+	if (f.status === "retired") return { tag: c(RED, "retired"), rank: 2, kind: "retired" };
+	if (days !== null && days <= 14) return { tag: c(RED, `sunsets in ${days}d`), rank: 3, kind: "sunsetting" };
+	if (days !== null && days <= 60) return { tag: c(YELLOW, `sunsets in ${days}d`), rank: 4, kind: "sunsetting" };
+	if (f.status === "deprecated") return { tag: c(YELLOW, "deprecated"), rank: 5, kind: "deprecated" };
+	if (days !== null) return { tag: c(DIM, `sunsets in ${days}d`), rank: 6, kind: "sunsetting" };
+	return { tag: c(DIM, f.status ?? "unknown"), rank: 7, kind: f.status ?? "unknown" };
+}
+
 function renderDeprecations(findings: DeprecationFinding[]): void {
 	process.stdout.write(`${c(CYAN, "Model lifecycle")}\n`);
 	if (findings.length === 0) {
 		process.stdout.write(c(DIM, "  No deprecation signals from any provider catalogue.\n\n"));
 		return;
 	}
-	for (const f of findings) {
-		const days = f.daysUntilSunset;
-		let tag: string;
-		if (f.status === "retired") tag = c(RED, "retired");
-		else if (f.status === "missing") tag = c(RED, "missing");
-		else if (days !== null && days <= 14) tag = c(RED, `sunsets in ${days}d`);
-		else if (days !== null && days <= 60) tag = c(YELLOW, `sunsets in ${days}d`);
-		else if (f.status === "deprecated") tag = c(YELLOW, "deprecated");
-		else if (days !== null) tag = c(DIM, `sunsets in ${days}d`);
-		else tag = c(DIM, f.status ?? "unknown");
-
+	// Most urgent first, stable within a rank; a full catalog has hundreds of
+	// rows, so show the top ones and count the rest.
+	const rows = findings
+		.map((f, i) => ({ f, i, ...lifecycleTag(f) }))
+		.sort((a, b) => a.rank - b.rank || (a.f.daysUntilSunset ?? 0) - (b.f.daysUntilSunset ?? 0) || a.i - b.i);
+	const counts = new Map<string, number>();
+	for (const row of rows) counts.set(row.kind, (counts.get(row.kind) ?? 0) + 1);
+	process.stdout.write(c(DIM, `  ${[...counts].map(([kind, n]) => `${n} ${kind}`).join(", ")}\n`));
+	for (const { f, tag } of rows.slice(0, LIFECYCLE_ROWS_SHOWN)) {
 		const replacement = f.replacedBy ? c(DIM, ` -> ${f.replacedBy}`) : "";
 		process.stdout.write(`  ${tag}  ${f.provider}/${f.modelId}${replacement}\n`);
+	}
+	if (rows.length > LIFECYCLE_ROWS_SHOWN) {
+		process.stdout.write(
+			c(DIM, `  …and ${rows.length - LIFECYCLE_ROWS_SHOWN} more; \`kosha doctor --json\` lists every one.\n`),
+		);
 	}
 	process.stdout.write("\n");
 }
@@ -368,13 +389,20 @@ function renderHealth(findings: HealthFinding[]): void {
 		process.stdout.write(c(DIM, "  No providers in the registry yet — run `kosha discover`.\n"));
 		return;
 	}
+	// A provider kosha has never called has no health to report; "ok, 100%"
+	// would be a claim with no data behind it.
+	const unused = findings.filter((h) => h.samples === 0 && h.available);
 	for (const h of findings) {
+		if (h.samples === 0 && h.available) continue;
 		const tag = h.available ? (h.reliabilityScore >= 0.95 ? c(GREEN, "ok") : c(YELLOW, "degraded")) : c(RED, "open");
 		const p95 = h.p95LatencyMs !== null ? `${h.p95LatencyMs}ms` : "no samples";
 		const reliability = (h.reliabilityScore * 100).toFixed(0);
 		process.stdout.write(
 			`  ${tag}  ${h.providerId.padEnd(14)} ${c(DIM, `reliability=${reliability}%`)}  ${c(DIM, `p95=${p95}`)}\n`,
 		);
+	}
+	if (unused.length > 0) {
+		process.stdout.write(c(DIM, `  no calls yet (${unused.length}): ${unused.map((h) => h.providerId).join(", ")}\n`));
 	}
 }
 

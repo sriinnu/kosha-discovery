@@ -826,29 +826,30 @@ function sanitizeRegistryPricing(state: RegistryState): void {
  * Copy the merge's price verdicts onto the in-memory registry. A quarantined
  * row carries the held (previous) price, which replaces the suspect one in
  * memory; dispute and single-source flags are copied onto rawCapabilities so
- * every reader sees them. Rows the manifest kept for a model this run didn't
- * see are ignored. Returns true when anything in memory changed.
+ * every reader sees them. A secondary rate (cache, image, audio…) the merge
+ * kept because a catalog reported it as 0 is copied back too; before, only
+ * `registry.json` had it and routing and the budget used 0. Rows the manifest
+ * kept for a model this run didn't see are ignored. Returns true when anything
+ * in memory changed.
  */
 export function applyManifestHolds(state: RegistryState, manifest: DiscoverySnapshotV1): boolean {
 	const rows = new Map<string, DiscoverySnapshotV1["models"][number]>();
-	for (const row of manifest.models ?? []) {
-		if ((row.rawCapabilities ?? []).some((tag) => PRICE_HOLD_TAGS.includes(tag))) {
-			rows.set(`${row.providerId}\u0000${row.modelId}`, row);
-		}
-	}
+	for (const row of manifest.models ?? []) rows.set(`${row.providerId}\u0000${row.modelId}`, row);
 	if (rows.size === 0) return false;
 	let changed = false;
 	for (const [providerId, providerInfo] of state.providerMap) {
 		let touched = false;
-		const models = providerInfo.models.map((model) => {
-			const row = rows.get(`${providerId}\u0000${model.id}`);
-			if (!row) return model;
+		const models = providerInfo.models.map((original) => {
+			const row = rows.get(`${providerId}\u0000${original.id}`);
+			if (!row) return original;
+			const model = keepReportedSecondaryRates(row, original);
 			const next: ModelCard = { ...model };
-			let tags = model.rawCapabilities ?? [];
+			const before = model.rawCapabilities ?? [];
+			let tags = before;
 			for (const tag of PRICE_HOLD_TAGS) {
 				if ((row.rawCapabilities ?? []).includes(tag) && !tags.includes(tag)) tags = [...tags, tag];
 			}
-			let differs = tags !== (model.rawCapabilities ?? []);
+			let differs = model !== original || tags !== before;
 			if (tags.length > 0) next.rawCapabilities = tags;
 			const quarantined = (row.rawCapabilities ?? []).includes("pricing_quarantined");
 			const disputed = (row.rawCapabilities ?? []).includes(PRICING_SOURCES_DISAGREE);
@@ -873,7 +874,7 @@ export function applyManifestHolds(state: RegistryState, manifest: DiscoverySnap
 					else delete next.originPricing;
 				}
 			}
-			if (!differs) return model;
+			if (!differs) return original;
 			touched = true;
 			return next;
 		});

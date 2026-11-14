@@ -160,7 +160,7 @@ The manifest is also the baseline every price is checked against. So a manifest 
 
 #### The weekly snapshot
 
-The published snapshot (`snapshot-latest`) goes through the same quarantine, judged against the snapshot published before it, because it seeds `pinned` users, the catalog-outage fallback and first runs. A suspect cut is published at the previous price, tagged `pricing_quarantined`, and listed under "Prices held" in that week's release notes. A suspect rise is published at the higher price right away. The snapshot runs weekly, so every hold window has passed by the next run: a real cut reaches snapshot users a week late. A collapse to `$0` or under 1% waits until a maintainer releases it from the workflow's manual run:
+The published snapshot (`snapshot-latest`) goes through the same quarantine, judged against the snapshot published before it, because it seeds `pinned` users, the catalog-outage fallback and first runs. A suspect cut is published at the previous price, tagged `pricing_quarantined`, and listed under "Prices held" in that week's release notes. A suspect rise is published at the higher price right away. The snapshot runs weekly, so a 1- or 3-day hold has passed by the next run and a real cut reaches snapshot users a week late. The 7-day hold for sources that disagree can miss by minutes, because the cron start drifts, and then takes two weeks; that row is published at the highest source's price meanwhile. A collapse to `$0` or under 1% waits until a maintainer releases it from the workflow's manual run:
 
 ```bash
 gh workflow run update-kosha-snapshot.yml -f accept=openrouter/deepseek/deepseek-v4.1-flash-1017

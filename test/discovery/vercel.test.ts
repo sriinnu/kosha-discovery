@@ -239,6 +239,47 @@ describe("VercelAIGatewayDiscoverer", () => {
 		});
 	});
 
+	it("keeps speech, transcription, realtime and evaluation models out of chat", async () => {
+		// Shapes from the live catalog (2026-11-14): per-second and per-character
+		// prices, so as `chat` they ranked first in `cheapest` at $0.00.
+		const row = (id: string, type: string, pricing: Record<string, string>) => ({
+			id,
+			object: "model",
+			owned_by: id.split("/")[0],
+			name: id,
+			context_window: 0,
+			max_tokens: 0,
+			type,
+			tags: [],
+			pricing,
+		});
+		mockFetch({
+			[API_URL]: {
+				status: 200,
+				body: {
+					object: "list",
+					data: [
+						row("openai/whisper-1", "transcription", {
+							input: "0.0000000001",
+							transcription_duration_cost_per_second: "0.0001",
+						}),
+						row("openai/tts-1", "speech", { input: "0.000015", speech_input_character_cost: "0.000015" }),
+						row("openai/gpt-realtime-2", "realtime", { input: "0.000004", output: "0.000016" }),
+						row("google/gemini-decision-1", "evaluation", { input: "0.000001" }),
+					],
+				},
+			},
+		});
+
+		const cards = await discoverer.discover(noCredential);
+		const byId = (id: string) => cards.find((card) => card.id === id);
+		expect(byId("openai/whisper-1")).toMatchObject({ mode: "audio", capabilities: ["speech_to_text"] });
+		expect(byId("openai/tts-1")).toMatchObject({ mode: "audio", capabilities: ["text_to_speech"] });
+		expect(byId("openai/gpt-realtime-2")).toMatchObject({ mode: "audio", capabilities: ["audio"] });
+		expect(byId("google/gemini-decision-1")).toMatchObject({ mode: "judgment", capabilities: ["judgment"] });
+		expect(cards.filter((card) => card.mode === "chat")).toEqual([]);
+	});
+
 	it("parses tiered pricing and long-context thresholds", async () => {
 		mockFetch({ [API_URL]: { status: 200, body: { object: "list", data: [tieredLanguage] } } });
 
