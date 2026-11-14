@@ -13,6 +13,16 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
+## [1.15.1] — 2026-11-14
+
+### Fixed
+
+- The npm description and `SKILL.md` said 22 subscription plans; there are 21.
+  A test now derives the provider and plan counts from the catalog and checks
+  them against README, `package.json`, `server.json` and `SKILL.md`.
+- The Model Check Action failed with `kosha: not found` when run inside
+  kosha's own checkout; npx now runs from `$RUNNER_TEMP` (#104).
+
 ## [1.15.0] — 2026-11-14
 
 Fixes from an independent review of the whole codebase.

@@ -1,6 +1,6 @@
 # kosha-discovery — Skill Reference
 
-Reference for agents and scripts that use `@sriinnu/kosha-discovery` (कोश, "treasury"). It discovers the model lists of 46 providers, 22 subscription plans and local runtimes, resolves credentials, fills in pricing and limits, and exposes the result as a library, CLI, HTTP API, OpenAI-compatible proxy, and MCP server.
+Reference for agents and scripts that use `@sriinnu/kosha-discovery` (कोश, "treasury"). It discovers the model lists of 46 providers, 21 subscription plans and local runtimes, resolves credentials, fills in pricing and limits, and exposes the result as a library, CLI, HTTP API, OpenAI-compatible proxy, and MCP server.
 
 Use it to: list available models, pick the cheapest model for a task, rank routes by latency or reliability, check which providers are authenticated, resolve aliases, or forward a chat request through a provider you hold a key for while tracking spend.
 
