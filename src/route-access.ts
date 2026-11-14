@@ -28,12 +28,12 @@ export function providerAccess(providerId: string, provider: ProviderInfo | unde
 	// treated such a route as callable. Keep the two in step.
 	const needsKey = descriptor ? providerExecutionCredentialRequired(descriptor) : false;
 
-	// A failed live list fails the call too, even where a key is optional: the
-	// key is still sent. A 401/403 is a refused key; anything else (a timeout,
-	// a 5xx) is a provider that didn't answer.
-	if (provider?.degradedReason) {
-		const uncallableReason = isKeyRefusal(provider.degradedReason) ? "key-refused" : "unreachable";
-		return { callable: false, credentialSource, keyVerified: false, uncallableReason };
+	// A refused key fails the call even where a key is optional: it is still
+	// sent. Any other failed list (a timeout, a 5xx) says nothing about the key,
+	// so one blip doesn't hide a working one; it only leaves the key unchecked.
+	const degraded = provider?.degradedReason;
+	if (degraded && isKeyRefusal(degraded)) {
+		return { callable: false, credentialSource, keyVerified: false, uncallableReason: "key-refused" };
 	}
 	if (!needsKey) {
 		if (provider?.unreachableReason) {
@@ -45,17 +45,31 @@ export function providerAccess(providerId: string, provider: ProviderInfo | unde
 		return { callable: false, credentialSource, keyVerified: false, uncallableReason: "subscription-oauth" };
 	}
 	if (!provider?.authenticated || credentialSource === "none") {
-		return { callable: false, credentialSource, keyVerified: false, uncallableReason: "no-key" };
+		// A key was held, the list failed for another reason, and the catalog
+		// stood in: the provider didn't answer, which is not the same as no key.
+		const uncallableReason = degraded ? "unreachable" : "no-key";
+		return { callable: false, credentialSource, keyVerified: false, uncallableReason };
 	}
-	// The key is only proven when the live list answered with it. A seed-only
-	// provider, or a list that fell back to the catalog, never tested it.
-	const keyVerified = provider.models.some((model) => model.source === "api");
+	// The key is only proven when the live list answered with it and the list
+	// needs a key: OpenRouter and Vercel list publicly, so a junk key passes
+	// there. A seed-only provider, or a list from the catalog, never tested it.
+	const keyVerified =
+		!degraded && descriptor?.credentialRequired === true && provider.models.some((model) => model.source === "api");
 	return { callable: true, credentialSource, keyVerified };
 }
 
-/** A 401 or 403 from the provider, or kosha's own refused-shared-key message. */
+/**
+ * A 401/403 from the provider, a 400 that names the key (Google's
+ * "API key not valid"), or kosha's own refused-shared-key message. Matched on
+ * the status kosha writes, not on words in the provider's body, so a 502
+ * "upstream connection refused" isn't read as a bad key.
+ */
 function isKeyRefusal(reason: string): boolean {
-	return /\b40[13]\b|unauthori[sz]ed|forbidden|invalid[ _-]?(api[ _-]?)?key|refused/i.test(reason);
+	return (
+		/API error:\s*40[13]\b/.test(reason) ||
+		/API error:\s*400\b.*(API[_ ]KEY[_ ]INVALID|API key not valid)/i.test(reason) ||
+		/was refused by every provider that reads it/.test(reason)
+	);
 }
 
 /** Access for the provider serving `model`. */

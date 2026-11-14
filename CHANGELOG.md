@@ -16,11 +16,11 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 ### Changed
 
 - **MCP returns routes you can call.** `kosha_cheapest_model` and `kosha_ranked_routes` rank only routes kosha can call now: a key the provider accepted, or a provider that needs no key and answered. An agent acts on row one, and row one used to need a key the user didn't have. `include_uncallable: true` restores the full list. When a cheaper route needs a key, `kosha_cheapest_model` returns it as `cheapestOverall`, with `toCall` naming the env var. When nothing is callable, the list is empty and `message` says so.
-- **The proxy tries callable routes first.** Routes on a refused key (served from the last good cache), a Claude subscription token, or a local runtime that is down used to rank first and fail at send time.
+- **The proxy tries callable routes first.** Routes on a refused key (served from the last good cache) or a Claude subscription token used to rank first and fail at send time. A refusal is read from the provider's status (401/403, or a 400 naming the key), so a timeout or a 5xx leaves a working key callable, just unchecked.
 
 ### Added
 
-- Every match and ranked route says whether you can call it: `callable`, `credentialSource`, `keyVerified` (the live list answered with the key) and `uncallableReason` (`no-key`, `key-refused`, `subscription-oauth`, `unreachable`). This covers the library, `--json`, HTTP and the v1 discovery plane (`callable`).
+- Every match and ranked route says whether you can call it: `callable`, `credentialSource`, `keyVerified` (a list that needs a key answered with it; never for OpenRouter or Vercel, which list publicly) and `uncallableReason` (`no-key`, `key-refused`, `subscription-oauth`, `unreachable`). This covers the library, `--json`, HTTP and the v1 discovery plane (`callable`).
 - `callableOnly` for `cheapestModels` and `rankedRoutes`, applied before `limit`; `registry.routeAccess(provider)`; `providerAccess` and `routeAccessHint` exports.
 - CLI: a Key column on `cheapest` and `ranked`, a callable count, and `--mine`.
 - HTTP: `GET /api/models/cheapest?callable=true`. Without it, `cheapest` is still the market's cheapest route, as in 1.x.

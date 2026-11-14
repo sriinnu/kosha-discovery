@@ -109,9 +109,46 @@ describe("providerAccess", () => {
 		expect(providerAccess("together", refused([]))).toMatchObject({ callable: false, uncallableReason: "key-refused" });
 	});
 
-	it("a keyed provider that timed out is unreachable, not refused", () => {
-		const timedOut = provider("together", [], { degradedReason: "The operation was aborted due to timeout" });
-		expect(providerAccess("together", timedOut)).toMatchObject({ callable: false, uncallableReason: "unreachable" });
+	it("one failed list doesn't hide a working key: a timeout leaves it callable, unchecked", () => {
+		const timedOut = provider("together", [card("m", "together", 1, { source: "api" })], {
+			degradedReason: "The operation was aborted due to timeout",
+			degradedSource: "cache",
+		});
+		expect(providerAccess("together", timedOut)).toEqual({
+			callable: true,
+			credentialSource: "env",
+			keyVerified: false,
+		});
+	});
+
+	it("a key held, the list failed, the catalog stood in: unreachable, not no-key", () => {
+		const fallback = provider("together", [], {
+			authenticated: false,
+			credentialSource: "none",
+			degradedReason: "Together AI API error: 503 Service Unavailable",
+			degradedSource: "catalog",
+		});
+		expect(providerAccess("together", fallback)).toMatchObject({ callable: false, uncallableReason: "unreachable" });
+	});
+
+	it("reads a refusal from the status, not from words in the provider's body", () => {
+		const reason = (degradedReason: string) =>
+			providerAccess("together", provider("together", [], { degradedReason })).uncallableReason;
+		expect(reason("Together AI API error: 403 Forbidden")).toBe("key-refused");
+		expect(reason("Google API error: 400 Bad Request — API key not valid. Please pass a valid API key.")).toBe(
+			"key-refused",
+		);
+		expect(reason("MINIMAX_API_KEY was refused by every provider that reads it: minimax (API error: 401).")).toBe(
+			"key-refused",
+		);
+		// A 502 whose body says "connection refused" is an outage; the key may be fine.
+		expect(reason("Together AI API error: 502 Bad Gateway — upstream connection refused")).toBeUndefined();
+	});
+
+	it("a key on a provider that lists publicly is never verified by its list", () => {
+		// OpenRouter answers /models without a key, so a junk key passes there.
+		const junk = provider("openrouter", [card("m", "openrouter", 1, { source: "api" })]);
+		expect(providerAccess("openrouter", junk)).toEqual({ callable: true, credentialSource: "env", keyVerified: false });
 	});
 
 	it("a Claude subscription token is not callable: it is never sent on an API call", () => {
@@ -121,10 +158,12 @@ describe("providerAccess", () => {
 		expect(routeAccessHint("anthropic", access)).toContain("ANTHROPIC_API_KEY");
 	});
 
-	it("a local runtime needs no key; callable while it answers, not once it stops", () => {
+	it("a local runtime needs no key; callable while it answers, not once its list errors", () => {
 		const up = provider("ollama", [], { authenticated: false, credentialSource: "none" });
 		expect(providerAccess("ollama", up)).toEqual({ callable: true, credentialSource: "none", keyVerified: false });
-		const down = { ...up, unreachableReason: "connect ECONNREFUSED 127.0.0.1:11434" };
+		// A runtime that isn't running returns an empty list (no routes at all);
+		// one that answers with an error is served from cache, marked like this.
+		const down = { ...up, unreachableReason: "Ollama API error: 500 Internal Server Error" };
 		expect(providerAccess("ollama", down)).toMatchObject({ callable: false, uncallableReason: "unreachable" });
 	});
 });
@@ -176,6 +215,16 @@ describe("MCP: agents act on row one, so it is a route they can call", () => {
 		expect(data.matches[0]).toMatchObject({ callable: true, credentialSource: "env" });
 		expect(data.cheapestOverall).toMatchObject({ id: "cheaper", callable: false, uncallableReason: "no-key" });
 		expect(data.cheapestOverall.toCall).toContain("TOGETHER_API_KEY");
+	});
+
+	it("no cheapestOverall when the route you can call is just as cheap", async () => {
+		const tie = registry(
+			provider("together", [card("same", "together", 0.05)], { authenticated: false, credentialSource: "none" }),
+			provider("groq", [card("llama-small", "groq", 0.05)]),
+		);
+		const data = await mcp(tie, "kosha_cheapest_model", {});
+		expect(data.matches.map((m: { id: string }) => m.id)).toEqual(["llama-small"]);
+		expect(data.cheapestOverall).toBeUndefined();
 	});
 
 	it("include_uncallable lists everything, each row saying why not", async () => {

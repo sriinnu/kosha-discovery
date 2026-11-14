@@ -341,7 +341,12 @@ export async function callTool(
 			// The market's cheapest route, when it is one you can't call: what
 			// a key would buy, and which key.
 			const overall = includeUncallable ? undefined : reg.cheapestModels({ ...query, limit: 1 }).matches[0];
-			const cheapestOverall = overall && overall.callable === false ? row(overall) : undefined;
+			// Only when it is actually cheaper than the best route you can call.
+			const bestCallable = result.matches[0]?.score ?? Number.POSITIVE_INFINITY;
+			const cheapestOverall =
+				overall && overall.callable === false && (overall.score ?? Number.POSITIVE_INFINITY) < bestCallable
+					? row(overall)
+					: undefined;
 			return {
 				matches: result.matches.map(row),
 				...(cheapestOverall ? { cheapestOverall } : {}),
