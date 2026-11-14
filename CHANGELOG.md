@@ -13,6 +13,8 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
+## [1.15.0] — 2026-11-14
+
 Fixes from an independent review of the whole codebase.
 
 ### Fixed
@@ -43,6 +45,17 @@ Fixes from an independent review of the whole codebase.
 
 - The weekly snapshot is signed (Ed25519, `kosha-latest.json.sig`), and kosha refuses a snapshot from the default URL whose signature doesn't verify. A mirror can pin its own key with `KOSHA_SNAPSHOT_PUBKEY`.
 - `kosha discover --json` printed a progress line before the JSON, so piping it to `jq` failed.
+- Every other `--json` query command (`list`, `search`, `model`, `routes`, `providers`) printed its "Loaded N models from cache" line to stdout before the JSON. Status lines now go to stderr.
+- A model past its sunset date is treated as retired. Catalogs often keep it `deprecated` after the date, so `cheapest`, routing and the proxy still offered it, and `kosha routes` could mark a shut-down route (for example Bedrock's Claude Sonnet 4) as preferred. `routes` now marks those rows `x`.
+- Vercel's speech, transcription and realtime models are `audio`, and its evaluation models are `judgment`. They were all `chat`, and their per-second prices read as $0.00 per token, so transcription models topped `kosha cheapest --mode chat`.
+- `kosha doctor` says "sunset 75d ago" instead of "sunsets in -75d", opens the lifecycle section with counts, and lists the 25 most urgent (`--json` keeps every row). A provider kosha has never called shows under "no calls yet" instead of "ok, reliability=100%".
+- One streamed request the provider rejects with `400` (a bad `temperature`, say) no longer stops kosha asking that provider for stream usage until restart. Only a `400` that goes away without `stream_options` means the provider refuses it.
+- A cache-write, image or audio rate a catalog reports as `0` keeps its last real value in memory too, not only in `registry.json`, so routing and the budget use it.
+- A snapshot reader (pinned mode, the outage fallback, first runs) no longer gets models the last weekly run didn't see. The gate keeps them for 30 days as price baselines only.
+- The snapshot workflow stops instead of publishing ungated prices when it can't download or parse the previous snapshot, or when that snapshot's signature doesn't verify. Only a missing release counts as the first snapshot.
+- The snapshot gate logs which `accept` refs actually matched a held price, and names the ones that didn't.
+- `kosha registry accept OpenRouter/…` finds the model; provider ids are matched in lower case.
+- `BudgetConfigError` is exported, so library callers can tell a bad budget apart.
 
 ### Added
 

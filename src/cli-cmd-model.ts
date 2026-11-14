@@ -27,6 +27,7 @@ import {
 	YELLOW,
 } from "./cli-format.js";
 import { isPlanBilled } from "./discovery/free-tier.js";
+import { isRetired } from "./lifecycle.js";
 import type { ModelRegistry } from "./registry.js";
 
 // ── model (detail view) ─────────────────────────────────────────────────
@@ -277,7 +278,7 @@ export async function cmdRoutes(
 	];
 
 	const rows = routes.map((route) => [
-		route.isPreferred ? c(GREEN, "*") : route.isDirect ? c(CYAN, "\u00B7") : " ",
+		isRetired(route.model) ? c(RED, "x") : route.isPreferred ? c(GREEN, "*") : route.isDirect ? c(CYAN, "\u00B7") : " ",
 		c(CYAN, route.provider),
 		route.model.id,
 		route.model.region ?? c(DIM, "\u2014"),
@@ -295,5 +296,14 @@ export async function cmdRoutes(
 	const preferred = routes.find((route) => route.isPreferred);
 	if (preferred) {
 		console.log(c(DIM, `\nPreferred route: ${preferred.provider} (${preferred.baseUrl ?? "base URL unknown"})`));
+	}
+	const retired = routes.filter((route) => isRetired(route.model)).length;
+	if (retired > 0) {
+		console.log(
+			c(
+				DIM,
+				`${retired === routes.length ? "Every route" : `${retired} route(s)`} marked x is past its sunset and no longer served.`,
+			),
+		);
 	}
 }

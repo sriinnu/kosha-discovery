@@ -9,8 +9,9 @@
  * before it: a suspect move is published at the previous price, tagged
  * `pricing_quarantined`, and carries its hold forward to the next week.
  *
- * Runs weekly, so every hold window (1–7 days) has passed by the next run:
- * a real cut reaches snapshot users a week late. A collapse to $0 or under 1%
+ * Runs weekly, so a 1- or 3-day hold has passed by the next run and a real
+ * cut reaches snapshot users a week late; the 7-day disputed hold can take
+ * two weeks when the cron start drifts earlier. A collapse to $0 or under 1%
  * is never released by waiting; only an explicit accept releases it.
  * @module
  */
@@ -38,6 +39,8 @@ export interface HeldSnapshotPrice {
 export interface SnapshotGateResult {
 	envelope: CatalogEnvelope;
 	held: HeldSnapshotPrice[];
+	/** The `accept` refs that matched a held row and were released. */
+	accepted: string[];
 }
 
 const keyOf = (providerId: string, modelId: string) => `${providerId}\0${modelId}`;
@@ -84,12 +87,15 @@ export function gateSnapshot(
 		}),
 	);
 	let prior = previous ? toSnapshot(previous) : null;
+	const released: string[] = [];
 	if (prior && accepted.size > 0) {
 		prior = {
 			...prior,
 			models: prior.models.map((row) => {
 				const hold = (row as { pricingHold?: object }).pricingHold;
-				return hold && accepted.has(row.key) ? { ...row, pricingHold: { ...hold, accepted: true } } : row;
+				if (!hold || !accepted.has(row.key)) return row;
+				released.push(`${row.providerId}/${row.modelId}`);
+				return { ...row, pricingHold: { ...hold, accepted: true } };
 			}),
 		};
 	}
@@ -146,5 +152,6 @@ export function gateSnapshot(
 			modelCount: providers.reduce((sum, p) => sum + p.models.length, 0),
 		},
 		held,
+		accepted: released,
 	};
 }

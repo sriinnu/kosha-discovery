@@ -403,3 +403,33 @@ describe("daysBetween", () => {
 		}
 	});
 });
+
+describe("kosha doctor (text output)", () => {
+	it("says a past sunset happened, caps the list, and doesn't call an unused provider healthy", async () => {
+		const past = new Date(Date.now() - 40 * 86_400_000).toISOString().slice(0, 10);
+		const models = Array.from({ length: 30 }, (_, i) =>
+			makeModel({ id: `old-${i}`, provider: "openai", status: "deprecated", deprecationDate: past }),
+		);
+		const registry = ModelRegistry.fromJSON({
+			providers: [provider("openai", models)],
+			aliases: {},
+			discoveredAt: Date.now(),
+		});
+		vi.spyOn(registry, "discover").mockResolvedValue([]);
+		const out = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+		vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await cmdDoctor(registry, {});
+
+		const text = out.mock.calls
+			.map((call) => String(call[0]))
+			.join("")
+			.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g"), "");
+		expect(text).toContain("sunset 40d ago  openai/old-0");
+		expect(text).not.toMatch(/sunsets in -/);
+		expect(text).toContain("30 past sunset");
+		expect(text).toContain("…and 5 more");
+		expect(text).toContain("no calls yet (1): openai");
+		expect(text).not.toMatch(/ok\s+openai/);
+	});
+});

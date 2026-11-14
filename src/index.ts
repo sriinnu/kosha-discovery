@@ -38,6 +38,7 @@ export {
 	isRequestRow,
 	LEDGER_PATH_ENV,
 	ledgerRowUsd,
+	BudgetConfigError,
 	readMonthlyBudgetUsd,
 	readSpendForMonth,
 	readTenantBudgetUsd,

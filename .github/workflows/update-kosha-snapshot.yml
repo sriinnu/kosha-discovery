@@ -128,13 +128,31 @@ jobs:
           set -euo pipefail
           # The previous snapshot lives on the `snapshot-latest` release rather
           # than in git, so the weekly refresh adds nothing to the repo history.
+          # Only a release or asset that doesn't exist means "first snapshot".
+          # Any other failure (rate limit, 5xx, network) stops the run: judged
+          # against nothing, the gate would take every price and drop every hold.
           COMMITTED_PATH="$RUNNER_TEMP/previous-snapshot.json"
-          if gh release download snapshot-latest --pattern "kosha-latest.json" \
-               --output "$COMMITTED_PATH" --clobber 2>/dev/null; then
-            echo "comparing against the published snapshot-latest asset" >> "$OBS_LOG"
-          else
-            rm -f "$COMMITTED_PATH"
+          PREVIOUS_SIG_PATH="$RUNNER_TEMP/previous-snapshot.json.sig"
+          rm -f "$COMMITTED_PATH" "$PREVIOUS_SIG_PATH"
+          if ASSETS=$(gh release view snapshot-latest --json assets --jq '.assets[].name' 2>"$RUNNER_TEMP/view.err"); then
+            if grep -qx "kosha-latest.json" <<<"$ASSETS"; then
+              gh release download snapshot-latest --pattern "kosha-latest.json" --output "$COMMITTED_PATH" --clobber
+              # A signed baseline must verify before it's trusted; the gate
+              # carries its rows into a snapshot this run signs.
+              if grep -qx "kosha-latest.json.sig" <<<"$ASSETS"; then
+                gh release download snapshot-latest --pattern "kosha-latest.json.sig" --output "$PREVIOUS_SIG_PATH" --clobber
+                export SNAPSHOT_PREVIOUS_SIG="$PREVIOUS_SIG_PATH"
+              fi
+              echo "comparing against the published snapshot-latest asset" >> "$OBS_LOG"
+            else
+              echo "snapshot-latest has no kosha-latest.json yet; first snapshot" >> "$OBS_LOG"
+            fi
+          elif grep -qi "release not found" "$RUNNER_TEMP/view.err"; then
             echo "no published snapshot to compare against yet" >> "$OBS_LOG"
+          else
+            cat "$RUNNER_TEMP/view.err" >&2
+            echo "::error::could not read snapshot-latest; refusing to publish ungated prices"
+            exit 1
           fi
           echo "COMMITTED_PATH=$COMMITTED_PATH" >> "$GITHUB_ENV"
           HELD_PATH="$RUNNER_TEMP/held-prices.md"

@@ -8,6 +8,7 @@
  */
 
 import { isPlanBilled } from "./discovery/free-tier.js";
+import { isRetired } from "./lifecycle.js";
 import { extractModelVersion, extractOriginProvider, matchableModelId } from "./normalize.js";
 import { isUnverifiedZeroPrice } from "./price-trust.js";
 import {
@@ -252,7 +253,7 @@ export function registryCheapestModels(state: RegistryState, options?: CheapestM
 		mode: options?.mode,
 	}).filter(
 		(model) =>
-			model.status !== "retired" &&
+			!isRetired(model) &&
 			(!capability || modelSupportsRole(model, capability)) &&
 			(!options?.role || modelSupportsRole(model, options.role)) &&
 			// Every filter runs here, before the cut to `limit`; filtering the
@@ -349,13 +350,15 @@ export function registryModelRouteInfo(state: RegistryState, modelId: string): M
 		};
 	});
 
-	if (info.length === 0) return info;
-	const directRoutes = info.filter((route) => route.isDirect);
+	// Only a route that's still served can be the preferred one; when every
+	// route is past its sunset, none is.
+	const live = info.filter((route) => !isRetired(route.model));
+	const directRoutes = live.filter((route) => route.isDirect);
 	if (directRoutes.length > 0) {
 		// I prefer direct-origin routes first because they are usually the clearest default for operators.
 		for (const route of directRoutes) route.isPreferred = true;
-	} else {
-		const priced = info.filter(
+	} else if (live.length > 0) {
+		const priced = live.filter(
 			(route) =>
 				route.model.pricing &&
 				Number.isFinite(route.model.pricing.inputPerMillion) &&
@@ -369,7 +372,7 @@ export function registryModelRouteInfo(state: RegistryState, modelId: string): M
 							((b.model.pricing?.inputPerMillion ?? 0) + (b.model.pricing?.outputPerMillion ?? 0)) ||
 						a.provider.localeCompare(b.provider),
 				)
-			: info)[0].isPreferred = true;
+			: live)[0].isPreferred = true;
 	}
 
 	return info.sort(

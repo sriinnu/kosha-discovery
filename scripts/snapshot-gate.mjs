@@ -9,8 +9,10 @@
  *
  * Usage: node scripts/snapshot-gate.mjs <fresh.json> <held.md> [previous.json]
  * Env:   SNAPSHOT_ACCEPT — comma-separated provider/model refs to release.
+ *        SNAPSHOT_PREVIOUS_SIG — the previous snapshot's .sig; it must verify.
  */
 
+import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 
 const [freshPath, heldPath, previousPath] = process.argv.slice(2);
@@ -23,19 +25,29 @@ const { gateSnapshot } = await import("../dist/index.js");
 
 const fresh = JSON.parse(await readFile(freshPath, "utf8"));
 let previous = null;
-if (previousPath) {
-	try {
-		previous = JSON.parse(await readFile(previousPath, "utf8"));
-	} catch {
-		/* first snapshot: nothing to judge against */
+if (previousPath && existsSync(previousPath)) {
+	// A baseline that exists but doesn't parse or verify stops the run: judged
+	// against nothing, the gate would take every price and drop every hold.
+	const text = await readFile(previousPath, "utf8");
+	const sigPath = process.env.SNAPSHOT_PREVIOUS_SIG;
+	if (sigPath) {
+		const { SNAPSHOT_PUBLIC_KEYS, snapshotSignatureValid } = await import("../dist/discovery/snapshot-catalog.js");
+		const signature = Buffer.from((await readFile(sigPath, "utf8")).trim(), "base64");
+		if (!snapshotSignatureValid(text, signature, SNAPSHOT_PUBLIC_KEYS)) {
+			console.error("[snapshot-gate] the previous snapshot's signature doesn't verify; refusing to gate against it");
+			process.exit(1);
+		}
 	}
+	previous = JSON.parse(text);
 }
 const accept = (process.env.SNAPSHOT_ACCEPT ?? "")
 	.split(",")
 	.map((ref) => ref.trim())
 	.filter(Boolean);
 
-const { envelope, held } = gateSnapshot(previous, fresh, accept);
+const { envelope, held, accepted } = gateSnapshot(previous, fresh, accept);
+const unmatched = accept.filter((ref) => !accepted.includes(ref));
+if (unmatched.length > 0) console.error(`[snapshot-gate] no held price for: ${unmatched.join(", ")}`);
 await writeFile(freshPath, `${JSON.stringify(envelope, null, 2)}\n`, "utf8");
 
 const rate = (p) =>
@@ -55,4 +67,4 @@ if (held.length > 0) {
 }
 // Trailing blank line: the diff that follows in the notes must not join the table.
 await writeFile(heldPath, `${lines.join("\n")}\n`, "utf8");
-console.log(`[snapshot-gate] ${held.length} price(s) held; accepted ${accept.length} ref(s)`);
+console.log(`[snapshot-gate] ${held.length} price(s) held; released ${accepted.length} of ${accept.length} accept ref(s)`);

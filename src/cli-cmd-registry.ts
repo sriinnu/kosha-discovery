@@ -62,7 +62,8 @@ async function acceptHeld(registry: ModelRegistry, target: string | undefined): 
 		console.error(c(RED, "Usage: kosha registry accept <provider>/<model>"));
 		process.exit(1);
 	}
-	const providerId = target.slice(0, slash);
+	// Provider ids are lower-case; model ids are kept as written.
+	const providerId = target.slice(0, slash).toLowerCase();
 	const modelId = target.slice(slash + 1);
 	const result = await registry.acceptHeldPrice(providerId, modelId);
 	if (result.status === "not-found") {

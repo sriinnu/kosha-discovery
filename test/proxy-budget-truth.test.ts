@@ -152,6 +152,31 @@ describe("streamed requests report real usage", () => {
 		expect(bodies).toHaveLength(2);
 		expect(bodies[1].stream_options).toBeUndefined();
 	});
+
+	it("keeps asking for usage after a caller's own bad request is refused with a 400", async () => {
+		// A 400 that the retry without stream_options also gets is the caller's
+		// request, not the option; it mustn't stop usage for every later stream.
+		const bodies: Record<string, unknown>[] = [];
+		globalThis.fetch = vi.fn(async (_url: string, init: RequestInit) => {
+			const sent = JSON.parse(String(init.body)) as Record<string, unknown>;
+			bodies.push(sent);
+			if (sent.temperature === 99) return new Response('{"error":"temperature out of range"}', { status: 400 });
+			return new Response(SSE_WITH_USAGE, { status: 200, headers: { "content-type": "text/event-stream" } });
+		}) as unknown as typeof fetch;
+		const app = groqApp();
+		const bad = await post(app, {
+			model: "llama-cheap",
+			messages: [{ role: "user", content: "hi" }],
+			stream: true,
+			temperature: 99,
+		});
+		expect(bad.status).toBe(400);
+		await bad.text();
+		const good = await post(app, { model: "llama-cheap", messages: [{ role: "user", content: "hi" }], stream: true });
+		expect(good.status).toBe(200);
+		await good.text();
+		expect(bodies.at(-1)?.stream_options).toEqual({ include_usage: true });
+	});
 });
 
 describe("the estimate counts what agent traffic sends", () => {

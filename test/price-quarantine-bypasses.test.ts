@@ -189,6 +189,36 @@ describe("held and disputed rows are budgeted at the highest reported rate", () 
 		expect(applyManifestHolds(state, manifest)).toBe(false); // idempotent
 	});
 
+	it("copies a secondary rate the merge kept back into memory", () => {
+		// The catalog reported cache-write and image as 0; the merge keeps the
+		// last real rate in registry.json, and routing and the budget must too.
+		const state = stateWith(
+			model({
+				inputPerMillion: 3,
+				outputPerMillion: 15,
+				cacheWritePerMillion: 0,
+				imageInputPerImage: 0,
+			} as ModelPricing),
+		);
+		const manifest = at(
+			[
+				row("openai:m", {
+					inputPerMillion: 3,
+					outputPerMillion: 15,
+					cacheWritePerMillion: 3.75,
+					imageInputPerImage: 0.004,
+				} as ModelPricing),
+			],
+			0,
+		);
+		expect(applyManifestHolds(state, manifest)).toBe(true);
+		expect(state.providerMap.get("openai")?.models[0].pricing).toMatchObject({
+			cacheWritePerMillion: 3.75,
+			imageInputPerImage: 0.004,
+		});
+		expect(applyManifestHolds(state, manifest)).toBe(false); // idempotent
+	});
+
 	it("keeps the held price for a suspect drop, and takes a suspect rise at once", () => {
 		const heldRow = row(
 			"openai:m",

@@ -11,6 +11,7 @@
  * @module
  */
 
+import { isRetired } from "./lifecycle.js";
 import type { ProviderObservation, RegistryState } from "./registry-state.js";
 import type { CircuitState } from "./resilience.js";
 import type { CheapestModelMatch, ModelCard } from "./types.js";
@@ -108,7 +109,7 @@ export function rankCandidatesByStrategy(
 	// Drop retired routes entirely — they are no longer served and must never
 	// win a routable/cheapest selection. Deprecated routes stay in the pool
 	// but are demoted in the final ordering (see statusDemotionRank).
-	const routable = matches.filter((match) => match.model.status !== "retired");
+	const routable = matches.filter((match) => !isRetired(match.model));
 	// Early-exit on an empty candidate set. Without this, the Math.min/max
 	// spread calls below would return Infinity / -Infinity (no-op rather than
 	// crash, but it produces nonsense metadata that downstream consumers

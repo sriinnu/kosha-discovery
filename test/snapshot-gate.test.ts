@@ -124,6 +124,7 @@ describe("gateSnapshot", () => {
 		const accepted = gateSnapshot(week3.envelope, envelope(3 * WEEK, [card("a", 0)]), ["openai/a"]);
 		expect(input(accepted.envelope, "a")).toBe(0);
 		expect(accepted.held).toEqual([]);
+		expect(accepted.accepted).toEqual(["openai/a"]);
 	});
 
 	it("ignores an accept for a different model", () => {
@@ -131,6 +132,7 @@ describe("gateSnapshot", () => {
 		const week2 = gateSnapshot(week1, envelope(WEEK, [card("a", 0)])).envelope;
 		const out = gateSnapshot(week2, envelope(2 * WEEK, [card("a", 0)]), ["openai/b", "bogus"]);
 		expect(input(out.envelope, "a")).toBe(10);
+		expect(out.accepted).toEqual([]);
 	});
 
 	it("carries a model a thin run dropped, with counts that match", () => {
@@ -157,7 +159,7 @@ describe("reading a gated snapshot", () => {
 			pricingHold: { rates: "x", since: 0, accepted: true },
 			priceAnchor: { inputPerMillion: 10, at: 0 },
 			lastSeenAt: 0,
-			missingRunCount: 2,
+			missingRunCount: 0,
 		});
 		trustTestKey();
 		const text = JSON.stringify(envelope(0, [gated]));
@@ -170,5 +172,15 @@ describe("reading a gated snapshot", () => {
 		for (const field of ["pricingHold", "priceAnchor", "lastSeenAt", "missingRunCount"]) {
 			expect(seeded).not.toHaveProperty(field);
 		}
+	});
+
+	it("leaves out a model the last run didn't see; the gate kept it only as a price baseline", async () => {
+		trustTestKey();
+		const text = JSON.stringify(envelope(0, [card("a", 10), card("gone", 1, { missingRunCount: 1, lastSeenAt: 0 })]));
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string) => snapshotResponse(url, text)),
+		);
+		expect((await getSnapshotSeed("openai")).map((m) => m.id)).toEqual(["a"]);
 	});
 });

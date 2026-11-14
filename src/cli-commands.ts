@@ -110,10 +110,10 @@ export async function ensureDiscovered(registry: ModelRegistry): Promise<void> {
 
 	if (usedCache) {
 		const age = formatRelativeTime(discoveredAt, beforeMs);
-		console.log(c(DIM, `Loaded ${totalModels} models from cache (${age}). Run "kosha update" to refresh.`));
+		console.error(c(DIM, `Loaded ${totalModels} models from cache (${age}). Run "kosha update" to refresh.`));
 	} else {
-		console.log(c(DIM, `Discovered ${totalModels} models from ${providers.length} providers.`));
-		console.log(c(DIM, `Saved to ~/.kosha/cache and exported manifest to ~/.kosha/registry.json`));
+		console.error(c(DIM, `Discovered ${totalModels} models from ${providers.length} providers.`));
+		console.error(c(DIM, `Saved to ~/.kosha/cache and exported manifest to ~/.kosha/registry.json`));
 	}
 }
 

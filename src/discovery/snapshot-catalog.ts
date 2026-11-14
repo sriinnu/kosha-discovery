@@ -221,7 +221,12 @@ export function parseSnapshotCatalog(text: string, label: string): SnapshotCatal
 	const out = new Map<string, ModelCard[]>();
 	for (const [id, models] of Object.entries(clean)) {
 		if (!Array.isArray(models)) continue;
-		const cards = models.filter(isModelCardShape).filter((card) => card.provider === id);
+		// The gate keeps a row last week's discovery didn't see, so its price
+		// baseline survives a thin run; `missingRunCount` marks it. It's the
+		// publisher's state, not a model anyone can call today.
+		const cards = models
+			.filter(isModelCardShape)
+			.filter((card) => card.provider === id && !(((card as { missingRunCount?: number }).missingRunCount ?? 0) > 0));
 		if (cards.length > 0) out.set(id, cards);
 	}
 	const fetchedAt = (parsed as { fetchedAt?: unknown }).fetchedAt;
