@@ -58,9 +58,12 @@ runs:
         # The package ships two bins (kosha, kosha-mcp), so npx needs told
         # which one. GitHub runs this step with `bash -e`; the `|| STATUS=$?`
         # keeps a failing gate (exit 2) from aborting before it is reported.
+        # npx runs from $RUNNER_TEMP, not the caller's checkout: in a checkout
+        # of kosha itself (the Model Check workflow) npx took the unbuilt local
+        # package for the requested one and failed with "kosha: not found".
         STATUS=0
-        npx --yes --ignore-scripts --package "@sriinnu/kosha-discovery@${VERSION}" kosha doctor --ci --json \
-          --model "$SCOPE" --deprecation-window "$WINDOW" > "$REPORT" || STATUS=$?
+        (cd "$RUNNER_TEMP" && npx --yes --ignore-scripts --package "@sriinnu/kosha-discovery@${VERSION}" kosha doctor --ci --json \
+          --model "$SCOPE" --deprecation-window "$WINDOW") > "$REPORT" || STATUS=$?
         if [[ ! -s "$REPORT" ]]; then
           echo "::error::kosha doctor produced no report (exit $STATUS)."
           exit 1
