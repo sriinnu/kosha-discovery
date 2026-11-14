@@ -387,6 +387,10 @@ export function createServer(
 			outputWeight,
 			includeUnpriced: includeUnpricedRaw === "true",
 			minContextWindow: minContext,
+			// Every match says whether you can call it. `cheapest` stays the
+			// market's cheapest in 1.x (callers depend on it); ?callable=true
+			// asks for routes you can call only.
+			callableOnly: ["true", "1"].includes(ctx.req.query("callable") ?? ""),
 		};
 
 		const result = registry.cheapestModels(options);

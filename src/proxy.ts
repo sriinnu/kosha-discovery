@@ -269,11 +269,14 @@ function isForwardable(model: ModelCard): boolean {
 	return false; // cloud-sdk (bedrock, vertex) needs per-SDK translation
 }
 
+/**
+ * Forwardable, and callable with what this machine holds: the same answer
+ * `cheapest` and MCP give (see `routeAccess`). A refused key, a Claude
+ * subscription token or a local runtime that is down no longer ranks first
+ * only to be skipped at send time.
+ */
 function isExecutableRoute(registry: ModelRegistry, model: ModelCard): boolean {
-	if (!isForwardable(model)) return false;
-	const descriptor = getProviderDescriptor(model.provider);
-	if (!descriptor || !providerExecutionCredentialRequired(descriptor)) return true;
-	return registry.provider(model.provider)?.authenticated === true;
+	return isForwardable(model) && registry.routeAccess(model).callable;
 }
 
 /**

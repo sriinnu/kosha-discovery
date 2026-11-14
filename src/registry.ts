@@ -70,6 +70,7 @@ import { registryCheapestCandidates, registryExecutionBindingHints } from "./reg
 import type { DiscoveryDependencies, ProviderObservation, RegistryState } from "./registry-state.js";
 import { createRegistryState } from "./registry-state.js";
 import type { ProviderHealth } from "./resilience.js";
+import { providerAccess } from "./route-access.js";
 import type {
 	CapabilitySummary,
 	CheapestModelOptions,
@@ -87,6 +88,7 @@ import type {
 	ProviderInfo,
 	ProviderRoleInfo,
 	RoleQueryOptions,
+	RouteAccess,
 } from "./types.js";
 
 /**
@@ -305,6 +307,16 @@ export class ModelRegistry {
 		// 3) Loose fallback for punctuation variants (dot/hyphen/underscore).
 		const targetLoose = toLooseLookupKey(targetNormalized);
 		return models.find((model) => toLooseLookupKey(normalizeModelId(model.id).toLowerCase()) === targetLoose);
+	}
+
+	/**
+	 * Whether you can call routes on this provider now: a key it accepted,
+	 * or no key needed and it answered. Takes a provider ID or a model card.
+	 */
+	routeAccess(target: string | Pick<ModelCard, "provider">): RouteAccess {
+		const id = typeof target === "string" ? target : target.provider;
+		const providerId = normalizeProviderId(id) ?? id;
+		return providerAccess(providerId, this.providerMap.get(providerId));
 	}
 
 	/** Return a single provider by canonical or alias provider ID. */

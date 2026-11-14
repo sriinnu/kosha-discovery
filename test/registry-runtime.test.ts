@@ -529,8 +529,12 @@ describe("registryDiscover — credentialed failure degrades to the public catal
 			force: true,
 		});
 
-		expect(providers.find((p) => p.id === "moonshot")?.degradedReason).toBeUndefined();
+		const moonshot = providers.find((p) => p.id === "moonshot");
+		expect(moonshot?.degradedReason).toBeUndefined();
 		expect(state.lastDiscoveryErrors).toHaveLength(0);
+		// Quiet, but marked: a provider that didn't answer isn't callable (a
+		// local runtime that is down would otherwise rank first on $0).
+		expect(moonshot?.unreachableReason).toBe("network down");
 	});
 
 	it("still fails when the keyless path has nothing either", async () => {

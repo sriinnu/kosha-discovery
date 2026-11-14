@@ -27,6 +27,7 @@ import {
 	registryProviderDescriptor,
 } from "./registry-query.js";
 import type { RegistryState } from "./registry-state.js";
+import { registryRouteAccess } from "./route-access.js";
 import type { ModelCard, ModelMode, PricingMetric } from "./types.js";
 
 /**
@@ -68,6 +69,7 @@ export function registryCheapestCandidates(
 			score: score ?? null,
 			priceMetric,
 			capabilities: trustedCapabilitiesForModel(model, descriptor),
+			callable: registryRouteAccess(state, model).callable,
 		})),
 	};
 }

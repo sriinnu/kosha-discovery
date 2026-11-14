@@ -35,13 +35,15 @@ Tool-execution failures (a provider timing out, a model not found) come back as 
 | Tool | Purpose | Key arguments |
 |------|---------|---------------|
 | `kosha_query_models` | List / filter models | `provider`, `mode`, `capability`, `limit` |
-| `kosha_cheapest_model` | Cheapest models meeting requirements; remote $0 prices rank last with `priceUnverified: true` | `capability`, `min_context_k`, `provider`, `limit` |
-| `kosha_ranked_routes` | Routes ranked by strategy, breaker-open providers last | `strategy` (`cheapest` / `fastest` / `reliable` / `balanced`), same filters as cheapest |
+| `kosha_cheapest_model` | Cheapest models you can call that meet the requirements; remote $0 prices rank last with `priceUnverified: true`. A cheaper route you can't call comes back as `cheapestOverall` with a `toCall` hint | `capability`, `min_context_k`, `provider`, `limit`, `include_uncallable` |
+| `kosha_ranked_routes` | Routes you can call, ranked by strategy, breaker-open providers last | `strategy` (`cheapest` / `fastest` / `reliable` / `balanced`), same filters as cheapest |
 | `kosha_model_detail` | Full card for one model (pricing, capabilities, tool dialect, structured-output modes, status) | `model` |
 | `kosha_model_routes` | Every serving-layer route for a model with per-route pricing | `model` |
 | `kosha_resolve_alias` | Alias → canonical ID + provider | `alias` |
 | `kosha_provider_health` | Auth state, model counts, last discovery error per provider | `provider` |
 | `kosha_context_strategy` | Ranked context-management options (continue / cache / compact / switch / batch) with per-turn cost math | `model`, `current_tokens`, `expected_output_tokens`, `expected_remaining_turns` |
+
+Both tools return only routes you can call now, because an agent acts on row one. A route is callable when kosha holds a key the provider accepted, or the provider needs no key and answered on the last discovery. A Claude subscription token doesn't count: it can't make API calls. Every row carries `callable`, `credentialSource` and `keyVerified` (the live list answered with the key). `include_uncallable: true` lists every route; the rows you can't call say why in `uncallableReason` (`no-key`, `key-refused`, `subscription-oauth`, `unreachable`) and what to set in `toCall`. When nothing is callable, `matches` is empty and `message` says so; there is no silent fallback to routes you can't use.
 
 `kosha_ranked_routes` is the tool to reach for before routing real traffic: `fastest` uses observed p95 latency, `reliable` folds in circuit-breaker state and timeout / auth-error history, `balanced` blends price, latency, and reliability. The returned order doubles as a failover sequence.
 

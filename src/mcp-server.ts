@@ -31,7 +31,8 @@ import { computeContextStrategy } from "./context-strategy.js";
 import { isMainModule } from "./entry.js";
 import { ModelRegistry } from "./registry.js";
 import { parseRouteStrategy, ROUTE_STRATEGIES } from "./registry-routing.js";
-import type { ModelMode } from "./types.js";
+import { routeAccessHint } from "./route-access.js";
+import type { ModelMode, RouteAccess } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Server identity + protocol negotiation
@@ -110,10 +111,15 @@ export const TOOLS = [
 	{
 		name: "kosha_cheapest_model",
 		description:
-			"Find the cheapest AI model that meets your requirements. Returns ranked matches with per-million token pricing; models a subscription plan already pays for come back separately in includedInPlans, never ranked as free. Use this before routing a request to pick the most cost-effective option.",
+			"Find the cheapest AI model you can call now (a key it accepted, or a local runtime that answered) that meets your requirements. Returns ranked matches with per-million token pricing. When a cheaper route needs a key you don't have, it comes back as cheapestOverall with a toCall hint naming the env var. Models a subscription plan already pays for come back separately in includedInPlans, never ranked as free. Use this before routing a request to pick the most cost-effective option.",
 		inputSchema: {
 			type: "object",
 			properties: {
+				include_uncallable: {
+					type: "boolean",
+					description:
+						"Also rank routes you can't call now (no key, a refused key, a runtime that is down); each row says callable and why not. Default false.",
+				},
 				capability: {
 					type: "string",
 					description: "Required capability (e.g. tool_use, vision, code, reasoning)",
@@ -130,10 +136,14 @@ export const TOOLS = [
 	{
 		name: "kosha_ranked_routes",
 		description:
-			"Rank chat-model routes by strategy: cheapest (price only), fastest (observed p95 latency), reliable (circuit-breaker state plus timeout / auth-error history), or balanced (weighted blend of all three). Providers whose breaker is open always sort last, so the result doubles as a failover order. Accepts the same filters as kosha_cheapest_model.",
+			"Rank chat-model routes you can call now by strategy: cheapest (price only), fastest (observed p95 latency), reliable (circuit-breaker state plus timeout / auth-error history), or balanced (weighted blend of all three). Providers whose breaker is open always sort last, so the result doubles as a failover order. Accepts the same filters as kosha_cheapest_model, include_uncallable included.",
 		inputSchema: {
 			type: "object",
 			properties: {
+				include_uncallable: {
+					type: "boolean",
+					description: "Also rank routes you can't call now; each row says callable and why not. Default false.",
+				},
 				strategy: {
 					type: "string",
 					enum: ["cheapest", "fastest", "reliable", "balanced"],
@@ -235,6 +245,24 @@ export interface McpDeps {
 let registryInstance: ModelRegistry | null = null;
 let registryReady: Promise<ModelRegistry> | null = null;
 
+/** The access fields every MCP route row carries; uncallable rows also say why and what to set. */
+function accessFields(route: Partial<RouteAccess> & { model: { provider: string } }): Pick<
+	RouteAccess,
+	"callable" | "credentialSource" | "keyVerified"
+> & {
+	uncallableReason?: RouteAccess["uncallableReason"];
+	toCall?: string;
+} {
+	const access: RouteAccess = {
+		callable: route.callable ?? false,
+		credentialSource: route.credentialSource ?? "none",
+		keyVerified: route.keyVerified ?? false,
+		...(route.uncallableReason ? { uncallableReason: route.uncallableReason } : {}),
+	};
+	const toCall = routeAccessHint(route.model.provider, access);
+	return { ...access, ...(toCall ? { toCall } : {}) };
+}
+
 async function loadRegistry(): Promise<ModelRegistry> {
 	const reg = new ModelRegistry(await ModelRegistry.loadConfigFile());
 	await reg.discover();
@@ -286,24 +314,43 @@ export async function callTool(
 
 		case "kosha_cheapest_model": {
 			const minContext = typeof args.min_context_k === "number" ? args.min_context_k * 1_000 : undefined;
-			const result = reg.cheapestModels({
-				mode: "chat",
+			const includeUncallable = args.include_uncallable === true;
+			const query = {
+				mode: "chat" as const,
 				capability: args.capability as string | undefined,
 				provider: args.provider as string | undefined,
 				minContextWindow: minContext,
+			};
+			// An agent acts on row one, so by default every row is one it can call.
+			const result = reg.cheapestModels({
+				...query,
 				limit: typeof args.limit === "number" ? args.limit : 5,
+				callableOnly: !includeUncallable,
 			});
+			const row = (m: (typeof result.matches)[number]) => ({
+				id: m.model.id,
+				provider: m.model.provider,
+				name: m.model.name,
+				contextWindow: m.model.contextWindow,
+				pricing: m.model.pricing ?? null,
+				score: m.score,
+				priceMetric: m.priceMetric,
+				...(m.priceUnverified ? { priceUnverified: true } : {}),
+				...accessFields(m),
+			});
+			// The market's cheapest route, when it is one you can't call: what
+			// a key would buy, and which key.
+			const overall = includeUncallable ? undefined : reg.cheapestModels({ ...query, limit: 1 }).matches[0];
+			const cheapestOverall = overall && overall.callable === false ? row(overall) : undefined;
 			return {
-				matches: result.matches.map((m) => ({
-					id: m.model.id,
-					provider: m.model.provider,
-					name: m.model.name,
-					contextWindow: m.model.contextWindow,
-					pricing: m.model.pricing ?? null,
-					score: m.score,
-					priceMetric: m.priceMetric,
-					...(m.priceUnverified ? { priceUnverified: true } : {}),
-				})),
+				matches: result.matches.map(row),
+				...(cheapestOverall ? { cheapestOverall } : {}),
+				...(result.matches.length === 0 && !includeUncallable
+					? {
+							message:
+								"No route you can call matches. cheapestOverall and missingCredentials say what a key would add; include_uncallable lists everything.",
+						}
+					: {}),
 				missingCredentials: result.missingCredentials.map((c) => c.providerId),
 				// Paid by a subscription: no per-token price, and not free either.
 				includedInPlans: result.includedInPlans.map((m) => ({
@@ -324,6 +371,7 @@ export async function callTool(
 			}
 			const limit = typeof args.limit === "number" && args.limit > 0 ? Math.floor(args.limit) : 5;
 			const minContext = typeof args.min_context_k === "number" ? args.min_context_k * 1_000 : undefined;
+			const includeUncallable = args.include_uncallable === true;
 			const ranked = reg.rankedRoutes(
 				{
 					mode: "chat",
@@ -331,11 +379,18 @@ export async function callTool(
 					provider: args.provider as string | undefined,
 					minContextWindow: minContext,
 					limit,
+					callableOnly: !includeUncallable,
 				},
 				strategy,
 			);
 			return {
 				strategy,
+				...(ranked.length === 0 && !includeUncallable
+					? {
+							message: "No route you can call matches; include_uncallable lists every route and what each needs.",
+							missingCredentials: reg.missingCredentialPrompts().map((c) => c.providerId),
+						}
+					: {}),
 				routes: ranked.map((r) => ({
 					id: r.model.id,
 					provider: r.providerId,
@@ -344,6 +399,7 @@ export async function callTool(
 					pricing: r.model.pricing ?? null,
 					price: r.price,
 					...(r.priceUnverified ? { priceUnverified: true } : {}),
+					...accessFields(r),
 					compositeScore: r.compositeScore,
 					health: {
 						available: r.health.available,

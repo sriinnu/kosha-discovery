@@ -1626,7 +1626,9 @@ async function discoverProvider(
 			// A key rejected today otherwise looks healthy for as long as the
 			// old cache lasts. A keyless failure (a local runtime that isn't
 			// up) stays quiet, as it always has.
-			if (credential.source === "none") return stale.data;
+			// Its routes aren't callable until it answers again, though: a
+			// local runtime that is down would otherwise rank first on $0.
+			if (credential.source === "none") return { ...stale.data, unreachableReason: errorMessage };
 			degraded.push({
 				providerId: discoverer.providerId,
 				providerName: discoverer.providerName,

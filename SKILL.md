@@ -44,7 +44,9 @@ kosha.model("sonnet")                              // ModelCard | undefined; ali
 kosha.resolve("opus")                              // "claude-opus-5" — alias → canonical ID (input returned unchanged if unknown)
 kosha.modelRoutes("claude-opus-5")                 // ModelCard[] — every serving route
 kosha.modelRouteInfo("claude-opus-5")              // routes with isDirect / isPreferred / baseUrl
-kosha.cheapestModels({ role: "embeddings", limit: 3 })   // { matches, missingCredentials, priceMetric, … }
+kosha.cheapestModels({ role: "embeddings", limit: 3 })   // { matches, missingCredentials, priceMetric, … }; each match says `callable`
+kosha.cheapestModels({ role: "embeddings", callableOnly: true })  // only routes you can call now
+kosha.routeAccess("groq")                                 // { callable, credentialSource, keyVerified, uncallableReason? }
 kosha.rankedRoutes({ mode: "chat", capability: "tool_use" }, "reliable")  // "cheapest" | "fastest" | "reliable" | "balanced"
 kosha.providerRouteHealth("groq")                  // breaker state, p95 latency, reliability score
 kosha.provider("anthropic")                        // ProviderInfo | undefined
@@ -83,7 +85,7 @@ kosha providers                         # auth state + credential source per pro
 kosha roles [--role x]                  # provider → model → roles
 kosha capabilities                      # alias: caps
 kosha capable <capability> [--provider x] [--limit n]
-kosha cheapest [--role x] [--capability x] [--provider x] [--limit n] [--price-metric input|output|blended] [--include-unpriced]
+kosha cheapest [--role x] [--capability x] [--provider x] [--limit n] [--price-metric input|output|blended] [--include-unpriced] [--mine]
 kosha latest [--provider x]             # force-fetch the newest provider details and print them
 kosha refresh [--provider x]            # alias: update
 kosha enrich                            # re-run pricing enrichment on the cache
@@ -102,7 +104,7 @@ Start with `kosha serve --port 3000` or `PORT=3000 node dist/server.js`. Binds `
 
 ```
 GET  /api/models?provider=&originProvider=&mode=&capability=   → { models, count }   (invalid mode → 400)
-GET  /api/models/cheapest?role=&capability=&provider=&limit=&priceMetric=&includeUnpriced=
+GET  /api/models/cheapest?role=&capability=&provider=&limit=&priceMetric=&includeUnpriced=&callable=
 GET  /api/models/:idOrAlias                → card + baseUrl + version + isDirectProvider
 GET  /api/models/:idOrAlias/routes         → { model, preferredProvider, routes }
 GET  /api/roles?role=                      → { providers, count, modelCount, missingCredentials }
@@ -146,8 +148,10 @@ Full reference: `docs/api.md`.
 | Tool | Arguments |
 |---|---|
 | `kosha_query_models` | `provider`, `mode`, `capability`, `limit` |
-| `kosha_cheapest_model` | `capability`, `min_context_k`, `provider`, `limit` |
-| `kosha_ranked_routes` | `strategy` (required), `capability`, `min_context_k`, `provider`, `limit` |
+| `kosha_cheapest_model` | `capability`, `min_context_k`, `provider`, `limit`, `include_uncallable` |
+| `kosha_ranked_routes` | `strategy` (required), `capability`, `min_context_k`, `provider`, `limit`, `include_uncallable` |
+
+Both MCP tools return only routes you can call unless `include_uncallable: true`. `kosha_cheapest_model` adds `cheapestOverall` when the cheapest route needs a key you lack, with `toCall` naming the env var.
 | `kosha_model_detail` | `model` |
 | `kosha_model_routes` | `model` |
 | `kosha_resolve_alias` | `alias` |

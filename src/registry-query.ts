@@ -18,6 +18,7 @@ import {
 	providerExecutionCredentialRequired,
 } from "./provider-catalog.js";
 import type { RegistryState } from "./registry-state.js";
+import { registryRouteAccess } from "./route-access.js";
 import type {
 	CapabilitySummary,
 	CheapestModelMatch,
@@ -259,6 +260,7 @@ export function registryCheapestModels(state: RegistryState, options?: CheapestM
 			// Every filter runs here, before the cut to `limit`; filtering the
 			// cut list instead returned "nothing" whenever the cheapest few failed it.
 			(options?.minContextWindow === undefined || model.contextWindow >= options.minContextWindow) &&
+			(!options?.callableOnly || registryRouteAccess(state, model).callable) &&
 			(!options?.where || options.where(model)),
 	);
 	const priceMetric = options?.priceMetric ?? defaultPricingMetric(options);
@@ -311,7 +313,11 @@ export function registryCheapestModels(state: RegistryState, options?: CheapestM
 		: Array.from(state.providerMap.values()).map((provider) => provider.id);
 
 	return {
-		matches: [...ranked, ...unverified, ...unpriced].slice(0, normalizeLimit(options?.limit)),
+		// Every row says whether you can call it, so a caller never has to
+		// look the provider up to learn that the cheapest route needs a key.
+		matches: [...ranked, ...unverified, ...unpriced]
+			.slice(0, normalizeLimit(options?.limit))
+			.map((match) => ({ ...match, ...registryRouteAccess(state, match.model) })),
 		candidates: candidates.length,
 		pricedCandidates: ranked.length,
 		skippedNoPricing: candidates.length - ranked.length - includedInPlans.length,
