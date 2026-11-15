@@ -307,6 +307,9 @@ export async function registryEnrichOnly(state: RegistryState): Promise<EnrichOn
 		state.providerMap.set(provider.id, provider);
 	}
 	state.discoveredAt = allEntry.timestamp;
+	// Carried through untouched, so the save below keeps them.
+	const stamps = await state.cache.get<Record<string, string>>(catalogCacheKey(CREDENTIAL_STAMPS_KEY));
+	for (const [id, stamp] of Object.entries(stamps?.data ?? {})) state.credentialStamps.set(id, stamp);
 
 	// Snapshot pricing before enrichment to count how many models get updates.
 	const before = countPricingFields(state);
@@ -434,12 +437,30 @@ export function populateRegistryModelAliases(state: RegistryState): void {
 /**
  * Load provider data from disk cache when it is still fresh.
  */
-export async function loadRegistryFromCache(state: RegistryState, providerIds?: string[]): Promise<boolean> {
+export async function loadRegistryFromCache(
+	state: RegistryState,
+	providerIds?: string[],
+	stampFor?: (providerId: string) => Promise<string>,
+): Promise<boolean> {
 	const ttl = state.config.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
+	const stamps = stampFor
+		? (await state.cache.get<Record<string, string>>(catalogCacheKey(CREDENTIAL_STAMPS_KEY)))?.data
+		: undefined;
 
 	if (!providerIds || providerIds.length === 0) {
 		const allEntry = await state.cache.get<ProviderInfo[]>(catalogCacheKey("providers_all"));
 		if (!allEntry || state.cache.isExpired(allEntry.timestamp, ttl)) {
+			return false;
+		}
+		if (
+			stampFor &&
+			!(await cacheCredentialsMatch(
+				state,
+				allEntry.data.map((provider) => provider.id),
+				stamps,
+				stampFor,
+			))
+		) {
 			return false;
 		}
 
@@ -450,15 +471,66 @@ export async function loadRegistryFromCache(state: RegistryState, providerIds?: 
 		return true;
 	}
 
+	const entries: ProviderInfo[] = [];
 	for (const providerId of providerIds) {
 		const entry = await state.cache.get<ProviderInfo>(catalogCacheKey(`${CACHE_KEY_PREFIX}${providerId}`));
 		if (!entry || state.cache.isExpired(entry.timestamp, ttl)) {
 			return false;
 		}
-		state.providerMap.set(providerId, entry.data);
+		entries.push(entry.data);
 	}
+	if (stampFor) {
+		const scoped = stamps
+			? Object.fromEntries(providerIds.filter((id) => id in stamps).map((id) => [id, stamps[id]]))
+			: undefined;
+		if (!(await cacheCredentialsMatch(state, providerIds, scoped, stampFor))) return false;
+	}
+	for (const entry of entries) state.providerMap.set(entry.id, entry);
 
 	state.discoveredAt = Date.now();
+	return true;
+}
+
+/** What a credential looks like to the cache: its source and env var, never the key. */
+export function credentialStamp(credential: CredentialResult): string {
+	return credential.envVar ? `${credential.source}:${credential.envVar}` : credential.source;
+}
+
+/** The credential this process would discover `providerId` with. */
+export async function resolveProviderCredential(
+	state: RegistryState,
+	dependencies: Pick<DiscoveryDependencies, "resolveCredential" | "fallbackCredential">,
+	providerId: string,
+): Promise<CredentialResult> {
+	const explicitKey = getProviderConfig(state.config, providerId)?.apiKey;
+	return dependencies.resolveCredential
+		? dependencies.resolveCredential(providerId, explicitKey)
+		: dependencies.fallbackCredential(providerId, explicitKey);
+}
+
+const CREDENTIAL_STAMPS_KEY = "credential_stamps";
+
+/**
+ * True when every provider in the cache was discovered with the credentials
+ * this process holds now. The cache is shared by every kosha on the machine:
+ * an MCP server launched by a GUI app has no shell env, so without this its
+ * keyless cache told the keyed CLI, for a day, that nothing was callable;
+ * the other way round, a keyless reader was told a keyed route was.
+ * A provider with no stamp (a cache from before 1.16.1) counts as a mismatch.
+ */
+async function cacheCredentialsMatch(
+	state: RegistryState,
+	providerIds: string[],
+	stamps: Record<string, string> | undefined,
+	stampFor: (providerId: string) => Promise<string>,
+): Promise<boolean> {
+	if (!stamps) return false;
+	const ids = new Set([...providerIds, ...Object.keys(stamps)]);
+	const checks = await Promise.all(
+		[...ids].map(async (id) => stamps[id] !== undefined && stamps[id] === (await stampFor(id))),
+	);
+	if (!checks.every(Boolean)) return false;
+	for (const [id, stamp] of Object.entries(stamps)) state.credentialStamps.set(id, stamp);
 	return true;
 }
 
@@ -472,6 +544,9 @@ export async function saveRegistryToCache(state: RegistryState): Promise<void> {
 			state.cache.set(catalogCacheKey(`${CACHE_KEY_PREFIX}${provider.id}`), provider),
 		);
 		saves.push(state.cache.set(catalogCacheKey("providers_all"), providers));
+		if (state.credentialStamps.size > 0) {
+			saves.push(state.cache.set(catalogCacheKey(CREDENTIAL_STAMPS_KEY), Object.fromEntries(state.credentialStamps)));
+		}
 		await Promise.all(saves);
 	} catch {
 		// I intentionally ignore cache write failures so discovery still succeeds.
@@ -1556,7 +1631,6 @@ async function discoverProvider(
 	sharedKeys: SharedKeyLedger,
 ): Promise<ProviderInfo | null> {
 	const breaker = state.healthTracker.breaker(discoverer.providerId);
-	const startedAt = Date.now();
 
 	if (!breaker.canExecute()) {
 		const stale = await StaleCachePolicy.getWithStale<ProviderInfo>(
@@ -1566,10 +1640,24 @@ async function discoverProvider(
 		return stale?.data ?? null;
 	}
 
-	const explicitKey = getProviderConfig(state.config, discoverer.providerId)?.apiKey;
-	const credential = dependencies.resolveCredential
-		? await dependencies.resolveCredential(discoverer.providerId, explicitKey)
-		: dependencies.fallbackCredential(discoverer.providerId, explicitKey);
+	const credential = await resolveProviderCredential(state, dependencies, discoverer.providerId);
+	// Recorded whatever the outcome, an empty or failed one included: a cache
+	// read under other keys must not be trusted (see loadRegistryFromCache).
+	state.credentialStamps.set(discoverer.providerId, credentialStamp(credential));
+	return discoverWithCredential(state, dependencies, discoverer, timeout, degraded, sharedKeys, credential);
+}
+
+async function discoverWithCredential(
+	state: RegistryState,
+	dependencies: DiscoveryDependencies,
+	discoverer: ProviderDiscoverer,
+	timeout: number,
+	degraded: DiscoveryError[],
+	sharedKeys: SharedKeyLedger,
+	credential: CredentialResult,
+): Promise<ProviderInfo | null> {
+	const breaker = state.healthTracker.breaker(discoverer.providerId);
+	const startedAt = Date.now();
 	// A plan is listed only for someone holding a key to it; without one its
 	// models stay price-only rows in catalog-only.json.
 	const isPlan = getProviderDescriptor(discoverer.providerId)?.subscriptionPlan === true;

@@ -29,10 +29,16 @@ import {
 	type DiscoverySnapshotV1,
 } from "../src/discovery-contract.js";
 import { registryClassifyError, registryRecordObservation } from "../src/registry-discovery.js";
-import { exportRegistryManifest, registryDiscover } from "../src/registry-runtime.js";
+import {
+	credentialStamp,
+	exportRegistryManifest,
+	loadRegistryFromCache,
+	registryDiscover,
+	saveRegistryToCache,
+} from "../src/registry-runtime.js";
 import type { DiscoveryDependencies } from "../src/registry-state.js";
 import { createRegistryState } from "../src/registry-state.js";
-import type { ModelCard, ProviderDiscoverer } from "../src/types.js";
+import type { CredentialResult, ModelCard, ProviderDiscoverer } from "../src/types.js";
 
 let workDir: string;
 let manifestPath: string;
@@ -605,5 +611,124 @@ describe("registryDiscover — credentialed failure degrades to the public catal
 
 		expect(calls).toBe(1);
 		expect(state.lastDiscoveryErrors).toHaveLength(1);
+	});
+});
+
+describe("cache written under other keys", () => {
+	/**
+	 * Two kosha processes on one machine share ~/.kosha/cache. A GUI-launched
+	 * MCP server has no shell env, so it wrote a keyless cache, and for a day
+	 * the keyed CLI read every route as needing a key (`--mine` empty, MCP
+	 * "nothing callable"). Each "process" here is a fresh state on one cacheDir.
+	 */
+	function processWith(credential: CredentialResult, ...discoverers: ProviderDiscoverer[]) {
+		const state = createRegistryState({ cacheDir: join(workDir, "cache") });
+		// Only OpenRouter's key differs between the two processes.
+		const credentialFor = (id: string): CredentialResult => (id === "openrouter" ? credential : { source: "none" });
+		const dependencies: DiscoveryDependencies = {
+			resolveCredential: null,
+			loadDiscoverers: async () => discoverers,
+			enrichModels: async () => undefined,
+			populateModelAliases: () => undefined,
+			loadFromCache: (ids) => loadRegistryFromCache(state, ids, async (id) => credentialStamp(credentialFor(id))),
+			saveToCache: () => saveRegistryToCache(state),
+			fallbackCredential: (id) => credentialFor(id),
+			snapshotForDelta: () => null,
+			recordDiscoveryMutation: () => undefined,
+			recordObservation: (providerId, entry) => registryRecordObservation(state, providerId, entry),
+			classifyError: (message) => registryClassifyError(message),
+		};
+		return { state, discover: () => registryDiscover(state, dependencies) };
+	}
+
+	const KEY: CredentialResult = { source: "env", apiKey: "sk-test", envVar: "OPENROUTER_API_KEY" };
+	const NONE: CredentialResult = { source: "none" };
+
+	function lister() {
+		const calls: string[] = [];
+		const discoverer: ProviderDiscoverer = {
+			providerId: "openrouter",
+			providerName: "OpenRouter",
+			baseUrl: "https://openrouter.ai/api/v1",
+			async discover(credential) {
+				calls.push(credential.source);
+				return [makeModelCard({ id: "m", provider: "openrouter", source: "api" })];
+			},
+		};
+		return { calls, discoverer };
+	}
+
+	it("a keyed reader rediscovers a cache a keyless process wrote", async () => {
+		const { calls, discoverer } = lister();
+		await processWith(NONE, discoverer).discover();
+		const providers = await processWith(KEY, discoverer).discover();
+
+		expect(calls).toEqual(["none", "env"]);
+		expect(providers.find((p) => p.id === "openrouter")).toMatchObject({
+			authenticated: true,
+			credentialSource: "env",
+		});
+	});
+
+	it("a keyless reader rediscovers a cache a keyed process wrote", async () => {
+		const { calls, discoverer } = lister();
+		await processWith(KEY, discoverer).discover();
+		const providers = await processWith(NONE, discoverer).discover();
+
+		expect(calls).toEqual(["env", "none"]);
+		expect(providers.find((p) => p.id === "openrouter")).toMatchObject({
+			authenticated: false,
+			credentialSource: "none",
+		});
+	});
+
+	it("the same keys still hit the cache", async () => {
+		const { calls, discoverer } = lister();
+		await processWith(KEY, discoverer).discover();
+		await processWith(KEY, discoverer).discover();
+
+		expect(calls).toEqual(["env"]);
+	});
+
+	it("a key added for a provider that listed nothing is noticed", async () => {
+		// A plan without a key returns null and never reaches the cache; its stamp must.
+		const calls: string[] = [];
+		const discoverer: ProviderDiscoverer = {
+			providerId: "openrouter",
+			providerName: "OpenRouter",
+			baseUrl: "https://openrouter.ai/api/v1",
+			async discover(credential) {
+				calls.push(credential.source);
+				if (credential.source === "none") throw new Error("network down");
+				return [makeModelCard({ id: "m", provider: "openrouter", source: "api" })];
+			},
+		};
+		// Another provider listed fine, so the cache and its stamps exist.
+		const other = lister().discoverer;
+		const sibling = { ...other, providerId: "vercel", providerName: "Vercel" };
+		await processWith(NONE, discoverer, sibling).discover();
+		await processWith(KEY, discoverer, sibling).discover();
+
+		expect(calls).toEqual(["none", "env"]);
+	});
+
+	it("a cache from before the stamps is rediscovered once", async () => {
+		const { calls, discoverer } = lister();
+		const old = createRegistryState({ cacheDir: join(workDir, "cache") });
+		await old.cache.set(catalogCacheKey("providers_all"), [
+			{
+				id: "openrouter",
+				name: "OpenRouter",
+				baseUrl: "https://openrouter.ai/api/v1",
+				authenticated: false,
+				credentialSource: "none",
+				models: [makeModelCard({ id: "m", provider: "openrouter", source: "api" })],
+				lastRefreshed: Date.now(),
+			},
+		]);
+		await processWith(KEY, discoverer).discover();
+		await processWith(KEY, discoverer).discover();
+
+		expect(calls).toEqual(["env"]);
 	});
 });

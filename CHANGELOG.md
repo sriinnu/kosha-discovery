@@ -13,6 +13,12 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
+## [1.16.1] — 2026-11-15
+
+### Fixed
+
+- **A cache written under other keys is rediscovered, not trusted.** Every kosha on a machine shares `~/.kosha/cache`. An MCP server launched by a GUI app has no shell env, so it wrote a keyless cache, and for the next 24h the keyed CLI and agents read every route as needing a key: `cheapest --mine` came back empty, and MCP said nothing was callable. The other way round, a keyless reader was told a keyed route was callable. Discovery now records which credential each provider was listed with (its source and env var name, never the key), and a cache read under a different set is rediscovered. A cache from 1.16.0 or earlier is rediscovered once.
+
 ## [1.16.0] — 2026-11-14
 
 ### Changed

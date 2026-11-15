@@ -54,6 +54,7 @@ import {
 import {
 	type AcceptHeldPriceResult,
 	acceptHeldPrice,
+	credentialStamp,
 	type EnrichOnlyResult,
 	enrichRegistryModels,
 	fallbackRegistryCredential,
@@ -64,6 +65,7 @@ import {
 	registryDiscover,
 	registryEnrichOnly,
 	registryRefresh,
+	resolveProviderCredential,
 	saveRegistryToCache,
 } from "./registry-runtime.js";
 import { registryCheapestCandidates, registryExecutionBindingHints } from "./registry-selection.js";
@@ -522,17 +524,23 @@ export class ModelRegistry {
 	private dependencies(
 		credentialResolver: { resolve: (providerId: string, explicitKey?: string) => Promise<CredentialResult> } | null,
 	): DiscoveryDependencies {
-		return {
+		const resolvers = {
 			// I bind the loaded resolver once per discovery pass to avoid repeated dynamic imports.
 			resolveCredential: credentialResolver
-				? (providerId, explicitKey) => credentialResolver.resolve(providerId, explicitKey)
+				? (providerId: string, explicitKey?: string) => credentialResolver.resolve(providerId, explicitKey)
 				: null,
+			fallbackCredential: fallbackRegistryCredential,
+		};
+		return {
+			...resolvers,
 			loadDiscoverers: (providerIds, includeLocal) => loadRegistryDiscoverers(this.state, providerIds, includeLocal),
 			enrichModels: () => enrichRegistryModels(this.state),
 			populateModelAliases: () => populateRegistryModelAliases(this.state),
-			loadFromCache: (providerIds) => loadRegistryFromCache(this.state, providerIds),
+			loadFromCache: (providerIds) =>
+				loadRegistryFromCache(this.state, providerIds, async (providerId) =>
+					credentialStamp(await resolveProviderCredential(this.state, resolvers, providerId)),
+				),
 			saveToCache: () => saveRegistryToCache(this.state),
-			fallbackCredential: fallbackRegistryCredential,
 			snapshotForDelta: () => registrySnapshotForDelta(this.state),
 			recordDiscoveryMutation: (previousSnapshot) => registryRecordDiscoveryMutation(this.state, previousSnapshot),
 			recordObservation: (providerId, entry) => registryRecordObservation(this.state, providerId, entry),
