@@ -13,6 +13,8 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
+## [1.16.0] — 2026-11-14
+
 ### Changed
 
 - **MCP returns routes you can call.** `kosha_cheapest_model` and `kosha_ranked_routes` rank only routes kosha can call now: a key the provider accepted, or a provider that needs no key and answered. An agent acts on row one, and row one used to need a key the user didn't have. `include_uncallable: true` restores the full list. When a cheaper route needs a key, `kosha_cheapest_model` returns it as `cheapestOverall`, with `toCall` naming the env var. When nothing is callable, the list is empty and `message` says so.
