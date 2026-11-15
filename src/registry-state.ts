@@ -40,6 +40,13 @@ export interface ProviderObservation {
 export interface RegistryState {
 	/** Discovered providers keyed by canonical provider ID. */
 	providerMap: Map<string, ProviderInfo>;
+	/**
+	 * The credential each provider resolved on its last discovery, as
+	 * `source[:ENV_VAR]` (never the key). Saved beside the cache so a cache
+	 * written under other keys (a GUI-launched MCP server has no shell env)
+	 * is rediscovered rather than trusted.
+	 */
+	credentialStamps: Map<string, string>;
 	/** Alias resolver shared by legacy and v1 surfaces. */
 	aliasResolver: AliasResolver;
 	/** Disk cache used for stale reads and snapshot reuse. */
@@ -104,6 +111,7 @@ export function createRegistryState(config?: KoshaConfig): RegistryState {
 
 	return {
 		providerMap: new Map(),
+		credentialStamps: new Map(),
 		aliasResolver: new AliasResolver(config?.aliases),
 		cache: new KoshaCache(config?.cacheDir),
 		config: config ?? {},
