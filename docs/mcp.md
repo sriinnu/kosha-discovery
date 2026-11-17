@@ -41,6 +41,7 @@ Tool-execution failures (a provider timing out, a model not found) come back as 
 | `kosha_model_routes` | Every serving-layer route for a model with per-route pricing | `model` |
 | `kosha_resolve_alias` | Alias → canonical ID + provider | `alias` |
 | `kosha_provider_health` | Auth state, model counts, last discovery error per provider | `provider` |
+| `kosha_newest_models` | The newest models, newest first, on the maker's route; each row says how it was dated (`dateSource`: `release`, `route`, `first-seen`) and where else it's served (`alsoOn`) | `days`, `limit`, `provider`, `mode`, `include_resellers` |
 | `kosha_context_strategy` | Ranked context-management options (continue / cache / compact / switch / batch) with per-turn cost math | `model`, `current_tokens`, `expected_output_tokens`, `expected_remaining_turns` |
 
 Both tools return only routes you can call now, because an agent acts on row one. A route is callable when kosha holds a key the provider accepted, or the provider needs no key and answered on the last discovery. A Claude subscription token doesn't count: it can't make API calls. Every row carries `callable`, `credentialSource` and `keyVerified` (the live list answered with the key). `include_uncallable: true` lists every route; the rows you can't call say why in `uncallableReason` (`no-key`, `key-refused`, `subscription-oauth`, `unreachable`) and what to set in `toCall`. When nothing is callable, `matches` is empty and `message` says so; there is no silent fallback to routes you can't use.

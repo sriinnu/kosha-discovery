@@ -46,6 +46,12 @@ COMMANDS
   resolve <alias>               Resolve an alias to canonical model ID
   latest                        Force-fetch latest model/provider details (bypass cache)
     --provider <name>             Scope latest fetch to one provider
+  newest (new)                  The newest models, newest first (maker's route)
+    --days <n>                    Window in days (default 30)
+    --limit <n>                   Maximum rows (default 25)
+    --provider <name>             Only this serving provider
+    --mode <mode>                 Only this mode (chat, embedding, image…)
+    --all                         Every route, not just the maker's
   refresh (update)              Force re-discover all providers (bypass cache)
     --provider <name>             Refresh only one provider
   doctor (health)               Deprecation warnings + provider health, no network
@@ -169,6 +175,38 @@ Pricing: $2.00 / $10.00 per million tokens (in/out)
 Source: api + litellm
 Discovered: 2026-02-26T10:30:00Z
 ```
+
+### `kosha model claude-haiku-5-5`
+
+A model with cited prices also shows its cache tiers, the rates above its long-prompt line, any dated price change, and the page the price came from:
+
+```
+Pricing: $0.10 / $0.50 per million tokens (in/out)
+Cache Pricing: $0.01 read, write 5m $0.125 / 1h $0.20 per million tokens
+Long Prompts: over 100K prompt tokens: $0.50 / $2.50 in/out, $0.05 read, write 5m $0.625 / 1h $1.00 (whole request)
+Price Source: https://platform.claude.com/docs/en/about-claude/pricing (checked 2026-11-17)
+Batch Pricing: $0.05 in / $0.25 out per million tokens (50% off)
+Released: 2026-10-07
+```
+
+`Price Change:` appears when a cited price changes on a date, for example Gemini 4 Carbon doubling on 2026-12-01. A bare id resolves to the maker's own route, so `kosha model grok-4.7` is xAI, not a reseller.
+
+### `kosha newest --days 10 --limit 6`
+
+```
+Released     Model                              Provider     Context    $/M in  $/M out  Cache rd
+──────────── ────────────────────────────────── ──────────── ──────── ──────── ──────── ─────────
+2026-11-17   gpt-6.2-astra                      openai       1.1M        $8.00   $40.00     $0.40
+2026-11-17   gpt-6.2-sol                        openai       1.1M        $2.00   $10.00     $0.10
+2026-11-16   omni-moderation-csam-latest        openai       32.8K        free     free         —
+2026-11-16*  qwen4-max                          alibaba      991.8K      $1.50    $4.50    $0.075
+2026-11-16   tencent/hy4-flash                  novita       1M          $0.07   $0.281    $0.003
+2026-11-12   gemini-4-hydrogen                  google       1.0M        $1.50    $7.50    $0.075
+─────────────────────────────────────────────────────────────────────────────────────────────────
+6 models in the last 10 days. * dated by another route   ~ first seen by kosha
+```
+
+One row per model, on the maker's own route. When that route has no release date, the date comes from another route that has one (`*`), then from the provider's changelog, then from the day kosha first saw the model (`~`, the manifest's `firstSeenAt`). `--all` lists every route; `--json` adds `dateSource` and `alsoOn`.
 
 ### `kosha providers`
 
