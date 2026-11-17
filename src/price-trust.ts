@@ -86,7 +86,119 @@ export function sanitizePricing<P extends Record<string, unknown> | undefined | 
 		out ??= { ...pricing };
 		delete out[field];
 	}
+	return sanitizeNested(out ?? pricing) as P;
+}
+
+/** A write premium above this multiple of input on the shortest lifetime is not a real price. */
+export const MAX_SHORT_WRITE_MULTIPLE = 2.5;
+/** No lifetime sold today costs more than this multiple of input (OpenAI's 12h is 2.5x, Anthropic's 1h 2x). */
+export const MAX_ANY_WRITE_MULTIPLE = 4;
+
+const num = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+
+/**
+ * Drop cache rates a catalog can't mean, field by field. Run on catalog
+ * pricing only: kosha's cited rates (see `discovery/cited-prices.ts`) are
+ * applied after this and never judged by it.
+ *
+ * - A cache read above input. Equal is real: it means no cache discount.
+ * - A cache write below input, 0 included. Every provider bills a write at
+ *   input or more; a lower "write" is usually a storage fee in the wrong
+ *   column (OpenRouter's Gemini rows), and 0 is a catalog that didn't know.
+ *   Removing it leaves the write unknown, which cost code prices by ratio,
+ *   instead of free.
+ * - A short-lifetime write over 2.5x input (OpenRouter's Kimi K3 row listed
+ *   15.6x), a 1h write over 4x, or a 1h write below the short one.
+ *
+ * Returns the same object when nothing changed.
+ */
+export function sanitizeCacheRates<P extends Record<string, unknown> | undefined | null>(pricing: P): P {
+	if (!pricing) return pricing;
+	const input = pricing.inputPerMillion;
+	if (!num(input) || input <= 0) return pricing;
+	let out: Record<string, unknown> | null = null;
+	const drop = (field: string) => {
+		out ??= { ...pricing };
+		delete out[field];
+	};
+	const read = pricing.cacheReadPerMillion;
+	if (num(read) && read > input) drop("cacheReadPerMillion");
+	const write = pricing.cacheWritePerMillion;
+	const writeBad = num(write) && (write < input || write > input * MAX_SHORT_WRITE_MULTIPLE);
+	if (writeBad) drop("cacheWritePerMillion");
+	const write1h = pricing.cacheWrite1hPerMillion;
+	const shortWrite = writeBad ? undefined : write;
+	if (
+		num(write1h) &&
+		(write1h < input || write1h > input * MAX_ANY_WRITE_MULTIPLE || (num(shortWrite) && write1h < shortWrite))
+	)
+		drop("cacheWrite1hPerMillion");
 	return (out ?? pricing) as P;
+}
+
+/** {@link sanitizeCacheRates} on a card's billed and origin prices. */
+export function sanitizeModelCacheRates(model: ModelCard): ModelCard {
+	const pricing = sanitizeCacheRates(model.pricing as unknown as Record<string, unknown> | undefined);
+	const originPricing = sanitizeCacheRates(model.originPricing as unknown as Record<string, unknown> | undefined);
+	if (pricing === (model.pricing as unknown) && originPricing === (model.originPricing as unknown)) return model;
+	return {
+		...model,
+		...(pricing ? { pricing: pricing as unknown as ModelCard["pricing"] } : {}),
+		...(originPricing ? { originPricing: originPricing as unknown as ModelCard["originPricing"] } : {}),
+	};
+}
+
+function saneTier(tier: unknown): boolean {
+	const t = tier as { ttlSeconds?: unknown; perMillion?: unknown } | null;
+	return !!t && num(t.ttlSeconds) && t.ttlSeconds > 0 && isSaneRate(t.perMillion);
+}
+
+function saneBand(band: unknown): boolean {
+	const b = band as Record<string, unknown> | null;
+	if (!b || !num(b.aboveInputTokens) || b.aboveInputTokens <= 0) return false;
+	if (!isSaneRate(b.inputPerMillion) || !isSaneRate(b.outputPerMillion)) return false;
+	if (b.cacheReadPerMillion !== undefined && !isSaneRate(b.cacheReadPerMillion)) return false;
+	return b.cacheWrites === undefined || (Array.isArray(b.cacheWrites) && b.cacheWrites.every(saneTier));
+}
+
+/** Drop malformed nested rates (write tiers, bands, change rates). Same object when nothing changed. */
+function sanitizeNested(pricing: Record<string, unknown>): Record<string, unknown> {
+	let out: Record<string, unknown> | null = null;
+	const set = (field: string, value: unknown) => {
+		out ??= { ...pricing };
+		if (value === undefined) delete out[field];
+		else out[field] = value;
+	};
+	const writes = pricing.cacheWrites;
+	if (writes !== undefined) {
+		const kept = Array.isArray(writes) ? writes.filter(saneTier) : [];
+		if (!Array.isArray(writes) || kept.length !== writes.length) set("cacheWrites", kept.length ? kept : undefined);
+	}
+	const bands = pricing.bands;
+	if (bands !== undefined) {
+		const kept = Array.isArray(bands) ? bands.filter(saneBand) : [];
+		if (!Array.isArray(bands) || kept.length !== bands.length) set("bands", kept.length ? kept : undefined);
+	}
+	const changes = pricing.changes;
+	if (changes !== undefined) {
+		const kept = Array.isArray(changes)
+			? changes.filter((change) => {
+					const c = change as { effectiveAt?: unknown; rates?: Record<string, unknown> } | null;
+					if (!c || typeof c.effectiveAt !== "string" || !Number.isFinite(Date.parse(c.effectiveAt))) return false;
+					return Object.entries(c.rates ?? {}).every(([field, value]) =>
+						field === "bands"
+							? Array.isArray(value) && value.every(saneBand)
+							: field === "cacheWrites"
+								? Array.isArray(value) && value.every(saneTier)
+								: isSaneRate(value),
+					);
+				})
+			: [];
+		if (!Array.isArray(changes) || kept.length !== changes.length) set("changes", kept.length ? kept : undefined);
+	}
+	const storage = pricing.cacheStoragePerMillionPerHour;
+	if (storage !== undefined && !isSaneRate(storage)) set("cacheStoragePerMillionPerHour", undefined);
+	return out ?? pricing;
 }
 
 /** {@link sanitizePricing} applied to a card's billed and origin prices. */

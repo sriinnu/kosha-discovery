@@ -12,12 +12,13 @@ import { homedir } from "os";
 import { dirname, join } from "path";
 import { catalogCacheKey, loadActiveCatalog, resolveCatalogSource } from "./catalog-source.js";
 import { buildCatalogOnlyRows } from "./discovery/catalog-only.js";
+import { applyCitedPrices, citedFields, citedPriceFor, citedPricing } from "./discovery/cited-prices.js";
 import { type PriceEvidence, priceAgreement } from "./discovery/price-evidence.js";
 import { applyPriceSchedules, SCHEDULED_PRICES } from "./discovery/price-schedules.js";
 import { applyPromoOverrides } from "./discovery/promo-overrides.js";
 import type { DiscoverySnapshotV1 } from "./discovery-contract.js";
 import { DISCOVERY_SCHEMA_VERSION } from "./discovery-contract.js";
-import { PRICE_RATE_FIELDS, sanitizeModelPricing } from "./price-trust.js";
+import { PRICE_RATE_FIELDS, sanitizeModelCacheRates, sanitizeModelPricing } from "./price-trust.js";
 import {
 	getProviderConfig,
 	getProviderDescriptor,
@@ -138,7 +139,7 @@ export async function registryDiscover(
 	for (const [providerId, providerInfo] of state.providerMap) {
 		state.providerMap.set(providerId, {
 			...providerInfo,
-			models: applyPriceSchedules(applyPromoOverrides(providerInfo.models)).map(sanitizeModelPricing),
+			models: applyCuratedPricing(providerInfo.models),
 		});
 	}
 
@@ -322,7 +323,7 @@ export async function registryEnrichOnly(state: RegistryState): Promise<EnrichOn
 	for (const [providerId, providerInfo] of state.providerMap) {
 		state.providerMap.set(providerId, {
 			...providerInfo,
-			models: applyPriceSchedules(applyPromoOverrides(providerInfo.models)).map(sanitizeModelPricing),
+			models: applyCuratedPricing(providerInfo.models),
 		});
 	}
 	attributePricingSources(state, preEnrichmentPriced);
@@ -435,6 +436,23 @@ export function populateRegistryModelAliases(state: RegistryState): void {
 }
 
 /**
+ * Every curated pricing pass, in order: catalog cache rates are sanity-checked,
+ * then kosha's cited prices, promos and time-of-day schedules win, then the
+ * basic rate check runs on the result. Idempotent, so a cached registry gets
+ * it again on load: a cited price shipped in a newer kosha, or a dated change
+ * whose day has come, takes effect without a rediscovery.
+ */
+export function applyCuratedPricing(models: ModelCard[], now: Date = new Date()): ModelCard[] {
+	return applyPriceSchedules(applyPromoOverrides(applyCitedPrices(models.map(sanitizeModelCacheRates), now), now)).map(
+		sanitizeModelPricing,
+	);
+}
+
+function withCuratedPricing(provider: ProviderInfo): ProviderInfo {
+	return { ...provider, models: applyCuratedPricing(provider.models) };
+}
+
+/**
  * Load provider data from disk cache when it is still fresh.
  */
 export async function loadRegistryFromCache(
@@ -465,7 +483,7 @@ export async function loadRegistryFromCache(
 		}
 
 		for (const provider of allEntry.data) {
-			state.providerMap.set(provider.id, provider);
+			state.providerMap.set(provider.id, withCuratedPricing(provider));
 		}
 		state.discoveredAt = allEntry.timestamp;
 		return true;
@@ -485,7 +503,7 @@ export async function loadRegistryFromCache(
 			: undefined;
 		if (!(await cacheCredentialsMatch(state, providerIds, scoped, stampFor))) return false;
 	}
-	for (const entry of entries) state.providerMap.set(entry.id, entry);
+	for (const entry of entries) state.providerMap.set(entry.id, withCuratedPricing(entry));
 
 	state.discoveredAt = Date.now();
 	return true;
@@ -917,7 +935,9 @@ export function applyManifestHolds(state: RegistryState, manifest: DiscoverySnap
 		const models = providerInfo.models.map((original) => {
 			const row = rows.get(`${providerId}\u0000${original.id}`);
 			if (!row) return original;
-			const model = keepReportedSecondaryRates(row, original);
+			let model = keepReportedSecondaryRates(row, original);
+			const firstSeenAt = (row as { firstSeenAt?: number }).firstSeenAt;
+			if (typeof firstSeenAt === "number" && model.firstSeenAt !== firstSeenAt) model = { ...model, firstSeenAt };
 			const next: ModelCard = { ...model };
 			const before = model.rawCapabilities ?? [];
 			let tags = before;
@@ -1160,18 +1180,32 @@ export function mergeManifests(previous: DiscoverySnapshotV1 | null, fresh: Disc
 		if (f.key) freshModelKeys.add(f.key);
 		const old = f.key ? previousByKey.get(f.key) : undefined;
 
-		let kept = { ...f, missingRunCount: 0, lastSeenAt: now } as (typeof fresh.models)[number] & {
+		// The day kosha first saw a model, for ones no catalog dates. Only a model
+		// that arrives after a previous manifest gets one: a first run can't tell
+		// a new model from an old one.
+		const firstSeenAt = old ? (old as { firstSeenAt?: number }).firstSeenAt : now;
+		let kept = {
+			...f,
+			missingRunCount: 0,
+			lastSeenAt: now,
+			...(firstSeenAt !== undefined ? { firstSeenAt } : {}),
+		} as (typeof fresh.models)[number] & {
 			missingRunCount?: number;
 		};
 		// A secondary rate (cache, audio, image…) that falls from a price to 0
 		// reads as "not reported" in the catalogs, but billing it at 0 would
 		// undercount spend. Keep the last real rate instead.
-		if (old) kept = keepReportedSecondaryRates(old, kept);
+		const cited = old ? citedFieldsMatching(f, now) : [];
+		if (old) kept = keepReportedSecondaryRates(old, kept, cited);
 		const anchor = old ? liveAnchor(old, now) : null;
+		// Cited fields are kosha's own reading of the provider's page, so the
+		// merge judges only the rest: a cited move (Gemini 4's Dec 1 doubling)
+		// takes effect on its day instead of waiting out a hold.
+		const judged = old && cited.length > 0 ? withFields(kept, old, cited) : kept;
 		if (old && !hasUsablePricing(f) && hasUsablePricing(old)) {
 			// Keep all of fresh's metadata but restore pricing from old.
 			kept = { ...kept, pricing: old.pricing, originPricing: old.originPricing };
-		} else if (old && !isCuratedSchedule(f) && priceMoveSuspect(old, kept, anchor)) {
+		} else if (old && !isCuratedSchedule(f) && priceMoveSuspect(old, judged, anchor)) {
 			// A scheduled price is curated and cited, not a catalog's publish, so
 			// it skips quarantine. Otherwise the first move to it would be refused
 			// on every run. Only kosha's own schedule table counts: a `schedule`
@@ -1200,7 +1234,7 @@ export function mergeManifests(previous: DiscoverySnapshotV1 | null, fresh: Disc
 				if (agreement === "disagree") tags = tagCapability(tags, PRICING_SOURCES_DISAGREE);
 				kept = {
 					...kept,
-					pricing: old.pricing,
+					pricing: cited.length > 0 ? withFields(old, kept, cited).pricing : old.pricing,
 					originPricing: old.originPricing,
 					rawCapabilities: tags,
 					pricingHold: { rates, since },
@@ -1214,7 +1248,7 @@ export function mergeManifests(previous: DiscoverySnapshotV1 | null, fresh: Disc
 			// sources dispute is the believable lie, so it carries a flag. Flags
 			// from an earlier move last until the rates change or the evidence does.
 			const agreement = priceAgreement((f as { priceEvidence?: PriceEvidence[] }).priceEvidence);
-			const moved = pricingFingerprint(old) !== pricingFingerprint(f);
+			const moved = pricingFingerprint(old) !== pricingFingerprint(judged);
 			const wasTagged = (tag: string) => !moved && (old.rawCapabilities ?? []).includes(tag);
 			let tags = kept.rawCapabilities;
 			if (agreement === "disagree" && (moved || wasTagged(PRICING_SOURCES_DISAGREE))) {
@@ -1310,14 +1344,44 @@ function isCuratedSchedule(row: DiscoverySnapshotV1["models"][number]): boolean 
 	);
 }
 
-/** Restore a secondary billed rate that went from a price to 0. */
-function keepReportedSecondaryRates<T extends PricedSides>(previous: PricedSides, fresh: T): T {
+/**
+ * The pricing fields on a fresh row that hold exactly what kosha's cited
+ * table gives for that model now. Recomputed from the table, never read
+ * from a marker in the row: a snapshot or a local file can carry
+ * `citation`, and that proves nothing.
+ */
+function citedFieldsMatching(row: DiscoverySnapshotV1["models"][number], now: number): string[] {
+	const entry = citedPriceFor(row.providerId, row.modelId);
+	if (!entry || !row.pricing) return [];
+	const expected = citedPricing(row.pricing, entry, now) as unknown as Record<string, unknown> | undefined;
+	if (!expected) return [];
+	const actual = row.pricing as unknown as Record<string, unknown>;
+	return citedFields(entry).filter((field) => JSON.stringify(actual[field]) === JSON.stringify(expected[field]));
+}
+
+/** `target` with `fields` of its pricing taken from `source` (removed where `source` lacks them). */
+function withFields<T extends PricedSides>(target: T, source: PricedSides, fields: readonly string[]): T {
+	const pricing: Record<string, unknown> = { ...((target.pricing as Record<string, unknown> | null) ?? {}) };
+	const from = (source.pricing as Record<string, unknown> | null) ?? {};
+	for (const field of fields) {
+		if (from[field] === undefined) delete pricing[field];
+		else pricing[field] = from[field];
+	}
+	return { ...target, pricing } as T;
+}
+
+/** Restore a secondary billed rate that went from a price to 0. Cited fields are left alone. */
+function keepReportedSecondaryRates<T extends PricedSides>(
+	previous: PricedSides,
+	fresh: T,
+	cited: readonly string[] = [],
+): T {
 	const a = previous.pricing as Rates;
 	const b = fresh.pricing as Rates;
 	if (!a || !b) return fresh;
 	let pricing: Record<string, unknown> | null = null;
 	for (const field of QUARANTINE_FIELDS) {
-		if (HEADLINE_FIELDS.has(field)) continue;
+		if (HEADLINE_FIELDS.has(field) || cited.includes(field)) continue;
 		const prev = a[field];
 		if (typeof prev === "number" && prev > 0 && b[field] === 0) {
 			pricing ??= { ...b };

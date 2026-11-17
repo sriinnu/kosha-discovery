@@ -67,6 +67,12 @@ ${c(BOLD, "COMMANDS")}
   ${c(CYAN, "resolve")} <alias>               Resolve an alias to canonical model ID
   ${c(CYAN, "latest")}                        Force-fetch latest model/provider details
     --provider <name>             Scope latest fetch to one provider
+  ${c(CYAN, "newest")} ${c(DIM, "(new)")}                  The newest models, newest first (maker's route)
+    --days <n>                    Window in days (default 30)
+    --limit <n>                   Maximum rows (default 25)
+    --provider <name>             Only this serving provider
+    --mode <mode>                 Only this mode (chat, embedding, image…)
+    --all                         Every route, not just the maker's
   ${c(CYAN, "refresh")} ${c(DIM, "(update)")}              Force re-discover all providers (bypass cache)
     --provider <name>             Refresh only one provider
   ${c(CYAN, "doctor")} ${c(DIM, "(health)")}               Deprecation warnings + provider health (uses the cache when fresh)

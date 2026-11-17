@@ -17,6 +17,7 @@ import type {
 	DiscoveryDeltaV1,
 	DiscoverySnapshotV1,
 } from "./discovery-contract.js";
+import { isMakerRoute } from "./newest.js";
 import { normalizeModelId } from "./normalize.js";
 import { sanitizeModelPricing } from "./price-trust.js";
 import { getProviderConfig, normalizeProviderId } from "./provider-catalog.js";
@@ -297,9 +298,20 @@ export class ModelRegistry {
 		const resolvedId = this.aliasResolver.resolve(idOrAlias);
 		const models = registryModels(this.state);
 
-		// 1) Exact canonical/alias-resolved ID.
-		const exact = models.find((model) => model.id === resolvedId);
-		if (exact) return exact;
+		// 1) Exact canonical/alias-resolved ID. Several providers can serve the
+		//    same id; the maker's own route wins, since that's the price it sets.
+		const exact = models.filter((model) => model.id === resolvedId);
+		if (exact.length > 0) return exact.find(isMakerRoute) ?? exact[0];
+
+		// 1b) `provider/model`, when the whole string isn't itself an id
+		//     (OpenRouter's ids carry a slash).
+		const slash = idOrAlias.indexOf("/");
+		if (slash > 0) {
+			const providerId = normalizeProviderId(idOrAlias.slice(0, slash)) ?? idOrAlias.slice(0, slash);
+			const modelId = idOrAlias.slice(slash + 1);
+			const routed = this.providerMap.get(providerId)?.models.find((model) => model.id === modelId);
+			if (routed) return routed;
+		}
 
 		// 2) Normalized ID fallback (prefix/date/tag-insensitive).
 		const targetNormalized = normalizeModelId(resolvedId).toLowerCase();

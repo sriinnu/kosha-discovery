@@ -19,6 +19,7 @@ import { randomBytes } from "crypto";
 import { appendFile, mkdir, readdir, readFile, rename, unlink, writeFile } from "fs/promises";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
+import { resolvePricing } from "./pricing-resolve.js";
 import { normalizeTokenUsage } from "./tally.js";
 import type { ModelCard } from "./types.js";
 
@@ -113,11 +114,15 @@ export type UsageShape = "openai" | "anthropic";
  * 0.5× input) when the catalog entry lacks explicit cache pricing, so a
  * cached request is never priced as if it were fully uncached.
  */
-export function actualCostFromUsage(model: ModelCard, rawUsage: unknown, shape: UsageShape): ActualUsageCost | null {
-	const pricing = model.pricing;
-	if (!pricing || typeof pricing.inputPerMillion !== "number" || typeof pricing.outputPerMillion !== "number")
-		return null;
-	if (!(pricing.inputPerMillion >= 0 && pricing.outputPerMillion >= 0)) return null;
+export function actualCostFromUsage(
+	model: ModelCard,
+	rawUsage: unknown,
+	shape: UsageShape,
+	at: Date | number = Date.now(),
+): ActualUsageCost | null {
+	const listed = model.pricing;
+	if (!listed || typeof listed.inputPerMillion !== "number" || typeof listed.outputPerMillion !== "number") return null;
+	if (!(listed.inputPerMillion >= 0 && listed.outputPerMillion >= 0)) return null;
 	if (!rawUsage || typeof rawUsage !== "object") return null;
 	const usage = normalizeTokenUsage(rawUsage as Record<string, unknown>);
 	if (!usage) return null;
@@ -125,6 +130,12 @@ export function actualCostFromUsage(model: ModelCard, rawUsage: unknown, shape: 
 	const cacheRead = usage.cachedInputTokens ?? 0;
 	const cacheWrite = usage.cacheWriteTokens ?? 0;
 	const uncachedInput = shape === "openai" ? Math.max(0, usage.inputTokens - cacheRead) : usage.inputTokens;
+	// A long prompt moves the whole request into a higher band, and a dated
+	// price change applies from its day. The prompt counts cache reads and
+	// writes, as every provider with bands measures it; OpenAI's prompt_tokens
+	// already includes them.
+	const promptTokens = shape === "openai" ? usage.inputTokens : uncachedInput + cacheRead + cacheWrite;
+	const pricing = resolvePricing(listed, { at, promptTokens });
 	// Catalogs write 0 for a cache rate they don't know, so a $0 cache read on
 	// paid input is treated as unknown, not free. Billing it at 0 would let
 	// cache-heavy traffic, most of an agent's input, through the budget unpriced.

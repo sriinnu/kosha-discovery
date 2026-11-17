@@ -129,6 +129,8 @@ export interface DiscoveryModelV1 {
 	 * merged manifest. Optional: manifests written before 1.15 lack it.
 	 */
 	lastSeenAt?: number;
+	/** When kosha first saw this model (epoch ms); only for models that arrived after an earlier manifest. */
+	firstSeenAt?: number;
 }
 
 /** Normalized provider health exposed by the v1 discovery snapshot. */

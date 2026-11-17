@@ -12,6 +12,7 @@
  * @module
  */
 
+import { resolvePricing } from "./pricing-resolve.js";
 import type { ModelPricing } from "./types.js";
 
 /** Canonical, provider-agnostic token usage shape. */
@@ -106,7 +107,8 @@ export function normalizeTokenUsage(raw: Record<string, unknown> | null | undefi
 		(reasoningTokens ?? 0) > 0;
 	if (!hasAnyUsage) return null;
 
-	const totalTokens = inputTokens + outputTokens + (cachedInputTokens ?? 0) + (cacheWriteTokens ?? 0) + (reasoningTokens ?? 0);
+	const totalTokens =
+		inputTokens + outputTokens + (cachedInputTokens ?? 0) + (cacheWriteTokens ?? 0) + (reasoningTokens ?? 0);
 
 	return {
 		inputTokens,
@@ -141,7 +143,17 @@ export interface UsdCostBreakdown {
  * has it, falling back to the plain output rate otherwise — most providers
  * that report reasoning tokens separately still bill them at the output rate.
  */
-export function estimateUsdCost(usage: TokenUsage, pricing: ModelPricing): UsdCostBreakdown {
+export function estimateUsdCost(
+	usage: TokenUsage,
+	listed: ModelPricing,
+	at: Date | number = Date.now(),
+): UsdCostBreakdown {
+	// The band follows the whole prompt (cache reads and writes included), and
+	// a dated price change applies from its day.
+	const pricing = resolvePricing(listed, {
+		at,
+		promptTokens: usage.inputTokens + (usage.cachedInputTokens ?? 0) + (usage.cacheWriteTokens ?? 0),
+	});
 	const inputUsd = tokensTimesRate(usage.inputTokens, pricing.inputPerMillion);
 	const outputUsd = tokensTimesRate(usage.outputTokens, pricing.outputPerMillion);
 	const cachedInputUsd = usage.cachedInputTokens
