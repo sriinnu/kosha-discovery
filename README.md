@@ -55,6 +55,7 @@ kosha discover                       # load the 24 h cache, or query every provi
 kosha list --provider anthropic      # read from the local cache
 kosha model sonnet                   # one model, alias-aware
 kosha routes claude-opus-5-5         # every serving route for a model (direct, OpenRouter, Bedrock, …)
+kosha newest                         # the newest models, newest first, with cache rates
 kosha cheapest --role embeddings     # rank by price for a role
 kosha doctor --ci --model opus,gpt6  # fail CI if a model you pin is deprecated, retiring, or gone
 kosha spend --since 2026-09-01       # roll up the proxy's spend ledger
@@ -115,6 +116,24 @@ Catalogs are sometimes wrong, so kosha doesn't take a new price on faith:
 - While a price is held or its sources disagree, kosha routes and budgets on the
   highest rate anyone reports, so a suspect rise applies at once and a cut waits.
 - Negative, NaN and infinite rates are dropped.
+- Catalog cache rates are checked too. A read above input, a write below input
+  (a catalog `$0` included) or over 2.5× input, and a 1-hour write outside 1–4×
+  input are dropped as unknown.
+
+For the first-party APIs (Anthropic, OpenAI, Google, xAI, MiniMax, z.ai, DeepSeek,
+Moonshot, Alibaba), kosha also keeps a table of prices read off each provider's own
+pricing page, with the page and the day it was checked in `pricing.citation`. It
+covers:
+
+- cache writes by lifetime (`cacheWrites`: Anthropic 5m and 1h, OpenAI 30m and 12h)
+- providers that bill a cache write at the input price (`cacheWriteBilling: "as-input"`)
+- higher rates for the whole request above a prompt size (`bands`: gpt-6.2 over
+  272K, Haiku 5.5 over 100K, Grok from 200K)
+- dated price changes (`changes`, `pricingValidUntil`: Gemini 4 Carbon and Argon
+  double on 2026-12-01)
+
+Cost math follows all of these. A cited price moves past the quarantine, but only
+where it matches kosha's own table; a row that just claims a citation is still held.
 
 Checked a held price against the provider's pricing page? Release it:
 
