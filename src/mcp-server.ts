@@ -19,6 +19,7 @@
  *   kosha_resolve_alias     — alias → canonical ID
  *   kosha_provider_health   — provider auth + error status
  *   kosha_context_strategy  — context-management advice for a long conversation
+ *   kosha_newest_models     — the newest models, newest first
  *
  * The JSON-RPC handler ({@link handleJsonRpc}) is exported and pure over an
  * injected registry loader so it can be unit-tested; the stdio loop only
@@ -29,6 +30,7 @@
 import { createRequire } from "node:module";
 import { computeContextStrategy } from "./context-strategy.js";
 import { isMainModule } from "./entry.js";
+import { newestModels } from "./newest.js";
 import { ModelRegistry } from "./registry.js";
 import { parseRouteStrategy, ROUTE_STRATEGIES } from "./registry-routing.js";
 import { routeAccessHint } from "./route-access.js";
@@ -173,6 +175,21 @@ export const TOOLS = [
 		},
 	},
 	{
+		name: "kosha_newest_models",
+		description:
+			"The newest models, newest first, one row per model on its maker's own route. A model with no catalog release date is dated by another route that has one, then by the day kosha first saw it; `dateSource` says which. Use it to answer 'what's new' or to check that a just-released model is known.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				days: { type: "number", description: "Window in days (default 30)" },
+				limit: { type: "number", description: "Maximum rows (default 25)" },
+				provider: { type: "string", description: "Only this serving provider" },
+				mode: { type: "string", description: "Only this mode (chat, embedding, image, ...)" },
+				include_resellers: { type: "boolean", description: "Every route, not just the maker's (default false)" },
+			},
+		},
+	},
+	{
 		name: "kosha_model_routes",
 		description:
 			"List all serving-layer routes for a model (direct provider, OpenRouter, Bedrock, Vertex, etc.) with pricing per route. Useful for finding the cheapest or most available path to a specific model.",
@@ -309,6 +326,27 @@ export async function callTool(
 				contextWindow: m.contextWindow,
 				capabilities: m.capabilities,
 				pricing: m.pricing ?? null,
+			}));
+		}
+
+		case "kosha_newest_models": {
+			const limit = typeof args.limit === "number" ? Math.min(Math.max(1, Math.floor(args.limit)), 200) : 25;
+			return newestModels(reg.models(), {
+				days: typeof args.days === "number" && args.days > 0 ? args.days : 30,
+				limit,
+				provider: typeof args.provider === "string" ? args.provider : undefined,
+				mode: typeof args.mode === "string" ? args.mode : undefined,
+				includeResellers: args.include_resellers === true,
+			}).map((row) => ({
+				date: row.date,
+				dateSource: row.dateSource,
+				id: row.model.id,
+				provider: row.model.provider,
+				name: row.model.name,
+				mode: row.model.mode,
+				contextWindow: row.model.contextWindow,
+				pricing: row.model.pricing ?? null,
+				alsoOn: row.alsoOn,
 			}));
 		}
 

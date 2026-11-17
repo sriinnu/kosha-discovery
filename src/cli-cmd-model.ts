@@ -26,6 +26,7 @@ import {
 	renderTable,
 	YELLOW,
 } from "./cli-format.js";
+import { pricingDetail } from "./cli-pricing-detail.js";
 import { isPlanBilled } from "./discovery/free-tier.js";
 import { isRetired } from "./lifecycle.js";
 import type { ModelRegistry } from "./registry.js";
@@ -91,10 +92,8 @@ export async function cmdModel(
 			? c(DIM, "included in the subscription plan (no per-token price)")
 			: c(DIM, "unknown");
 	// Cache pricing is optional — only displayed when the model has it
-	const cacheStr =
-		model.pricing?.cacheReadPerMillion !== undefined
-			? `\nCache Pricing: ${formatPrice(model.pricing.cacheReadPerMillion)} read / ${formatPrice(model.pricing.cacheWritePerMillion)} write per million tokens`
-			: "";
+	// Cache writes by lifetime, long-prompt bands, dated changes and the cited page.
+	const cacheStr = pricingDetail(model.pricing, (text) => text);
 	// Reasoning pricing is optional — shown when providers expose it.
 	const reasoningStr =
 		model.pricing?.reasoningInputPerMillion !== undefined || model.pricing?.reasoningOutputPerMillion !== undefined
@@ -138,6 +137,7 @@ ${c(BOLD, "Max Output:")} ${model.maxOutputTokens > 0 ? formatNumber(model.maxOu
 ${c(BOLD, "Capabilities:")} ${model.capabilities.join(", ")}
 ${c(BOLD, "Pricing:")} ${pricingStr}${cacheStr}${reasoningStr}${batchStr}${originPricingStr}
 ${c(BOLD, "Source:")} ${model.source}
+${c(BOLD, "Released:")} ${model.releaseDate ?? c(DIM, "unknown (no catalog dates it yet)")}
 ${c(BOLD, "Discovered:")} ${formatTimestamp(model.discoveredAt)}
 `.trim(),
 	);

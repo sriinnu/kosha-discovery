@@ -14,6 +14,7 @@
  */
 
 import { cmdDoctor } from "./cli-cmd-doctor.js";
+import { cmdNewest } from "./cli-cmd-newest.js";
 import { cmdRegistry } from "./cli-cmd-registry.js";
 import { cmdSpend } from "./cli-cmd-spend.js";
 import {
@@ -146,6 +147,11 @@ async function main(): Promise<void> {
 
 		case "latest":
 			await cmdLatest(registry, flags);
+			break;
+
+		case "newest":
+		case "new":
+			await cmdNewest(registry, flags);
 			break;
 
 		case "list":

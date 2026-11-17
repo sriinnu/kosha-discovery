@@ -189,6 +189,94 @@ export interface ModelPricing {
 	 * (e.g. 128_000 for Gemini 1.5/2.5 tiered pricing).
 	 */
 	longContextThresholdTokens?: number;
+	/**
+	 * Every cache-write lifetime the provider sells, shortest first: Anthropic
+	 * 5m and 1h, OpenAI 30m and 12h, Kimi 5m and 1h. `cacheWritePerMillion`
+	 * mirrors the shortest and `cacheWrite1hPerMillion` the 3600 s tier, so
+	 * readers that only know those keep working.
+	 */
+	cacheWrites?: CacheWriteTier[];
+	/**
+	 * How a cache write bills. `as-input`: there's no write premium, a written
+	 * token bills as ordinary input, and `cacheWritePerMillion` equals
+	 * `inputPerMillion` (never 0, which reads as free). `premium`: writes cost
+	 * their own listed rate. Absent: unknown.
+	 */
+	cacheWriteBilling?: "premium" | "as-input";
+	/** USD per 1M cached tokens per hour of storage (Gemini explicit caching). */
+	cacheStoragePerMillionPerHour?: number;
+	/**
+	 * Higher rates for long prompts, ascending. A request whose prompt (uncached
+	 * input plus cache reads and writes) is over `aboveInputTokens` bills every
+	 * token at that band's rates. The first band is mirrored in `longContext*`.
+	 */
+	bands?: PricingBand[];
+	/**
+	 * Announced future prices. Each carries absolute rates, and the flat fields
+	 * hold the ones in effect when this card was built. `resolvePricing` applies
+	 * every change whose `effectiveAt` has passed, so a baked snapshot still
+	 * bills right after the date.
+	 */
+	changes?: PricingChange[];
+	/** The earliest pending `changes[].effectiveAt`: after it, the flat fields are stale. */
+	pricingValidUntil?: string;
+	/** Where the cited rates on this card came from (kosha's own table only). */
+	citation?: PricingCitation;
+}
+
+/** One cache-write lifetime and its price. */
+export interface CacheWriteTier {
+	/** Lifetime in seconds: 300, 1800, 3600, 43200. */
+	ttlSeconds: number;
+	/** USD per 1M tokens written with this lifetime. */
+	perMillion: number;
+}
+
+/** Rates that apply to a whole request once its prompt passes a threshold. */
+export interface PricingBand {
+	/** The band applies when the prompt is over this many tokens (or at it, if `inclusive`). */
+	aboveInputTokens: number;
+	/** xAI's tier starts at 200K exactly, not above it. */
+	inclusive?: boolean;
+	inputPerMillion: number;
+	outputPerMillion: number;
+	cacheReadPerMillion?: number;
+	cacheWrites?: CacheWriteTier[];
+}
+
+/** Rates a provider has announced from a date onward. */
+export interface PricingChange {
+	/** ISO-8601 instant with an offset, e.g. `2026-12-01T00:00:00-08:00`. */
+	effectiveAt: string;
+	/** Absolute rates from that instant. Fields left out don't change. */
+	rates: PricingChangeRates;
+	source: string;
+}
+
+/** The fields a {@link PricingChange} may set. */
+export type PricingChangeRates = Partial<
+	Pick<
+		ModelPricing,
+		| "inputPerMillion"
+		| "outputPerMillion"
+		| "cacheReadPerMillion"
+		| "cacheWritePerMillion"
+		| "cacheWrite1hPerMillion"
+		| "cacheWrites"
+		| "cacheStoragePerMillionPerHour"
+		| "batchInputPerMillion"
+		| "batchOutputPerMillion"
+		| "bands"
+	>
+>;
+
+/** The provider page a cited price was read from. */
+export interface PricingCitation {
+	source: string;
+	/** `YYYY-MM-DD` the page was last read by hand. */
+	checkedAt: string;
+	/** The pricing fields the citation set. */
+	fields: string[];
 }
 
 /**
@@ -432,6 +520,12 @@ export interface ModelCard {
 	 * disagree on a price or a limit. Absent on live-API cards.
 	 */
 	catalogSource?: "models.dev" | "litellm" | "snapshot" | "local";
+	/**
+	 * When kosha first saw this model (epoch ms), for models that arrived after
+	 * an earlier discovery. `kosha newest` falls back to it when no catalog has
+	 * a `releaseDate`. Never copied into `releaseDate`.
+	 */
+	firstSeenAt?: number;
 }
 
 /**
