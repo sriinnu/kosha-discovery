@@ -13,6 +13,22 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
+## [1.17.0] — 2026-11-17
+
+### Added
+
+- **Cache prices by lifetime.** `pricing.cacheWrites` lists one write price per cache lifetime: Anthropic 5m and 1h, OpenAI 30m and 12h. `cacheWriteBilling: "as-input"` marks the providers that bill a cache write at the input price (DeepSeek, xAI, z.ai, Google, Kimi's 5m), so a catalog's write price of 0 no longer reads as free.
+- **Long-prompt rates.** `pricing.bands` holds the higher rates that bill the whole request once a prompt passes a size line: gpt-6.2 over 272K, Haiku 5.5 over 100K, Grok from 200K, Gemini 3.1 Pro over 200K, MiniMax M3 over 512K. Cost math counts cached tokens toward the line.
+- **Dated price changes.** `pricing.changes` and `pricingValidUntil`: Gemini 4 Carbon and Argon double on 2026-12-01 (Pacific), and Gemini 3.x Flash on 2027-01-01. A snapshot taken before the date still bills the new price after it.
+- **First-party prices cited to the provider's page** (Anthropic, OpenAI, Google, xAI, MiniMax, z.ai, DeepSeek, Moonshot, Alibaba; checked 2026-11-17). Each priced row has `pricing.citation`. A cited price passes the price quarantine only where it matches kosha's own table, so a row that merely claims a citation is still held.
+- **`kosha newest`** (alias `new`) and MCP `kosha_newest_models`: the newest models, newest first, on the maker's own route. A model no catalog dates is dated by another route, then by the provider's changelog, then by the day kosha first saw it (new `firstSeenAt`).
+- **`kosha model <id>`** shows cache tiers, long-prompt rates, the next price change, the price source and the release date.
+
+### Changed
+
+- **Catalog cache rates are checked.** These are dropped as unknown: a read above input; a write below input (0 included) or above 2.5x input; a 1h write below input, below the short write, or above 4x input. Real examples dropped: OpenRouter's kimi-k3 write (15.6x input) and OpenRouter's Gemini storage fee filed as a write price.
+- **A bare model id resolves to its maker.** `kosha model grok-4.7` goes to xAI, `kimi-k3` to Moonshot, not to a reseller that tags itself as origin. `provider/model` works too.
+
 ## [1.16.1] — 2026-11-15
 
 ### Fixed
