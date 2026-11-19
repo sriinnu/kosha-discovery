@@ -13,6 +13,13 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
+## [1.17.1] — 2026-11-19
+
+### Documentation
+
+- The npm README now covers `kosha newest`, cited cache pricing and `kosha_newest_models` (#113).
+- Release steps moved out of the README into the [release runbook](https://github.com/sriinnu/kosha-discovery/wiki/Release-Runbook), which now describes the staged npm flow (#114).
+
 ## [1.17.0] — 2026-11-17
 
 ### Added
