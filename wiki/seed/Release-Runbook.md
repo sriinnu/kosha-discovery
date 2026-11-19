@@ -1,6 +1,6 @@
 # Release runbook
 
-The short version is in the [README](https://github.com/sriinnu/kosha-discovery#release). This is the same procedure with the parts that are easy to forget.
+How a kosha-discovery release is cut, with the parts that are easy to forget. Maintainer-only; contributors never need it.
 
 ## 1. Prepare
 
@@ -16,18 +16,35 @@ Open a PR and merge it once CI is green. CI runs the suite on Node 22 and Node 2
 
 Every commit is signed. Signing uses a hardware key and needs a touch, so make the commits while you are at the machine.
 
-## 3. Tag and publish
+## 3. Tag and stage
 
 ```bash
 git switch main && git pull --ff-only
 git tag -s vX.Y.Z -m "vX.Y.Z"
 git push origin vX.Y.Z
-gh workflow run release-npm.yml --ref vX.Y.Z -f tag=vX.Y.Z
+gh workflow run release-npm.yml --ref vX.Y.Z -f tag=vX.Y.Z -f publish_mcp=false
 ```
 
-`--ref` matters: the `npm-release` environment only allows `v*` refs, and from `main` the job fails with no logs. The tag must be an annotated, signed tag: the workflow refuses a lightweight one. It checks that the tag matches `package.json`, runs lint / build / test, publishes to npm with provenance, creates the GitHub Release, and publishes the MCP server to the MCP registry.
+`--ref` matters: the `npm-release` environment only allows `v*` refs, and from `main` the job fails with no logs. The tag must be an annotated, signed tag: the workflow refuses a lightweight one. It checks that the tag matches `package.json`, runs lint / build / test, stages the package on npm with provenance, and creates the GitHub Release. Staging authenticates through npm trusted publishing (OIDC); there is no npm token.
 
-## 4. Verify
+## 4. Approve
+
+The version goes live only after a maintainer approves it with 2FA:
+
+```bash
+npm stage list @sriinnu/kosha-discovery
+npm stage approve <id>
+```
+
+## 5. MCP registry
+
+Once npm is live, publish the MCP server:
+
+```bash
+gh workflow run release-npm.yml --ref vX.Y.Z -f tag=vX.Y.Z -f publish_npm=false -f create_github_release=false
+```
+
+## 6. Verify
 
 ```bash
 gh run watch            # the "Manual Release (Tag + npm)" run

@@ -379,26 +379,6 @@ Contributing, the project layout and adding a provider: [CONTRIBUTING.md](CONTRI
 
 The same pages are mirrored to the [wiki](https://github.com/sriinnu/kosha-discovery/wiki), alongside guides that only live there (troubleshooting, the release runbook). `docs/` is the source: the mirror is regenerated on every push to `main`, so edit here, not there.
 
-## Release
-
-1. Bump the version in `package.json`, in `server.json` (twice: top level and `packages[0]`), and the `default` in `action.yml`. Date the `[Unreleased]` section in `CHANGELOG.md`, and merge that as a PR.
-2. Tag and push:
-
-```bash
-git tag -s vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
-gh workflow run release-npm.yml --ref vX.Y.Z -f tag=vX.Y.Z -f publish_mcp=false
-```
-
-The workflow checks that the tag matches `package.json`, runs lint / build / test, stages the package on npm with provenance, and creates the GitHub Release. Staging authenticates through npm trusted publishing (OIDC); there is no npm token. The version goes live only after a maintainer approves it with 2FA:
-
-```bash
-npm stage list @sriinnu/kosha-discovery
-npm stage approve <id>
-gh workflow run release-npm.yml --ref vX.Y.Z -f tag=vX.Y.Z -f publish_npm=false -f create_github_release=false   # publish to the MCP registry once npm is live
-```
-
-Every step, with the parts that are easy to forget: the [release runbook](https://github.com/sriinnu/kosha-discovery/wiki/Release-Runbook).
-
 ## Support
 
 kosha is free and open source. If it helps you pick cheaper models, consider sponsoring its upkeep:
