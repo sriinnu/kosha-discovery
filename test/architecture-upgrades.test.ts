@@ -661,7 +661,7 @@ describe("proxy, server, MCP, ledger, and security hardening", () => {
 
 		globalThis.fetch = (async (input: string | URL | Request) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-			if (url.startsWith("https://api.openai.com")) {
+			if (new URL(url).origin === "https://api.openai.com") {
 				return new Response(JSON.stringify({ error: "upstream boom" }), { status: 500 });
 			}
 			return new Response(

@@ -207,7 +207,7 @@ export async function loadRegistryDiscoverers(
 			for (const discoverer of discoverers) {
 				const customBaseUrl = getProviderConfig(state.config, discoverer.providerId)?.baseUrl;
 				if (customBaseUrl && isAllowedCustomBaseUrl(customBaseUrl, isLocalProvider(discoverer.providerId))) {
-					(discoverer as { baseUrl: string }).baseUrl = customBaseUrl.replace(/\/+$/, "");
+					(discoverer as { baseUrl: string }).baseUrl = stripTrailingSlashes(customBaseUrl);
 				}
 			}
 		}
@@ -216,6 +216,12 @@ export async function loadRegistryDiscoverers(
 	} catch {
 		return [];
 	}
+}
+
+function stripTrailingSlashes(value: string): string {
+	let end = value.length;
+	while (end > 0 && value.charCodeAt(end - 1) === 47) end--;
+	return end === value.length ? value : value.slice(0, end);
 }
 
 function isAllowedCustomBaseUrl(rawUrl: string, allowInsecureLocal: boolean): boolean {
