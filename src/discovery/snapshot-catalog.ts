@@ -135,7 +135,7 @@ async function fetchAndValidate(): Promise<SnapshotCatalog> {
 
 	let response: Response;
 	try {
-		response = await fetch(url, { signal: controller.signal });
+		response = await fetch(url, { signal: controller.signal, redirect: "error" });
 	} finally {
 		clearTimeout(timer);
 	}
@@ -166,7 +166,7 @@ async function verifySnapshotSignature(url: string, text: string, keys: readonly
 	const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 	let response: Response;
 	try {
-		response = await fetch(`${url}.sig`, { signal: controller.signal });
+		response = await fetch(`${url}.sig`, { signal: controller.signal, redirect: "error" });
 	} finally {
 		clearTimeout(timer);
 	}

@@ -146,7 +146,7 @@ async function fetchAndValidate(): Promise<Record<string, ModelsDevProvider>> {
 
 	let response: Response;
 	try {
-		response = await fetch(MODELSDEV_CATALOG_URL, { signal: controller.signal });
+		response = await fetch(MODELSDEV_CATALOG_URL, { signal: controller.signal, redirect: "error" });
 	} finally {
 		clearTimeout(timer);
 	}

@@ -247,17 +247,23 @@ export class VertexDiscoverer extends BaseDiscoverer {
 			grant_type: "refresh_token",
 		});
 
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), 10_000);
 		try {
 			const res = await fetch("https://oauth2.googleapis.com/token", {
 				method: "POST",
 				headers: { "Content-Type": "application/x-www-form-urlencoded" },
 				body: body.toString(),
+				signal: controller.signal,
+				redirect: "error",
 			});
 			if (!res.ok) return undefined;
 			const data = (await res.json()) as OAuthTokenResponse;
 			return data.access_token;
 		} catch {
 			return undefined;
+		} finally {
+			clearTimeout(timer);
 		}
 	}
 

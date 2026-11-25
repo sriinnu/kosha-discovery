@@ -69,6 +69,50 @@ interface ParsedArgs {
  * @param argv  The argument array, typically `process.argv.slice(2)`.
  * @returns     A {@link ParsedArgs} object.
  */
+const BOOLEAN_FLAGS = new Set([
+	"help",
+	"version",
+	"json",
+	"pricing",
+	"refresh",
+	"force",
+	"all",
+	"local",
+	"remote",
+	"free",
+	"authenticated",
+	"verbose",
+	"quiet",
+	"no-color",
+	"watch",
+	"strict",
+	"yes",
+	"dry-run",
+	"cached",
+	"live",
+	"all-providers",
+	"include-deprecated",
+	"include-retired",
+	"show-all",
+	"summary",
+	"breakdown",
+	"by-model",
+	"by-provider",
+	"by-tenant",
+	"compact",
+	"pretty",
+	"raw",
+	"open",
+	"unpriced",
+	"active",
+	"deprecated",
+	"retired",
+	"check",
+	"no-cache",
+	"no-proxy",
+	"allow-unauthenticated",
+]);
+
 export function parseArgs(argv: string[]): ParsedArgs {
 	const positional: string[] = [];
 	const flags: Record<string, string | boolean> = {};
@@ -102,9 +146,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
 			}
 			const key = body;
 			const next = argv[i + 1];
-			// If the next token exists and is not itself a flag, treat it as
-			// the value for this flag; otherwise mark the flag as boolean true.
-			if (next && !next.startsWith("-")) {
+			// Boolean flags must never swallow a following subcommand or positional argument.
+			if (!BOOLEAN_FLAGS.has(key) && next && !next.startsWith("-")) {
 				flags[key] = next;
 				i += 2;
 			} else {

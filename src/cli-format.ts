@@ -8,6 +8,9 @@
  * @module cli-format
  */
 
+import { hasUnitPricing } from "./discovery-contract.js";
+import type { ModelPricing } from "./types.js";
+
 // ---------------------------------------------------------------------------
 //  ANSI escape-code constants
 //
@@ -104,19 +107,19 @@ export function formatPrice(price: number | undefined): string {
 }
 
 /** Pricing shape accepted by tier/discount helpers (avoids importing the full type). */
-interface PricingLike {
-	inputPerMillion: number;
-	outputPerMillion: number;
-	batchInputPerMillion?: number;
-	batchOutputPerMillion?: number;
-}
+type PricingLike = Pick<
+	ModelPricing,
+	"inputPerMillion" | "outputPerMillion" | "batchInputPerMillion" | "batchOutputPerMillion"
+> &
+	Partial<ModelPricing>;
 
 /**
  * Classify a model's pricing into a display tier label.
  *
- * - `"free"` — both input and output prices are zero.
+ * - `"unit"` — $0 token rates paired with per-image/audio/video/request unit rates.
+ * - `"free"` — zero token rates and no unit pricing.
  * - `"batch"` — has batch pricing available (discounted async tier).
- * - `"standard"` — normal paid pricing.
+ * - `""` — normal paid pricing.
  * - `undefined` — no pricing data at all.
  *
  * @param pricing  The model's pricing object, or `undefined`.
@@ -124,8 +127,9 @@ interface PricingLike {
  */
 export function formatPricingTier(pricing: PricingLike | undefined): string {
 	if (!pricing) return c(DIM, "\u2014");
-	const isFree = pricing.inputPerMillion === 0 && pricing.outputPerMillion === 0;
-	if (isFree) return c(GREEN, "free");
+	const isZeroTokens = pricing.inputPerMillion === 0 && pricing.outputPerMillion === 0;
+	if (isZeroTokens && hasUnitPricing(pricing)) return c(YELLOW, "unit");
+	if (isZeroTokens) return c(GREEN, "free");
 	const hasBatch = pricing.batchInputPerMillion !== undefined || pricing.batchOutputPerMillion !== undefined;
 	if (hasBatch) return c(CYAN, "batch");
 	return "";
@@ -214,12 +218,22 @@ export function formatRelativeTime(ts: number, now: number = Date.now()): string
  * @param len  Desired visible width.
  * @returns    The padded string.
  */
-export function padRight(str: string, len: number): string {
-	// Strip ANSI codes for length calculation
+function visibleLength(str: string): number {
 	const ansiEscapePattern = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
-	const plainLen = str.replace(ansiEscapePattern, "").length;
+	return str.replace(ansiEscapePattern, "").length;
+}
+
+export function padRight(str: string, len: number): string {
+	const plainLen = visibleLength(str);
 	if (plainLen >= len) return str;
 	return str + " ".repeat(len - plainLen);
+}
+
+/** Left-pad `str` to `len` visible characters (ANSI-aware). */
+export function padLeft(str: string, len: number): string {
+	const plainLen = visibleLength(str);
+	if (plainLen >= len) return str;
+	return " ".repeat(len - plainLen) + str;
 }
 
 /**
@@ -267,7 +281,7 @@ export function renderTable(columns: Column[], rows: string[][]): string {
 
 	// Header row — bold, aligned per column spec
 	const headerParts = columns.map((col) =>
-		col.align === "right" ? col.header.padStart(col.width) : padRight(c(BOLD, col.header), col.width),
+		col.align === "right" ? padLeft(c(BOLD, col.header), col.width) : padRight(c(BOLD, col.header), col.width),
 	);
 	lines.push(headerParts.join(" "));
 
@@ -279,7 +293,7 @@ export function renderTable(columns: Column[], rows: string[][]): string {
 	for (const row of rows) {
 		const parts = columns.map((col, i) => {
 			const cell = row[i] ?? "";
-			return col.align === "right" ? cell.padStart(col.width) : padRight(cell, col.width);
+			return col.align === "right" ? padLeft(cell, col.width) : padRight(cell, col.width);
 		});
 		lines.push(parts.join(" "));
 	}

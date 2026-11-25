@@ -198,9 +198,12 @@ export function estimateUsdCost(
 	});
 	const inputUsd = tokensTimesRate(usage.inputTokens, pricing.inputPerMillion);
 	const outputUsd = tokensTimesRate(usage.outputTokens, pricing.outputPerMillion);
-	const cachedInputUsd = usage.cachedInputTokens
-		? tokensTimesRate(usage.cachedInputTokens, pricing.cacheReadPerMillion)
-		: 0;
+	const cacheReadRate =
+		typeof pricing.cacheReadPerMillion === "number" &&
+		(pricing.cacheReadPerMillion > 0 || pricing.inputPerMillion === 0)
+			? pricing.cacheReadPerMillion
+			: pricing.inputPerMillion;
+	const cachedInputUsd = usage.cachedInputTokens ? tokensTimesRate(usage.cachedInputTokens, cacheReadRate) : 0;
 	// Split the write by cache lifetime: a 1-hour write costs more than a
 	// 5-minute one, and the catalog's cacheWritePerMillion is the 5-minute rate.
 	// Without an explicit 1-hour rate the short-TTL rate is the only honest

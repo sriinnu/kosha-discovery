@@ -66,14 +66,6 @@ const MODEL_MODES: readonly ModelMode[] = [
 ];
 const PRICE_METRICS: readonly NonNullable<CheapestModelOptions["priceMetric"]>[] = ["input", "output", "blended"];
 
-/**
- * Set to true when the boot-time discovery pass threw and the server bound on
- * cached/partial state instead. Surfaced via /health and the
- * `kosha_discovery_degraded` /metrics gauge so an operator knows the catalog
- * is stale and a /api/refresh is needed.
- */
-let registryBootDegraded = false;
-
 /** Loopback addresses the standalone server treats as "safe without a token". */
 const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 
@@ -105,6 +97,8 @@ export interface CreateServerOptions {
 	 * what a deliberately exposed server behind its own token wants.
 	 */
 	allowedHosts?: readonly string[] | "any";
+	/** Per-server boot status handle (shared with startServer's background refresh timer). */
+	bootStatus?: { degraded: boolean };
 }
 
 /** Proxy bodies carry base64 images; 32 MiB matches Anthropic's own request cap. */
@@ -263,6 +257,7 @@ export function createServer(
 	options: CreateServerOptions = {},
 ): Hono {
 	const app = new Hono();
+	const bootStatus = options.bootStatus ?? { degraded: false };
 
 	app.use("*", browserGuard(options.allowedHosts ?? allowedHostsFromEnv()));
 	// Bounded before any route buffers a body: `req.json()` reads it whole.
@@ -423,12 +418,17 @@ export function createServer(
 
 	// Provider/model role matrix for assistant planners and model routers.
 	app.get("/api/roles", (ctx) => {
+		const rawMode = ctx.req.query("mode");
+		const mode = parseMode(rawMode);
+		if (rawMode && !mode) {
+			return ctx.json({ error: `Invalid mode "${rawMode}". Expected one of: ${MODEL_MODES.join(", ")}` }, 400);
+		}
 		const options: RoleQueryOptions = {
 			role: ctx.req.query("role") ?? undefined,
 			capability: ctx.req.query("capability") ?? undefined,
 			provider: ctx.req.query("provider") ?? undefined,
 			originProvider: ctx.req.query("originProvider") ?? undefined,
-			mode: parseMode(ctx.req.query("mode")),
+			mode,
 		};
 
 		const providers = registry.providerRoles(options);
@@ -577,7 +577,7 @@ export function createServer(
 
 		try {
 			await registry.refresh(providerId);
-			registryBootDegraded = false;
+			bootStatus.degraded = false;
 			const providers = registry.providers_list();
 			const totalModels = providers.reduce((sum, p) => sum + p.models.length, 0);
 
@@ -637,8 +637,8 @@ export function createServer(
 			// "degraded" when boot discovery threw and we bound on cached/partial
 			// state — load-balancer liveness/readiness probes need to see this
 			// so they stop routing to a node whose catalog went stale at boot.
-			status: registryBootDegraded ? "degraded" : "ok",
-			degraded: registryBootDegraded,
+			status: bootStatus.degraded ? "degraded" : "ok",
+			degraded: bootStatus.degraded,
 			models: registry.models().length,
 			providers: providers.length,
 			uptime: process.uptime(),
@@ -681,7 +681,7 @@ export function createServer(
 			"# HELP kosha_discovery_degraded 1 when boot discovery failed and the server is serving cached/partial state.",
 		);
 		lines.push("# TYPE kosha_discovery_degraded gauge");
-		lines.push(`kosha_discovery_degraded ${registryBootDegraded ? 1 : 0}`);
+		lines.push(`kosha_discovery_degraded ${bootStatus.degraded ? 1 : 0}`);
 
 		lines.push("# HELP kosha_provider_reliability Reliability score per provider in [0,1].");
 		lines.push("# TYPE kosha_provider_reliability gauge");
@@ -802,12 +802,13 @@ export async function startServer(port = 3000, host?: string): Promise<void> {
 	// every provider erroring at once, a corrupt cache) we still bind on
 	// whatever the registry cached and mark ourselves degraded. The worst time
 	// for the service to be down is during the outage it exists to observe.
+	const bootStatus = { degraded: false };
 	let providers = registry.providers_list();
 	try {
 		await registry.discover();
 		providers = registry.providers_list();
 	} catch (err) {
-		registryBootDegraded = true;
+		bootStatus.degraded = true;
 		const message = err instanceof Error ? err.message : String(err);
 		console.error(
 			`Warning: boot discovery failed (${message}); serving cached/partial state. POST /api/refresh to recover.`,
@@ -817,7 +818,7 @@ export async function startServer(port = 3000, host?: string): Promise<void> {
 
 	const totalModels = registry.models().length;
 	console.log(
-		`Found ${totalModels} models from ${providers.length} providers${registryBootDegraded ? " (degraded)" : ""}`,
+		`Found ${totalModels} models from ${providers.length} providers${bootStatus.degraded ? " (degraded)" : ""}`,
 	);
 
 	// Abort in-flight proxy fetches on shutdown so the server drains instead of
@@ -826,7 +827,7 @@ export async function startServer(port = 3000, host?: string): Promise<void> {
 	const shutdownController = new AbortController();
 	// Enforce Host header validation unless KOSHA_ALLOWED_HOSTS=* explicitly disables it.
 	const allowedHosts = allowedHostsFromEnv();
-	const app = createServer(registry, shutdownController.signal, { allowedHosts });
+	const app = createServer(registry, shutdownController.signal, { allowedHosts, bootStatus });
 
 	// IPv6 literals need brackets in a URL; everything else prints as-is.
 	const urlHost = bindHost.includes(":") && !bindHost.startsWith("[") ? `[${bindHost}]` : bindHost;
@@ -861,7 +862,7 @@ export async function startServer(port = 3000, host?: string): Promise<void> {
 					void registry
 						.refresh()
 						.then(() => {
-							registryBootDegraded = false;
+							bootStatus.degraded = false;
 						})
 						.catch(() => {});
 				}, autoRefreshMs).unref()

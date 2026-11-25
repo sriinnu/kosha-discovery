@@ -23,6 +23,8 @@ export interface DirectPricingParseOptions {
 	perMillionInputOutput?: boolean;
 	/** When true, `pricing.input` / `pricing.output` are USD per single token (Vercel format). */
 	perTokenInputOutput?: boolean;
+	/** When true, `pricing.request` and `pricing.web_search` are already per-1K requests (Vercel format). */
+	perThousandRequests?: boolean;
 }
 
 function readNum(value: unknown): number | undefined {
@@ -62,6 +64,32 @@ export function extractDirectProviderPricing(
 	let batchOutputPerMillion: number | undefined;
 	let imageOutputPerImage: number | undefined;
 	let requestPerThousand: number | undefined;
+	let webSearchPerThousandRequests: number | undefined;
+	let reasoningOutputPerMillion: number | undefined;
+	let longContextInputPerMillion: number | undefined;
+	let longContextOutputPerMillion: number | undefined;
+	let longContextThresholdTokens: number | undefined;
+	let videoOutputPerSecond: number | undefined;
+	let videoInputPerMillion: number | undefined;
+	let audioInputPerSecond: number | undefined;
+
+	const firstTierPerToken = (tiers: unknown): number | undefined => {
+		if (!Array.isArray(tiers) || tiers.length === 0) return undefined;
+		const first = tiers[0] as { cost?: unknown } | undefined;
+		return readNum(first?.cost);
+	};
+	const longTierEntry = (tiers: unknown): { min: number; perMillion: number } | undefined => {
+		if (!Array.isArray(tiers)) return undefined;
+		for (const item of tiers) {
+			if (!item || typeof item !== "object") continue;
+			const min = (item as { min?: unknown }).min;
+			const cost = readNum((item as { cost?: unknown }).cost);
+			if (typeof min === "number" && Number.isFinite(min) && min > 0 && cost !== undefined) {
+				return { min, perMillion: cost * PER_MILLION };
+			}
+		}
+		return undefined;
+	};
 
 	// 1) Explicit per-million fields.
 	const explicitIn = readNum(pricingObj.inputPerMillion) ?? readNum(pricingObj.input_per_million);
@@ -71,7 +99,7 @@ export function extractDirectProviderPricing(
 		outputPerMillion = explicitOut;
 	}
 
-	// 2) Unambiguous per-token OpenRouter/LiteLLM keys.
+	// 2) Unambiguous per-token OpenRouter/LiteLLM keys (including tiered Vercel fields).
 	if (inputPerMillion === undefined || outputPerMillion === undefined) {
 		const prompt = readNum(pricingObj.prompt);
 		const completion = readNum(pricingObj.completion);
@@ -88,13 +116,13 @@ export function extractDirectProviderPricing(
 		}
 	}
 
-	// 3) Provider-specific `input`/`output` conventions.
+	// 3) Provider-specific `input`/`output` conventions and Vercel tiered fields.
 	if (
 		(inputPerMillion === undefined || outputPerMillion === undefined) &&
 		(options.perMillionInputOutput || options.perTokenInputOutput)
 	) {
-		const inp = readNum(pricingObj.input);
-		const out = readNum(pricingObj.output);
+		const inp = readNum(pricingObj.input) ?? firstTierPerToken(pricingObj.input_tiers);
+		const out = readNum(pricingObj.output) ?? firstTierPerToken(pricingObj.output_tiers);
 		if (inp !== undefined && out !== undefined) {
 			const scale = options.perTokenInputOutput ? PER_MILLION : 1;
 			inputPerMillion = inp * scale;
@@ -102,14 +130,16 @@ export function extractDirectProviderPricing(
 		}
 	}
 
-	if (inputPerMillion === undefined || outputPerMillion === undefined) {
-		return undefined;
-	}
-
 	const crMillion = readNum(pricingObj.cacheReadPerMillion) ?? readNum(pricingObj.cache_read_per_million);
 	const cwMillion = readNum(pricingObj.cacheWritePerMillion) ?? readNum(pricingObj.cache_write_per_million);
-	const crTok = readNum(pricingObj.input_cache_read) ?? readNum(pricingObj.cache_read_input_token_cost);
-	const cwTok = readNum(pricingObj.input_cache_write) ?? readNum(pricingObj.cache_creation_input_token_cost);
+	const crTok =
+		readNum(pricingObj.input_cache_read) ??
+		readNum(pricingObj.cache_read_input_token_cost) ??
+		firstTierPerToken(pricingObj.input_cache_read_tiers);
+	const cwTok =
+		readNum(pricingObj.input_cache_write) ??
+		readNum(pricingObj.cache_creation_input_token_cost) ??
+		firstTierPerToken(pricingObj.input_cache_write_tiers);
 
 	if (crMillion !== undefined) cacheReadPerMillion = crMillion;
 	else if (crTok !== undefined) cacheReadPerMillion = crTok * PER_MILLION;
@@ -122,19 +152,68 @@ export function extractDirectProviderPricing(
 	if (biMillion !== undefined) batchInputPerMillion = biMillion;
 	if (boMillion !== undefined) batchOutputPerMillion = boMillion;
 
-	const img = readNum(pricingObj.image);
-	if (img !== undefined && img > 0) imageOutputPerImage = img;
+	const reasoningTok = readNum(pricingObj.internal_reasoning);
+	if (reasoningTok !== undefined) reasoningOutputPerMillion = reasoningTok * PER_MILLION;
+
+	const longIn = longTierEntry(pricingObj.input_tiers);
+	const longOut = longTierEntry(pricingObj.output_tiers);
+	if (longIn) longContextInputPerMillion = longIn.perMillion;
+	if (longOut) longContextOutputPerMillion = longOut.perMillion;
+	const threshold = longIn?.min ?? longOut?.min;
+	if (threshold !== undefined) longContextThresholdTokens = threshold;
+
+	const imgFlat = readNum(pricingObj.image_output) ?? readNum(pricingObj.image);
+	const imgDims = Array.isArray(pricingObj.image_dimension_quality_pricing)
+		? pricingObj.image_dimension_quality_pricing
+				.map((e) => (e && typeof e === "object" ? readNum((e as { cost?: unknown }).cost) : undefined))
+				.filter((n): n is number => n !== undefined && n > 0)
+		: [];
+	const imgCandidates = [...(imgFlat !== undefined && imgFlat > 0 ? [imgFlat] : []), ...imgDims];
+	if (imgCandidates.length > 0) imageOutputPerImage = Math.min(...imgCandidates);
+
+	const vidSec = readNum(pricingObj.video_output_per_second);
+	if (vidSec !== undefined && vidSec > 0) videoOutputPerSecond = vidSec;
+	const vidInTok = readNum(pricingObj.video_input);
+	if (vidInTok !== undefined && vidInTok > 0) videoInputPerMillion = vidInTok * PER_MILLION;
+	const audSec = readNum(pricingObj.audio_input_per_second);
+	if (audSec !== undefined && audSec > 0) audioInputPerSecond = audSec;
+
 	const req = readNum(pricingObj.request);
-	if (req !== undefined && req > 0) requestPerThousand = req * 1_000;
+	if (req !== undefined && req > 0) {
+		requestPerThousand = options.perThousandRequests ? req : req * 1_000;
+	}
+	const webSearch = readNum(pricingObj.web_search);
+	if (webSearch !== undefined && webSearch > 0) {
+		webSearchPerThousandRequests = options.perThousandRequests ? webSearch : webSearch * 1_000;
+	}
+
+	const hasAnyUnitRate =
+		imageOutputPerImage !== undefined ||
+		requestPerThousand !== undefined ||
+		webSearchPerThousandRequests !== undefined ||
+		videoOutputPerSecond !== undefined ||
+		videoInputPerMillion !== undefined ||
+		audioInputPerSecond !== undefined;
+	if ((inputPerMillion === undefined || outputPerMillion === undefined) && !hasAnyUnitRate) {
+		return undefined;
+	}
 
 	return sanitizePricing({
-		inputPerMillion,
-		outputPerMillion,
+		inputPerMillion: inputPerMillion ?? 0,
+		outputPerMillion: outputPerMillion ?? 0,
+		...(reasoningOutputPerMillion !== undefined ? { reasoningOutputPerMillion } : {}),
 		...(cacheReadPerMillion !== undefined ? { cacheReadPerMillion } : {}),
 		...(cacheWritePerMillion !== undefined ? { cacheWritePerMillion } : {}),
 		...(batchInputPerMillion !== undefined ? { batchInputPerMillion } : {}),
 		...(batchOutputPerMillion !== undefined ? { batchOutputPerMillion } : {}),
+		...(longContextInputPerMillion !== undefined ? { longContextInputPerMillion } : {}),
+		...(longContextOutputPerMillion !== undefined ? { longContextOutputPerMillion } : {}),
+		...(longContextThresholdTokens !== undefined ? { longContextThresholdTokens } : {}),
 		...(imageOutputPerImage !== undefined ? { imageOutputPerImage } : {}),
+		...(videoOutputPerSecond !== undefined ? { videoOutputPerSecond } : {}),
+		...(videoInputPerMillion !== undefined ? { videoInputPerMillion } : {}),
+		...(audioInputPerSecond !== undefined ? { audioInputPerSecond } : {}),
 		...(requestPerThousand !== undefined ? { requestPerThousand } : {}),
+		...(webSearchPerThousandRequests !== undefined ? { webSearchPerThousandRequests } : {}),
 	});
 }

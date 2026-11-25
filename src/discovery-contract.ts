@@ -343,11 +343,14 @@ export function trustedCapabilitiesForModel(model: ModelCard, descriptor: Provid
 	// Chat-capable providers almost universally expose streaming, so I surface it
 	// when the model is chat-oriented or the local runtime explicitly advertises it.
 	if (model.localRuntime?.supportsStreaming === true || model.mode === "chat") caps.add("streaming");
-	if (model.localRuntime?.supportsStructuredOutput === true) caps.add("structured_output");
+	if (rawCaps.includes("structured_output") || model.localRuntime?.supportsStructuredOutput === true) {
+		caps.add("structured_output");
+	}
 	if ((model.contextWindow ?? 0) >= 100_000) caps.add("long_context");
 	if (rawCaps.includes("code") || CODE_PATTERNS.some((pattern) => lowerId.includes(pattern)))
 		caps.add("code_generation");
-	if (rawCaps.includes("nlu") || REASONING_PATTERNS.some((pattern) => lowerId.includes(pattern))) caps.add("reasoning");
+	if (rawCaps.includes("reasoning") || REASONING_PATTERNS.some((pattern) => lowerId.includes(pattern)))
+		caps.add("reasoning");
 	if (LOW_LATENCY_PROVIDER_IDS.has(descriptor.canonicalProviderId) || descriptor.isLocal) caps.add("low_latency");
 	if (descriptor.isLocal || isCheapPricing(model.pricing)) caps.add("cheap_inference");
 	// Free tier is a strict subset of cheap — set both so consumers filtering on
@@ -399,7 +402,8 @@ function isFreeTierPricing(model: ModelCard): boolean {
 	return pricing.inputPerMillion === 0 && pricing.outputPerMillion === 0;
 }
 
-function hasUnitPricing(pricing: ModelPricing): boolean {
+/** True when a pricing object defines any non-token or unit rate. */
+export function hasUnitPricing(pricing: Partial<ModelPricing>): boolean {
 	return (
 		pricing.imageOutputPerImage !== undefined ||
 		pricing.imageInputPerImage !== undefined ||

@@ -208,6 +208,13 @@ export class CircuitBreaker {
 			return;
 		}
 
+		if (this.state === "open") {
+			// Proxy traffic can still succeed against an open-breaker fallback route;
+			// recover immediately rather than waiting for the next discovery tick.
+			this.transitionToClosed();
+			return;
+		}
+
 		// In closed state reset the failure counter on any success
 		if (this.state === "closed") {
 			this.failureCount = 0;

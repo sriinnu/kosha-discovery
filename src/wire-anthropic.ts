@@ -37,6 +37,7 @@ import {
 	claudeSupportsPrefill,
 	type SamplingSupport,
 } from "./claude-generation.js";
+import { redactSecrets } from "./security.js";
 
 // ---------------------------------------------------------------------------
 // OpenAI wire shapes (subset we understand)
@@ -657,13 +658,13 @@ function assistantBlocks(msg: OpenAIChatMessage): AnthropicContentBlock[] {
 /** OpenAI carries tool arguments as a JSON string; Anthropic wants the object. */
 function parseToolArguments(raw: unknown, index: number): unknown {
 	if (raw === undefined || raw === null || raw === "") return {};
-	if (typeof raw === "object") return raw;
+	if (typeof raw === "object") return Array.isArray(raw) ? {} : raw;
 	if (typeof raw !== "string") {
 		throw new UnsupportedWireContentError(`tool_calls[${index}].function.arguments must be a JSON string`);
 	}
 	try {
 		const parsed: unknown = JSON.parse(raw);
-		return parsed && typeof parsed === "object" ? parsed : {};
+		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
 	} catch {
 		throw new UnsupportedWireContentError(`tool_calls[${index}].function.arguments is not valid JSON`);
 	}
@@ -1062,10 +1063,10 @@ export function translateAnthropicStreamToOpenAI(
 		controller.enqueue(encodeChunk({}, mapStopReason(stopReason, toolCount > 0)));
 	};
 
-	const emitDone = (controller: TransformStreamDefaultController<Uint8Array>): void => {
+	const emitDone = (controller: TransformStreamDefaultController<Uint8Array>, skipFinish = false): void => {
 		if (done) return;
 		done = true;
-		emitFinish(controller);
+		if (!skipFinish) emitFinish(controller);
 		if (options.includeUsage) {
 			controller.enqueue(
 				encoder.encode(
@@ -1152,13 +1153,14 @@ export function translateAnthropicStreamToOpenAI(
 					encoder.encode(
 						`data: ${JSON.stringify({
 							error: {
-								message: typeof err?.message === "string" ? err.message : "anthropic stream error",
+								message:
+									typeof err?.message === "string" ? redactSecrets(err.message) : "anthropic stream error",
 								type: typeof err?.type === "string" ? err.type : "upstream_error",
 							},
 						})}\n\n`,
 					),
 				);
-				emitDone(controller);
+				emitDone(controller, true);
 				break;
 			}
 			default:

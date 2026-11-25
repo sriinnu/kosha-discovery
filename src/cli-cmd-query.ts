@@ -113,7 +113,7 @@ function pricingRow(model: {
 		c(CYAN, model.provider ?? ""),
 		model.id ?? "",
 		model.mode ?? "",
-		formatPricingTier(model.pricing),
+		formatPricingTier(model.pricing as Parameters<typeof formatPricingTier>[0]),
 		formatPrice(model.pricing?.inputPerMillion),
 		formatPrice(model.pricing?.outputPerMillion),
 		formatPrice(model.pricing?.cacheReadPerMillion),

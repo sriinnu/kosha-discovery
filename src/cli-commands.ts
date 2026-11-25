@@ -29,8 +29,10 @@ import {
 	renderTable,
 	YELLOW,
 } from "./cli-format.js";
+import { hasUnitPricing } from "./discovery-contract.js";
+import { isLocalProvider } from "./provider-catalog.js";
 import type { ModelRegistry } from "./registry.js";
-import type { ModelMode, ProviderInfo } from "./types.js";
+import type { ModelMode, ModelPricing, ProviderInfo } from "./types.js";
 
 // ---------------------------------------------------------------------------
 //  Shared helpers — exported so split modules can import them
@@ -75,7 +77,7 @@ const PRICING_TABLE_COLUMNS: Column[] = [
  */
 export function formatCredentialSource(provider: ProviderInfo): string {
 	if (!provider.credentialSource || provider.credentialSource === "none") {
-		return c(DIM, "none (local)");
+		return isLocalProvider(provider.id) ? c(DIM, "none (local)") : c(DIM, "none (public catalog)");
 	}
 	return `${provider.credentialSource}`;
 }
@@ -127,15 +129,17 @@ export function modelRow(m: {
 	id: string;
 	mode: string;
 	contextWindow: number;
-	pricing?: { inputPerMillion: number; outputPerMillion: number };
+	pricing?: ModelPricing;
 }): string[] {
+	const unitOnly =
+		m.pricing && m.pricing.inputPerMillion === 0 && m.pricing.outputPerMillion === 0 && hasUnitPricing(m.pricing);
 	return [
 		c(CYAN, m.provider),
 		m.id,
 		m.mode,
 		formatContextWindow(m.contextWindow),
-		formatPrice(m.pricing?.inputPerMillion),
-		formatPrice(m.pricing?.outputPerMillion),
+		unitOnly ? c(YELLOW, "unit") : formatPrice(m.pricing?.inputPerMillion),
+		unitOnly ? c(YELLOW, "unit") : formatPrice(m.pricing?.outputPerMillion),
 	];
 }
 
@@ -149,22 +153,17 @@ function pricingRow(m: {
 	provider: string;
 	id: string;
 	mode: string;
-	pricing?: {
-		inputPerMillion: number;
-		outputPerMillion: number;
-		cacheReadPerMillion?: number;
-		cacheWritePerMillion?: number;
-		batchInputPerMillion?: number;
-		batchOutputPerMillion?: number;
-	};
+	pricing?: ModelPricing;
 }): string[] {
+	const unitOnly =
+		m.pricing && m.pricing.inputPerMillion === 0 && m.pricing.outputPerMillion === 0 && hasUnitPricing(m.pricing);
 	return [
 		c(CYAN, m.provider),
 		m.id,
 		m.mode,
 		formatPricingTier(m.pricing),
-		formatPrice(m.pricing?.inputPerMillion),
-		formatPrice(m.pricing?.outputPerMillion),
+		unitOnly ? c(YELLOW, "unit") : formatPrice(m.pricing?.inputPerMillion),
+		unitOnly ? c(YELLOW, "unit") : formatPrice(m.pricing?.outputPerMillion),
 		formatPrice(m.pricing?.cacheReadPerMillion),
 		formatPrice(m.pricing?.cacheWritePerMillion),
 		formatPrice(m.pricing?.batchInputPerMillion),
@@ -240,9 +239,19 @@ export function truncateReason(reason: string, max = 160): string {
  * @param flags     CLI flags (supports `--json`).
  */
 export async function cmdDiscover(registry: ModelRegistry, flags: Record<string, string | boolean>): Promise<void> {
+	const forceRefresh = flags.refresh === true || flags.force === true;
+	const providerFilter = typeof flags.provider === "string" ? flags.provider : undefined;
 	// stdout is the JSON under --json; progress would break `| jq`.
-	if (!flags.json) console.log(c(DIM, "Discovering providers and models..."));
-	const providers = await registry.discover();
+	if (!flags.json) {
+		console.log(c(DIM, forceRefresh ? "Refreshing providers and models..." : "Discovering providers and models..."));
+	}
+	let providers: ProviderInfo[];
+	if (forceRefresh) {
+		await registry.refresh(providerFilter);
+		providers = registry.providers_list();
+	} else {
+		providers = await registry.discover(providerFilter ? { providers: [providerFilter] } : undefined);
+	}
 
 	if (flags.json) {
 		console.log(JSON.stringify(registry.toJSON(), null, 2));
@@ -447,11 +456,13 @@ export async function cmdProviders(registry: ModelRegistry, flags: Record<string
 	];
 
 	const rows = allProviders.map((p) => {
-		// Three-way status: authenticated, local (no creds needed), or missing
+		// Authenticated, local runtime without auth, public catalog, or missing credentials
 		const status = p.authenticated
 			? c(GREEN, "\u2713 authenticated")
 			: p.credentialSource === "none"
-				? c(GREEN, "\u2713 local")
+				? isLocalProvider(p.id)
+					? c(GREEN, "\u2713 local")
+					: c(YELLOW, "\u25cb public catalog")
 				: c(RED, "\u2717 no credentials");
 		return [c(CYAN, p.id), status, String(p.models.length), formatCredentialSource(p)];
 	});

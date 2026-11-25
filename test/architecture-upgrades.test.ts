@@ -6,7 +6,8 @@ import { AliasResolver } from "../src/aliases.js";
 import { KoshaCache } from "../src/cache.js";
 import { catalogCacheKey, configureCatalogSource, resetLocalCatalogCache } from "../src/catalog-source.js";
 import { parseArgs } from "../src/cli.js";
-import { cmdRefresh } from "../src/cli-commands.js";
+import { cmdDiscover, cmdRefresh, formatCredentialSource, modelRow } from "../src/cli-commands.js";
+import { c, formatPricingTier, renderTable } from "../src/cli-format.js";
 import { pricingDetail, scheduleLine } from "../src/cli-pricing-detail.js";
 import { actualCostFromUsage, estimateRequestCost, readSpendForMonth } from "../src/cost.js";
 import { DeepSeekDiscoverer } from "../src/discovery/deepseek.js";
@@ -24,12 +25,19 @@ import { applyManifestHolds, mergeManifests, type PriceAnchor } from "../src/man
 import { handleJsonRpc } from "../src/mcp-server.js";
 import { appendAnomalies, detectPricingAnomalies } from "../src/pricing-anomalies.js";
 import { resolvePricing } from "../src/pricing-resolve.js";
+import { getProviderDescriptor } from "../src/provider-catalog.js";
 import { safeUpstreamUrl } from "../src/proxy.js";
 import { ModelRegistry } from "../src/registry.js";
 import { saveRegistryToCache } from "../src/registry-cache.js";
-import { registryBuildHealthRecord, registrySerializeModel } from "../src/registry-discovery.js";
+import {
+	registryBuildHealthRecord,
+	registryDiscoverySnapshot,
+	registrySerializeModel,
+} from "../src/registry-discovery.js";
+import { enrichRegistryModels } from "../src/registry-runtime.js";
 import { registryCheapestCandidates } from "../src/registry-selection.js";
 import { createRegistryState } from "../src/registry-state.js";
+import { CircuitBreaker } from "../src/resilience.js";
 import { redactSecrets, scanPayload } from "../src/security.js";
 import { createServer } from "../src/server.js";
 import { estimateUsdCost, normalizeTokenUsage, tallyCosts } from "../src/tally.js";
@@ -792,7 +800,7 @@ describe("proxy, server, MCP, ledger, and security hardening", () => {
 			["gsk", "a".repeat(24)].join("_"),
 			["xai", "b".repeat(24)].join("-"),
 			["nvapi", "c".repeat(24)].join("-"),
-			["pplx", "d".repeat(24)].join("-"),
+			`pplx-${"d".repeat(32)}`,
 			["sk", "ant", "e".repeat(24)].join("-"),
 		];
 		for (const sample of samples) {
@@ -1416,5 +1424,402 @@ describe("Stage 1-4 upgrades: direct pricing, indexing, wire fidelity, proxy, MC
 			(snapRes?.result as { contents?: Array<{ text?: string }> } | undefined)?.contents?.[0]?.text ?? "";
 		expect(snapText).not.toContain(fakeGsk);
 		expect(snapText).toContain("[REDACTED]");
+	});
+});
+
+describe("v1.18.1 deep audit fixes", () => {
+	it("allows Perplexity model ID pplx-decider-flash-latest in scanPayload while catching 32+ alnum keys", () => {
+		expect(
+			scanPayload({ id: "pplx-decider-flash-latest", models: [{ id: "pplx-decider-flash-latest" }] }),
+		).toBeUndefined();
+		const fakePplxKey = `pplx-${"A1b2C3d4".repeat(6)}`;
+		expect(scanPayload({ token: fakePplxKey })?.threat).toBe("credential_leak");
+	});
+
+	it("redacts upstream secrets across OpenAI/Anthropic chat, embeddings, /v1/messages, and streamed SSE errors", async () => {
+		const fakeSecret = ["gsk", "SecretLeakValue1234567890abcd"].join("_");
+
+		// 1) translateAnthropicStreamToOpenAI error frame: redacts + emits no finish_reason:stop + usage is null
+		const sseBody = new ReadableStream<Uint8Array>({
+			start(ctrl) {
+				const enc = new TextEncoder();
+				ctrl.enqueue(
+					enc.encode(`event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":5}}}\n\n`),
+				);
+				ctrl.enqueue(
+					enc.encode(
+						`event: error\ndata: {"type":"error","error":{"type":"auth","message":"bad key ${fakeSecret}"}}\n\n`,
+					),
+				);
+				ctrl.close();
+			},
+		});
+		const translated = translateAnthropicStreamToOpenAI(sseBody, "claude-sonnet-4-6");
+		const sseText = await new Response(translated.stream).text();
+		expect(sseText).not.toContain(fakeSecret);
+		expect(sseText).toContain("[REDACTED]");
+		expect(sseText).not.toContain('"finish_reason":"stop"');
+		await expect(translated.usage).resolves.toBeNull();
+
+		// 2) parseToolArguments rejects JSON arrays as tool_use.input
+		const withArrayArgs = translateOpenAIToAnthropic({
+			model: "claude-sonnet-4-6",
+			messages: [
+				{ role: "user", content: "hi" },
+				{
+					role: "assistant",
+					content: null,
+					tool_calls: [{ id: "tc1", type: "function", function: { name: "fn", arguments: "[1,2,3]" } }],
+				},
+				{ role: "tool", tool_call_id: "tc1", content: "ok" },
+			],
+		});
+		const assistantBlocks = withArrayArgs.messages[1].content as Array<{ type: string; input?: unknown }>;
+		expect(assistantBlocks[0]).toMatchObject({ type: "tool_use", input: {} });
+
+		// 3) Proxy upstream error redaction + CircuitBreaker.onSuccess recovery + terminal 429/401 recording
+		process.env.OPENAI_API_KEY = fixtureEnvToken("openai");
+		process.env.ANTHROPIC_API_KEY = fixtureEnvToken("anthropic");
+		globalThis.fetch = (async () =>
+			new Response(JSON.stringify({ error: { message: `leaked ${fakeSecret}` } }), {
+				status: 401,
+				headers: { "content-type": "application/json" },
+			})) as typeof globalThis.fetch;
+
+		const reg = makeRegistry([
+			{
+				id: "openai",
+				name: "OpenAI",
+				baseUrl: "https://api.openai.com/v1",
+				authenticated: true,
+				credentialSource: "env",
+				lastRefreshed: Date.now(),
+				models: [
+					makeCard({ id: "gpt-4o", provider: "openai", pricing: { inputPerMillion: 2.5, outputPerMillion: 10 } }),
+					makeCard({
+						id: "text-embedding-3-small",
+						provider: "openai",
+						mode: "embedding",
+						capabilities: ["embedding"],
+						pricing: { inputPerMillion: 0.02, outputPerMillion: 0 },
+					}),
+				],
+			},
+			{
+				id: "anthropic",
+				name: "Anthropic",
+				baseUrl: "https://api.anthropic.com",
+				authenticated: true,
+				credentialSource: "env",
+				lastRefreshed: Date.now(),
+				models: [
+					makeCard({
+						id: "claude-sonnet-4-6",
+						provider: "anthropic",
+						pricing: { inputPerMillion: 3, outputPerMillion: 15 },
+					}),
+				],
+			},
+		]);
+		const app = createServer(reg);
+
+		for (const [path, payload] of [
+			["/proxy/v1/chat/completions", { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] }],
+			["/proxy/v1/embeddings", { model: "text-embedding-3-small", input: "hi" }],
+			[
+				"/proxy/v1/messages",
+				{ model: "claude-sonnet-4-6", max_tokens: 16, messages: [{ role: "user", content: "hi" }] },
+			],
+		] as const) {
+			const res = await app.request(path, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(payload),
+			});
+			expect(res.status).toBe(401);
+			const bodyText = await res.text();
+			expect(bodyText).not.toContain(fakeSecret);
+			expect(bodyText).toContain("[REDACTED]");
+		}
+		expect(reg.providerRouteHealth("openai").lastErrorType).toBe("auth_error");
+		expect(reg.providerRouteHealth("anthropic").lastErrorType).toBe("auth_error");
+
+		const cb = new CircuitBreaker("test-provider", { failureThreshold: 1, resetTimeoutMs: 60_000 });
+		cb.onFailure();
+		expect(cb.health().state).toBe("open");
+		cb.onSuccess();
+		expect(cb.health().state).toBe("closed");
+
+		// Invalid ?mode= on /api/roles returns 400
+		const badRoles = await app.request("/api/roles?mode=bogus");
+		expect(badRoles.status).toBe(400);
+	});
+
+	it("wires Cohere /v1/chat/completions and Thinking Machines anthropic path in PROVIDER_CATALOG", () => {
+		const cohere = getProviderDescriptor("cohere");
+		expect(cohere?.chatCompletionsPath).toBe("/v1/chat/completions");
+		const thinker = getProviderDescriptor("thinkingmachines");
+		expect(thinker?.wire).toBe("anthropic");
+		expect(thinker?.anthropicMessagesPath).toBe("/services/tinker-prod/anthropic/api/v1/messages");
+	});
+
+	it("updates stale prices via DirectProviderPricingEnricher before LiteLLM and fixes Vercel 1K unit scaling", async () => {
+		const parsedVercel = extractDirectProviderPricing(
+			{ pricing: { input: "0.000003", output: "0.000015", request: "5", web_search: "10" } },
+			{ perTokenInputOutput: true, perThousandRequests: true },
+		);
+		expect(parsedVercel).toMatchObject({
+			inputPerMillion: 3,
+			outputPerMillion: 15,
+			requestPerThousand: 5,
+			webSearchPerThousandRequests: 10,
+		});
+
+		resetDirectPricingCache();
+		resetLiteLLMCatalogCache();
+		globalThis.fetch = (async (input: string | URL | Request) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+			if (url.includes("openrouter.ai")) {
+				return new Response(
+					JSON.stringify({ data: [{ id: "openai/gpt-4o", pricing: { prompt: "0.000004", completion: "0.000016" } }] }),
+					{ status: 200 },
+				);
+			}
+			if (url.includes("litellm")) {
+				return new Response(
+					JSON.stringify({
+						"openrouter/openai/gpt-4o": {
+							input_cost_per_token: 0.000002,
+							output_cost_per_token: 0.000008,
+							supports_vision: true,
+							supports_response_schema: true,
+						},
+						"gpt-4o": {
+							litellm_provider: "openai",
+							input_cost_per_token: 0.0000025,
+							output_cost_per_token: 0.00001,
+						},
+					}),
+					{ status: 200 },
+				);
+			}
+			return new Response("{}", { status: 404 });
+		}) as typeof globalThis.fetch;
+
+		const dir = makeTempDir("kosha-enrich-order-");
+		const state = createRegistryState({ cacheDir: join(dir, "cache") });
+		state.providerMap.set("openrouter", {
+			id: "openrouter",
+			name: "OpenRouter",
+			baseUrl: "https://openrouter.ai/api/v1",
+			authenticated: true,
+			lastRefreshed: Date.now(),
+			models: [
+				makeCard({
+					id: "openai/gpt-4o",
+					provider: "openrouter",
+					originProvider: "openai",
+					pricing: { inputPerMillion: 1, outputPerMillion: 2 },
+					pricingSource: "litellm",
+				}),
+			],
+		});
+		await enrichRegistryModels(state, { refreshExisting: true });
+		const card = state.providerMap.get("openrouter")?.models[0];
+		// Direct OpenRouter live pricing wins over stale cache & LiteLLM
+		expect(card?.pricing).toMatchObject({ inputPerMillion: 4, outputPerMillion: 16 });
+		expect(card?.pricingSource).toBe("provider-live");
+		// LiteLLM-added capabilities propagate to rawCapabilities -> DiscoverySnapshotV1
+		expect(card?.rawCapabilities).toContain("vision");
+		expect(card?.rawCapabilities).toContain("structured_output");
+		const snap = registryDiscoverySnapshot(state);
+		const snapModel = snap.models.find((m) => m.modelId === "openai/gpt-4o");
+		expect(snapModel?.capabilities).toContain("structured_output");
+		expect(snapModel?.capabilities).not.toContain("reasoning");
+	});
+
+	it("quarantines originPricing collapse when proxy pricing is absent and isolates local catalog cache keys", () => {
+		const dir = makeTempDir("kosha-local-key-");
+		const a = join(dir, "a.json");
+		const b = join(dir, "b.json");
+		writeFileSync(a, "{}");
+		writeFileSync(b, "{}");
+		const keyA = catalogCacheKey("providers_all", { catalogSource: "local", catalogFile: a });
+		const keyB = catalogCacheKey("providers_all", { catalogSource: "local", catalogFile: b });
+		expect(keyA).not.toBe(keyB);
+
+		const snapAt = (ts: number, originIn: number): DiscoverySnapshotV1 => ({
+			schemaVersion: DISCOVERY_SCHEMA_VERSION,
+			cursor: `c-${ts}`,
+			discoveredAt: ts,
+			providers: [
+				{
+					providerId: "claude-code",
+					name: "Claude Code",
+					isLocal: false,
+					transport: "native-http",
+					authenticated: true,
+					credentialSource: "shared",
+				},
+			],
+			models: [
+				{
+					key: "claude-code:sonnet",
+					providerId: "claude-code",
+					modelId: "sonnet",
+					name: "Sonnet",
+					mode: "chat",
+					contextWindow: 200_000,
+					maxOutputTokens: 8_192,
+					capabilities: ["chat"],
+					rawCapabilities: ["chat"],
+					originProviderId: "anthropic",
+					originPricing: { inputPerMillion: originIn, outputPerMillion: 15 },
+					source: "api",
+					discoveredAt: ts,
+				},
+			],
+		});
+		const prev = snapAt(0, 3);
+		const collapsed = mergeManifests(prev, snapAt(10 * 86_400_000, 0));
+		expect(collapsed.models[0].rawCapabilities).toContain("pricing_quarantined");
+		expect(collapsed.models[0].originPricing?.inputPerMillion).toBe(3);
+	});
+
+	it("fixes ledger monthly filename double-counting, serviceTier+band resolution, and tally/MCP cost parity", async () => {
+		const dir = makeTempDir("kosha-ledger-dedup-");
+		const monthFile = join(dir, "ledger-2026-11.jsonl");
+		const ts = Date.UTC(2026, 10, 15, 12, 0, 0);
+		writeFileSync(
+			monthFile,
+			`${JSON.stringify({
+				ts,
+				provider: "openai",
+				modelId: "gpt-4o",
+				requested: "gpt-4o",
+				estimatedUsd: 1.25,
+				estimatedInputTokens: 100,
+				estimatedOutputTokens: 10,
+				upstreamStatus: 200,
+			})}\n`,
+		);
+		expect(await readSpendForMonth(ts, null, monthFile)).toBeCloseTo(1.25, 6);
+
+		const tiered: ModelPricing = {
+			inputPerMillion: 2,
+			outputPerMillion: 10,
+			cacheReadPerMillion: 0,
+			reasoningOutputPerMillion: 40,
+			cacheWrites: [
+				{ ttlSeconds: 300, perMillion: 2.5 },
+				{ ttlSeconds: 3600, perMillion: 4 },
+			],
+			longContextThresholdTokens: 100_000,
+			longContextInputPerMillion: 4,
+			longContextOutputPerMillion: 20,
+			serviceTiers: { flex: { inputPerMillion: 1, outputPerMillion: 5 } },
+		};
+		const resolved = resolvePricing(tiered, { promptTokens: 150_000, serviceTier: "flex" });
+		// 2x band * 0.5x flex tier = $2 in / $10 out
+		expect(resolved.inputPerMillion).toBeCloseTo(2, 6);
+		expect(resolved.outputPerMillion).toBeCloseTo(10, 6);
+
+		// Zero cacheReadPerMillion on paid input falls back to active resolved inputPerMillion ($4/M in 100k+ band) in tally
+		const est = estimateUsdCost(
+			{ inputTokens: 1_000, outputTokens: 0, cachedInputTokens: 1_000_000, totalTokens: 1_001_000 },
+			tiered,
+		);
+		expect(est.cachedInputUsd).toBeCloseTo(4, 6);
+
+		// MCP kosha_estimate_cost prices reasoning_tokens + cache_write_1h_tokens
+		const reg = makeRegistry([
+			{
+				id: "anthropic",
+				name: "Anthropic",
+				baseUrl: "https://api.anthropic.com",
+				authenticated: true,
+				lastRefreshed: Date.now(),
+				models: [makeCard({ id: "claude-tiered", provider: "anthropic", pricing: tiered })],
+			},
+		]);
+		const mcpRes = await handleJsonRpc(
+			{
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: {
+					name: "kosha_estimate_cost",
+					arguments: {
+						model: "claude-tiered",
+						input_tokens: 1_000_000,
+						output_tokens: 0,
+						reasoning_tokens: 500_000,
+						cache_write_tokens: 1_000_000,
+						cache_write_1h_tokens: 1_000_000,
+					},
+				},
+			},
+			{ registry: async () => reg },
+		);
+		const costJson = JSON.parse(
+			(mcpRes?.result as { content?: Array<{ text: string }> } | undefined)?.content?.[0]?.text ?? "{}",
+		) as { inputUsd: number; reasoningUsd: number; cacheWriteUsd: number; totalUsd: number };
+		expect(costJson.inputUsd).toBeCloseTo(4, 6); // long-context 2x band applies cleanly
+		expect(costJson.reasoningUsd).toBeCloseTo(20, 6); // 500k * $40/M
+		expect(costJson.cacheWriteUsd).toBeCloseTo(8, 6); // 1h $4/M scaled by 2x band
+		expect(costJson.totalUsd).toBeCloseTo(32, 6);
+	});
+
+	it("parses boolean CLI flags without swallowing positional subcommands and formats unit/remote/ANSI cells cleanly", async () => {
+		expect(parseArgs(["--json", "list"])).toEqual({ positional: ["list"], flags: { json: true } });
+		expect(parseArgs(["search", "--json", "gpt"])).toEqual({ positional: ["search", "gpt"], flags: { json: true } });
+		expect(parseArgs(["--pricing", "list"])).toEqual({ positional: ["list"], flags: { pricing: true } });
+
+		const refreshed: Array<string | undefined> = [];
+		const fakeReg = {
+			refresh: async (p?: string) => {
+				refreshed.push(p);
+			},
+			discover: async () => [],
+			providers_list: () => [],
+			toJSON: () => ({ providers: [], aliases: {}, discoveredAt: Date.now() }),
+		};
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		await cmdDiscover(fakeReg as never, { refresh: true, json: true, provider: "openai" });
+		logSpy.mockRestore();
+		expect(refreshed).toEqual(["openai"]);
+
+		const imageCard = makeCard({
+			id: "dall-e-3",
+			provider: "openai",
+			mode: "image",
+			pricing: { inputPerMillion: 0, outputPerMillion: 0, imageOutputPerImage: 0.04 },
+		});
+		expect(formatPricingTier(imageCard.pricing)).toContain("unit");
+		expect(modelRow(imageCard)[4]).toContain("unit");
+
+		expect(
+			formatCredentialSource({
+				id: "anthropic",
+				name: "Anthropic",
+				baseUrl: "https://api.anthropic.com",
+				authenticated: false,
+				credentialSource: "none",
+				models: [],
+				lastRefreshed: 0,
+			}),
+		).toContain("public catalog");
+
+		const table = renderTable(
+			[
+				{ header: "Name", width: 8 },
+				{ header: "Price", width: 12, align: "right" },
+			],
+			[["m1", c("\x1b[33m", "unverified")]],
+		);
+		const rowLine = table.split("\n")[2];
+		const ansiRe = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+		// Strip ANSI escapes: visible column width must align strictly at 8 + 1 + 12 = 21 chars
+		expect(rowLine.replace(ansiRe, "").length).toBe(21);
 	});
 });

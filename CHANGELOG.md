@@ -13,6 +13,17 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
+## [1.18.1] — 2026-11-25
+
+### Fixed
+
+- **Cache/manifest false-positive unblock (`src/security.ts`)**: narrowed Perplexity credential matching to `/\bpplx-[A-Za-z0-9]{32,}/` so real model ID `pplx-decider-flash-latest` no longer triggers false-positive `credential_leak` rejection on `providers_all.json` and `registry.json`.
+- **Upstream secret redaction & Anthropic SSE error handling (`src/proxy.ts`, `src/wire-anthropic.ts`)**: redacted non-OK upstream response bodies across OpenAI chat, Anthropic chat, `/v1/embeddings`, and `/v1/messages` plus streamed Anthropic `error` frames; stopped emitting synthetic `finish_reason: "stop"` chunks after SSE error events; rejected JSON arrays in `parseToolArguments`.
+- **Direct pricing & freshness (`src/enrichment/direct-pricing.ts`, `src/discovery/direct-pricing-parse.ts`, `src/enrichment/litellm.ts`, `src/enrichment/catalog.ts`, `src/registry-runtime.ts`)**: ran `DirectProviderPricingEnricher` before `LiteLLMEnricher`, let live provider prices update stale base rates (and `kosha enrich` refresh stale non-live catalog rates), fixed Vercel `request` / `web_search` 1K-unit scaling, prevented LiteLLM origin prices from leaking onto reseller proxy rows, kept `seed`-priced API cards attributed accurately (`static-seed` / `litellm`), synced LiteLLM capability additions to `rawCapabilities`, and fixed `structured_output` vs false `reasoning` inference in `trustedCapabilitiesForModel`.
+- **Quarantine & cache isolation (`src/manifest-merge.ts`, `src/catalog-source.ts`)**: checked `originPricing` collapse to `$0` when proxy pricing is absent and hash-scoped `local` catalog cache keys by resolved `KOSHA_CATALOG_FILE` path.
+- **Cost math, ledger & proxy resilience (`src/cost.ts`, `src/pricing-resolve.ts`, `src/tally.ts`, `src/mcp-server.ts`, `src/resilience.ts`, `src/provider-catalog.ts`, `src/proxy.ts`, `src/server.ts`)**: deduplicated monthly `KOSHA_LEDGER_PATH` reads, preserved `serviceTier` scaling on long-context bands, aligned `$0` cache-read fallback in `tally.ts`, added `reasoning_tokens` & `cache_write_1h_tokens` support to `kosha_estimate_cost`, allowed `CircuitBreaker.onSuccess()` recovery from `"open"` state, fixed `cohere` (`/v1/chat/completions`) and `thinkingmachines` (`wire: "anthropic"` + path), wrapped `runWithBudgetLock` spend reads in fail-closed `503` handling, recorded final `429` / `401` / `403` proxy outcomes uniformly, isolated `bootStatus` per `createServer()` instance, and validated `GET /api/roles?mode=`.
+- **CLI & Vertex OAuth hardening (`src/cli.ts`, `src/cli-commands.ts`, `src/cli-format.ts`, `src/cli-cmd-model.ts`, `src/cli-pricing-detail.ts`, `src/discovery/vertex.ts`, `src/discovery/modelsdev-catalog.ts`, `src/enrichment/litellm-catalog.ts`, `src/discovery/snapshot-catalog.ts`)**: prevented boolean flags (`--json`, `--pricing`, `--refresh`, etc.) from consuming positional commands/args, honored `--refresh`/`--force` in `kosha discover`, fixed ANSI-aware right-aligned `renderTable`, distinguished `"unit"` vs `"free"` and public catalog vs `"local"`, surfaced `serviceTiers`/warnings/unit rates in `kosha model`, and added `redirect: "error"` + timeout on catalog/OAuth fetches.
+
 ## [1.18.0] — 2026-11-25
 
 ### Added

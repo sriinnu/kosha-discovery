@@ -25,7 +25,11 @@ const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 interface DirectPricingSource {
 	readonly providerId: string;
 	readonly url: string;
-	readonly parseOptions: { perMillionInputOutput?: boolean; perTokenInputOutput?: boolean };
+	readonly parseOptions: {
+		perMillionInputOutput?: boolean;
+		perTokenInputOutput?: boolean;
+		perThousandRequests?: boolean;
+	};
 }
 
 const DIRECT_PUBLIC_PRICING_SOURCES: readonly DirectPricingSource[] = [
@@ -37,7 +41,7 @@ const DIRECT_PUBLIC_PRICING_SOURCES: readonly DirectPricingSource[] = [
 	{
 		providerId: "vercel",
 		url: "https://ai-gateway.vercel.sh/v1/models",
-		parseOptions: { perTokenInputOutput: true },
+		parseOptions: { perTokenInputOutput: true, perThousandRequests: true },
 	},
 ];
 
@@ -141,14 +145,15 @@ export class DirectProviderPricingEnricher implements Enricher {
 			const directPricing = table.get(card.id);
 			if (!directPricing) return card;
 
-			const updated: ModelCard = card.pricing
-				? { ...card }
-				: {
-						...card,
-						pricing: directPricing,
-						pricingSource: "provider-live",
-					};
-			const witness = evidenceFrom({ ...updated, pricing: directPricing }, "provider-api");
+			const mergedPricing: ModelPricing = card.pricing
+				? { ...card.pricing, ...directPricing }
+				: directPricing;
+			const updated: ModelCard = {
+				...card,
+				pricing: mergedPricing,
+				pricingSource: "provider-live",
+			};
+			const witness = evidenceFrom(updated, "provider-api");
 			if (witness) {
 				const existing = (updated.priceEvidence ?? []).filter((e) => e.source !== "provider-api");
 				updated.priceEvidence = [witness, ...existing];

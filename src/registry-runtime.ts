@@ -240,18 +240,21 @@ function isAllowedCustomBaseUrl(rawUrl: string, allowInsecureLocal: boolean): bo
 /**
  * Enrich the in-memory model set with pricing metadata when available.
  */
-export async function enrichRegistryModels(state: RegistryState): Promise<void> {
+export async function enrichRegistryModels(
+	state: RegistryState,
+	options?: { refreshExisting?: boolean },
+): Promise<void> {
 	try {
 		const catalog = await loadActiveCatalog();
 		const { CatalogEnricher, DirectProviderPricingEnricher, LiteLLMEnricher } = await import("./enrichment/index.js");
-		const enricher: Enricher = catalog ? new CatalogEnricher(catalog) : new LiteLLMEnricher();
+		const enricher = catalog ? new CatalogEnricher(catalog) : new LiteLLMEnricher();
 		const directEnricher = new DirectProviderPricingEnricher();
 
 		for (const [providerId, providerInfo] of state.providerMap) {
 			try {
-				const enriched = await enricher.enrich(providerInfo.models);
-				const withDirect = await directEnricher.enrich(enriched);
-				state.providerMap.set(providerId, { ...providerInfo, models: withDirect });
+				const withDirect = await directEnricher.enrich(providerInfo.models);
+				const enriched = await enricher.enrich(withDirect, options);
+				state.providerMap.set(providerId, { ...providerInfo, models: enriched });
 			} catch {
 				// Non-fatal so base discovery remains useful.
 			}
@@ -291,7 +294,7 @@ export async function registryEnrichOnly(state: RegistryState): Promise<EnrichOn
 	const before = countPricingFields(state);
 	const preEnrichmentPriced = capturePricedModelKeys(state);
 
-	await enrichRegistryModels(state);
+	await enrichRegistryModels(state, { refreshExisting: true });
 	for (const [providerId, providerInfo] of state.providerMap) {
 		state.providerMap.set(providerId, {
 			...providerInfo,
@@ -365,7 +368,10 @@ function attributePricingSources(state: RegistryState, preEnrichmentPriced: Set<
 			if (model.pricingSource) continue;
 			if (modelHasUsablePricing(model)) {
 				const fromDiscovery = preEnrichmentPriced.has(modelPricingKey(providerId, model));
-				model.pricingSource = fromDiscovery ? (model.source === "api" ? "provider-live" : "static-seed") : "litellm";
+				const isLiveApi =
+					model.priceEvidence?.some((entry) => entry.source === "provider-api") === true ||
+					(fromDiscovery && model.source === "api");
+				model.pricingSource = isLiveApi ? "provider-live" : fromDiscovery ? "static-seed" : "litellm";
 			} else {
 				model.pricingSource = "missing";
 			}

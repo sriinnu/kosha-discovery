@@ -403,7 +403,9 @@ export async function readSpendForMonth(
 	// The month partition is the hot path; the legacy file is the fallback
 	// for pre-partitioning history. Order matters only for readability —
 	// both are filtered by the same ts window below.
-	const sources = [partitionPathFor(ledgerPath, nowMs), ledgerPath];
+	const partitionPath = partitionPathFor(ledgerPath, nowMs);
+	const sources =
+		resolve(partitionPath) === resolve(ledgerPath) ? [partitionPath] : [partitionPath, ledgerPath];
 	let total = 0;
 	for (const file of sources) {
 		let raw: string;

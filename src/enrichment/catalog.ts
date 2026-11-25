@@ -22,16 +22,23 @@ export class CatalogEnricher implements Enricher {
 		}
 	}
 
-	async enrich(models: ModelCard[]): Promise<ModelCard[]> {
-		return models.map((model) => applyFreeTierFlag(this.enrichOne(model)));
+	async enrich(models: ModelCard[], options?: { refreshExisting?: boolean }): Promise<ModelCard[]> {
+		return models.map((model) => applyFreeTierFlag(this.enrichOne(model, options)));
 	}
 
-	private enrichOne(model: ModelCard): ModelCard {
+	private enrichOne(model: ModelCard, options?: { refreshExisting?: boolean }): ModelCard {
 		const entry = this.byProvider.get(model.provider)?.get(model.id);
 		if (!entry) return { ...model };
 
 		const enriched: ModelCard = { ...model };
-		if (entry.pricing && !isPlanBilled(enriched)) enriched.pricing = fillPricing(enriched.pricing, entry.pricing);
+		if (entry.pricing && !isPlanBilled(enriched)) {
+			enriched.pricing = options?.refreshExisting && enriched.pricingSource !== "provider-live"
+				? { ...enriched.pricing, ...entry.pricing }
+				: fillPricing(enriched.pricing, entry.pricing);
+			if (options?.refreshExisting && enriched.pricingSource !== "provider-live") {
+				enriched.pricingSource = entry.pricingSource ?? "static-seed";
+			}
+		}
 		if (!enriched.originPricing && entry.originPricing) enriched.originPricing = entry.originPricing;
 		if (enriched.contextWindow === 0 && entry.contextWindow) enriched.contextWindow = entry.contextWindow;
 		if (enriched.maxOutputTokens === 0 && entry.maxOutputTokens) enriched.maxOutputTokens = entry.maxOutputTokens;
