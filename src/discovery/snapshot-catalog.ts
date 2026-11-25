@@ -63,16 +63,25 @@ export interface SnapshotCatalog {
 	fetchedAt: string | null;
 }
 
+const CATALOG_MEM_TTL_MS = 5 * 60 * 1000;
 let inflight: Promise<SnapshotCatalog> | null = null;
+let inflightExpiresAt = 0;
+
+import { PRICE_HOLD_TAGS } from "../manifest-merge.js";
 
 /** Hold bookkeeping the snapshot gate (`src/snapshot-gate.ts`) leaves on a
  *  published card so next week's run can continue it. */
 const GATE_FIELDS = ["pricingHold", "priceAnchor", "lastSeenAt", "missingRunCount"] as const;
+const HOLD_TAG_SET = new Set<string>(PRICE_HOLD_TAGS);
 
 function withoutGateFields(card: ModelCard): ModelCard {
-	if (!GATE_FIELDS.some((field) => field in card)) return card;
+	const hasHoldTag = card.rawCapabilities?.some((tag) => HOLD_TAG_SET.has(tag)) ?? false;
+	if (!GATE_FIELDS.some((field) => field in card) && !hasHoldTag) return card;
 	const out = { ...card } as Record<string, unknown>;
 	for (const field of GATE_FIELDS) delete out[field];
+	if (hasHoldTag && card.rawCapabilities) {
+		out.rawCapabilities = card.rawCapabilities.filter((tag) => !HOLD_TAG_SET.has(tag));
+	}
 	return out as unknown as ModelCard;
 }
 
@@ -85,9 +94,11 @@ export function snapshotCatalogUrl(): string {
 
 /** Load the snapshot once per process, keyed by provider id. */
 export function loadSnapshotCatalog(): Promise<SnapshotCatalog> {
-	if (inflight) return inflight;
+	if (inflight && Date.now() < inflightExpiresAt) return inflight;
+	inflightExpiresAt = Date.now() + CATALOG_MEM_TTL_MS;
 	inflight = fetchAndValidate().catch((error) => {
 		inflight = null; // let the next caller retry
+		inflightExpiresAt = 0;
 		throw error;
 	});
 	return inflight;
@@ -95,6 +106,7 @@ export function loadSnapshotCatalog(): Promise<SnapshotCatalog> {
 
 export function resetSnapshotCatalogCache(): void {
 	inflight = null;
+	inflightExpiresAt = 0;
 }
 
 /**

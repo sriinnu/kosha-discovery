@@ -7,10 +7,11 @@
  * @module
  */
 
-import { isPlanBilled } from "./discovery/free-tier.js";
+import { isFreeTier, isPlanBilled } from "./discovery/free-tier.js";
 import { isRetired } from "./lifecycle.js";
 import { extractModelVersion, extractOriginProvider, matchableModelId } from "./normalize.js";
 import { isUnverifiedZeroPrice } from "./price-trust.js";
+import { resolvePricing } from "./pricing-resolve.js";
 import {
 	getProviderDescriptor,
 	isLocalProvider,
@@ -18,6 +19,7 @@ import {
 	providerExecutionCredentialRequired,
 } from "./provider-catalog.js";
 import type { RegistryState } from "./registry-state.js";
+import { getRegistryIndex } from "./registry-index.js";
 import { registryRouteAccess } from "./route-access.js";
 import type {
 	CapabilitySummary,
@@ -137,28 +139,21 @@ export function registryModels(
 	state: RegistryState,
 	filter?: { provider?: string; originProvider?: string; mode?: ModelMode; capability?: string },
 ): ModelCard[] {
+	const index = getRegistryIndex(state);
 	const normalizedProvider = normalizeProviderId(filter?.provider);
 	const normalizedOriginProvider = normalizeProviderId(filter?.originProvider);
-	const seen = new Set<string>();
-	const result: ModelCard[] = [];
+	const source = normalizedProvider ? (index.byProvider.get(normalizedProvider)?.models ?? []) : index.allModels;
 
-	for (const providerInfo of state.providerMap.values()) {
-		if (normalizedProvider && providerInfo.id !== normalizedProvider) continue;
-
-		for (const model of providerInfo.models) {
-			// I dedupe by provider+model so the same upstream model can still appear through different routes.
-			const dedupKey = `${model.provider}:${model.id}`;
-			if (seen.has(dedupKey)) continue;
-			if (normalizedOriginProvider && normalizeProviderId(model.originProvider) !== normalizedOriginProvider) continue;
-			if (filter?.mode && model.mode !== filter.mode) continue;
-			if (filter?.capability && !model.capabilities.includes(filter.capability)) continue;
-
-			seen.add(dedupKey);
-			result.push(model);
-		}
+	if (!normalizedOriginProvider && !filter?.mode && !filter?.capability) {
+		return [...source];
 	}
 
-	return result;
+	return source.filter((model) => {
+		if (normalizedOriginProvider && normalizeProviderId(model.originProvider) !== normalizedOriginProvider) return false;
+		if (filter?.mode && model.mode !== filter.mode) return false;
+		if (filter?.capability && !model.capabilities.includes(filter.capability)) return false;
+		return true;
+	});
 }
 
 /**
@@ -271,9 +266,20 @@ export function registryCheapestModels(state: RegistryState, options?: CheapestM
 	// Ranking them at $0 would call a paid plan "free", so they get their own list.
 	const includedInPlans: ModelCard[] = [];
 
+	const allowUnitOnlyNonChat = Boolean(options?.mode || effectiveRole);
 	for (const model of candidates) {
 		if (isPlanBilled(model)) {
 			includedInPlans.push(model);
+			continue;
+		}
+		if (
+			!allowUnitOnlyNonChat &&
+			model.mode !== "chat" &&
+			model.pricing?.inputPerMillion === 0 &&
+			model.pricing?.outputPerMillion === 0 &&
+			!isFreeTier(model)
+		) {
+			if (options?.includeUnpriced) unpriced.push({ model, score: undefined, priceMetric });
 			continue;
 		}
 		const score = computeModelScore(
@@ -335,8 +341,8 @@ export function registryModelRoutes(state: RegistryState, modelId: string): Mode
 	// with dots vs dashes (e.g. `claude-sonnet-5.0` vs `claude-sonnet-5`)
 	// still cluster together as a single logical model.
 	const targetNorm = matchableModelId(modelId).toLowerCase();
-	const routes = registryModels(state).filter((model) => matchableModelId(model.id).toLowerCase() === targetNorm);
-	return routes.sort((a, b) => a.provider.localeCompare(b.provider));
+	const routes = getRegistryIndex(state).byMatchableLower.get(targetNorm) ?? [];
+	return [...routes].sort((a, b) => a.provider.localeCompare(b.provider));
 }
 
 /**
@@ -351,7 +357,9 @@ export function registryModelRouteInfo(state: RegistryState, modelId: string): M
 			originProvider: resolvedOrigin,
 			baseUrl: state.providerMap.get(model.provider)?.baseUrl,
 			version: extractModelVersion(model.id),
-			isDirect: model.provider === resolvedOrigin,
+			isDirect:
+				(normalizeProviderId(model.provider) ?? model.provider) ===
+				(normalizeProviderId(resolvedOrigin) ?? resolvedOrigin),
 			isPreferred: false,
 		};
 	});
@@ -454,16 +462,18 @@ export function computeModelScore(
 	inputWeight: number,
 	outputWeight: number,
 	roleOrCapability?: string,
+	at: Date | number = Date.now(),
 ): number | undefined {
 	if (!model.pricing) return undefined;
+	const resolved = resolvePricing(model.pricing, { at });
 	if (metric === "input") {
 		// A speech or TTS model can carry $0 tokens beside its real per-second
 		// or per-character rate; that rate is its price for the query.
 		const unitInput = inputUnitScore(model, roleOrCapability);
-		if (unitInput !== undefined && model.pricing.inputPerMillion === 0 && model.pricing.outputPerMillion === 0) {
+		if (unitInput !== undefined && resolved.inputPerMillion === 0 && resolved.outputPerMillion === 0) {
 			return unitInput;
 		}
-		return Number.isFinite(model.pricing.inputPerMillion) ? model.pricing.inputPerMillion : undefined;
+		return Number.isFinite(resolved.inputPerMillion) ? resolved.inputPerMillion : undefined;
 	}
 	const unitOutput = outputUnitScore(model, roleOrCapability);
 	if (metric === "output") {
@@ -471,13 +481,13 @@ export function computeModelScore(
 		// not commensurable with a per-million-tokens rate. When the role or modality picks a
 		// unit-priced score, return that rate alone; otherwise fall through to token output.
 		if (unitOutput !== undefined) return unitOutput;
-		return Number.isFinite(model.pricing.outputPerMillion) ? model.pricing.outputPerMillion : undefined;
+		return Number.isFinite(resolved.outputPerMillion) ? resolved.outputPerMillion : undefined;
 	}
-	if (unitOutput !== undefined && model.pricing.inputPerMillion === 0 && model.pricing.outputPerMillion === 0) {
+	if (unitOutput !== undefined && resolved.inputPerMillion === 0 && resolved.outputPerMillion === 0) {
 		return unitOutput;
 	}
-	return Number.isFinite(model.pricing.inputPerMillion) && Number.isFinite(model.pricing.outputPerMillion)
-		? model.pricing.inputPerMillion * inputWeight + model.pricing.outputPerMillion * outputWeight
+	return Number.isFinite(resolved.inputPerMillion) && Number.isFinite(resolved.outputPerMillion)
+		? resolved.inputPerMillion * inputWeight + resolved.outputPerMillion * outputWeight
 		: undefined;
 }
 
@@ -488,6 +498,9 @@ function inputUnitScore(model: ModelCard, roleOrCapability?: string): number | u
 	if (role === "speech_to_text") return pricing.audioInputPerSecond;
 	if (role === "text_to_speech")
 		return pricing.inputPerMillionCharacters ?? pricing.audioOutputPerSecond ?? pricing.outputPerMillionCharacters;
+	if (!role && model.mode === "audio") {
+		return pricing.audioInputPerSecond ?? pricing.inputPerMillionCharacters ?? pricing.audioOutputPerSecond;
+	}
 	return undefined;
 }
 
@@ -501,9 +514,15 @@ function outputUnitScore(model: ModelCard, roleOrCapability?: string): number | 
 	if (effectiveRole === "maps_search") return pricing.mapsSearchPerThousandRequests ?? pricing.requestPerThousand;
 	if (effectiveRole === "video_generation") return pricing.videoOutputPerSecond;
 	if (effectiveRole === "image_generation") return pricing.imageOutputPerImage;
-	if (model.mode === "image" || model.capabilities.includes("image_generation")) return pricing.imageOutputPerImage;
-	if (model.mode === "video" || model.capabilities.includes("video_generation")) return pricing.videoOutputPerSecond;
-	return pricing.audioOutputPerSecond ?? pricing.outputPerMillionCharacters;
+	if (effectiveRole === "speech_to_text") return pricing.audioInputPerSecond;
+	if (effectiveRole === "text_to_speech") return pricing.audioOutputPerSecond ?? pricing.outputPerMillionCharacters;
+	if (model.mode === "image" || (!effectiveRole && model.capabilities.includes("image_generation")))
+		return pricing.imageOutputPerImage;
+	if (model.mode === "video" || (!effectiveRole && model.capabilities.includes("video_generation")))
+		return pricing.videoOutputPerSecond;
+	if (model.mode === "audio")
+		return pricing.audioOutputPerSecond ?? pricing.audioInputPerSecond ?? pricing.outputPerMillionCharacters;
+	return undefined;
 }
 
 /**

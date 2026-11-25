@@ -10,6 +10,7 @@
 
 import type { CredentialResult, ModelCard, ModelMode, ModelPricing, ModelStatus } from "../types.js";
 import { BaseDiscoverer } from "./base.js";
+import { evidenceFrom } from "./price-evidence.js";
 // Route origin-provider derivation through the canonical normalizer so the
 // vendor→origin mapping lives in one place instead of being re-maintained here.
 import { extractOriginProvider as extractCanonicalOriginProvider } from "../normalize.js";
@@ -121,7 +122,7 @@ export class OpenRouterDiscoverer extends BaseDiscoverer {
 		const originProvider = this.extractOriginProvider(model.id);
 		const lifecycle = this.inferLifecycleStatus(model.expiration_date);
 
-		return this.makeCard({
+		const card = this.makeCard({
 			id: model.id,
 			name: model.name || model.id,
 			provider: this.providerId,
@@ -131,12 +132,18 @@ export class OpenRouterDiscoverer extends BaseDiscoverer {
 			contextWindow: model.context_length ?? 0,
 			maxOutputTokens: model.top_provider?.max_completion_tokens ?? 0,
 			pricing,
+			...(pricing ? { pricingSource: "provider-live" as const } : {}),
 			// Lifecycle fields are populated only when OpenRouter signals a
 			// sunset; normal models stay undefined (treated as active by
 			// downstream consumers) so later enrichers can still upgrade them.
 			status: lifecycle.status,
 			deprecationDate: lifecycle.deprecationDate,
 		});
+		if (pricing) {
+			const witness = evidenceFrom(card, "provider-api");
+			if (witness) card.priceEvidence = [witness];
+		}
+		return card;
 	}
 
 	/**
@@ -269,14 +276,30 @@ export class OpenRouterDiscoverer extends BaseDiscoverer {
 	private isModernChatModel(id: string): boolean {
 		return (
 			id.includes("gpt-4") ||
+			id.includes("gpt-5") ||
+			id.includes("/o1") ||
+			id.includes("/o3") ||
+			id.includes("/o4") ||
 			id.includes("claude-3") ||
+			id.includes("claude-4") ||
 			id.includes("claude-sonnet") ||
 			id.includes("claude-opus") ||
+			id.includes("claude-haiku") ||
 			id.includes("gemini") ||
 			id.includes("command-r") ||
 			id.includes("mistral-large") ||
+			id.includes("mistral-medium") ||
+			id.includes("mistral-small") ||
+			id.includes("codestral") ||
 			id.includes("llama-3") ||
-			id.includes("deepseek")
+			id.includes("llama-4") ||
+			id.includes("deepseek") ||
+			id.includes("qwen") ||
+			id.includes("grok") ||
+			id.includes("nova") ||
+			id.includes("kimi") ||
+			id.includes("glm") ||
+			id.includes("minimax")
 		);
 	}
 
@@ -319,6 +342,16 @@ export class OpenRouterDiscoverer extends BaseDiscoverer {
 			: NaN;
 		if (Number.isFinite(cacheWriteCost)) {
 			result.cacheWritePerMillion = cacheWriteCost * 1_000_000;
+		}
+
+		const imageCost = pricing.image !== undefined ? Number.parseFloat(pricing.image) : NaN;
+		if (Number.isFinite(imageCost) && imageCost > 0) {
+			result.imageOutputPerImage = imageCost;
+		}
+
+		const requestCost = pricing.request !== undefined ? Number.parseFloat(pricing.request) : NaN;
+		if (Number.isFinite(requestCost) && requestCost > 0) {
+			result.requestPerThousand = requestCost * 1_000;
 		}
 
 		return result;

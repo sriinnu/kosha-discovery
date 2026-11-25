@@ -189,7 +189,7 @@ Batch Pricing: $0.05 in / $0.25 out per million tokens (50% off)
 Released: 2026-10-07
 ```
 
-`Price Change:` appears when a cited price changes on a date, for example Gemini 4 Carbon doubling on 2026-12-01. A bare id resolves to the maker's own route, so `kosha model grok-4.7` is xAI, not a reseller.
+`Price Change:` appears when a cited price changes on a date, for example Gemini 4 Carbon doubling on 2026-12-01. A bare id resolves to the maker's own route, so `kosha model grok-4.7` is xAI, not a reseller, and `provider/alias` (for example `anthropic/opus`) resolves within that provider. `kosha model` also prints `Unit Pricing:`, `Price Provenance:`, `Status:`/`Sunset:`, and `Cache Behavior:` when present. Long and short flags support `--flag=value`, `--flag value`, `-h`, `-v`, and `--`.
 
 ### `kosha newest --days 10 --limit 6`
 
@@ -311,4 +311,4 @@ Provider health
   …
 ```
 
-`--model` scopes the check to those IDs or aliases; every provider route for each is checked, and a model no provider lists any more is reported as `missing`. With `--ci` the exit code is 2 when the gate trips: a missing model, a finding on the model's direct route, or a model whose every route is going away. A reseller retiring one regional copy, like the Bedrock row above, is reported but does not fail the run while the model's own provider still serves it. `--deprecation-window <days>` (default 30) sets how far ahead a sunset counts. Without `--model`, `doctor` reports the whole registry, which is for reading, not for gating.
+`--model` scopes the check to those IDs or aliases; every provider route for each is checked, and a model no provider lists any more is reported as `missing`. With `--ci` the exit code is 2 when the gate trips: a missing model, a finding on the model's direct route, or a model whose every route is going away. A reseller retiring one regional copy, like the Bedrock row above, is reported but does not fail the run while the model's own provider still serves it. `--deprecation-window <days>` (default 30) sets how far ahead a sunset counts. Without `--model`, `doctor` reports the whole registry, which is for reading, not for gating, including recent `Pricing anomalies` from `<manifestDir>/anomalies.json` (also included in `--json` as `anomalies`).

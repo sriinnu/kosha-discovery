@@ -75,9 +75,33 @@ export async function getPublicSeed(providerId: string): Promise<ModelCard[]> {
 	const litellmById = new Map(litellm.map((card) => [card.id, card]));
 	for (const card of modelsDev) {
 		const fromLiteLLM = litellmById.get(card.id);
+		if (!fromLiteLLM) {
+			merged.push(card);
+			continue;
+		}
 		const a = evidenceFrom(card, "models.dev");
-		const b = fromLiteLLM ? evidenceFrom(fromLiteLLM, "litellm") : null;
-		merged.push(a && b ? { ...card, priceEvidence: [a, b] } : card);
+		const b = evidenceFrom(fromLiteLLM, "litellm");
+		let pricing = card.pricing ?? fromLiteLLM.pricing;
+		if (card.pricing && fromLiteLLM.pricing) {
+			const combined = { ...card.pricing };
+			for (const [k, v] of Object.entries(fromLiteLLM.pricing)) {
+				if ((combined as Record<string, unknown>)[k] === undefined && v !== undefined) {
+					(combined as Record<string, unknown>)[k] = v;
+				}
+			}
+			pricing = combined;
+		}
+		merged.push({
+			...card,
+			contextWindow: card.contextWindow > 0 ? card.contextWindow : fromLiteLLM.contextWindow,
+			maxOutputTokens: card.maxOutputTokens > 0 ? card.maxOutputTokens : fromLiteLLM.maxOutputTokens,
+			maxInputTokens: card.maxInputTokens ?? fromLiteLLM.maxInputTokens,
+			dimensions: card.dimensions ?? fromLiteLLM.dimensions,
+			deprecationDate: card.deprecationDate ?? fromLiteLLM.deprecationDate,
+			replacedBy: card.replacedBy ?? fromLiteLLM.replacedBy,
+			...(pricing ? { pricing } : {}),
+			...(a && b ? { priceEvidence: [a, b] } : {}),
+		});
 	}
 	for (const card of litellm) {
 		if (seen.has(card.id)) continue;

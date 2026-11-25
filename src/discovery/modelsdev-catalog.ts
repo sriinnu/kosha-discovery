@@ -98,8 +98,11 @@ export interface ModelsDevProvider {
 	models?: Record<string, ModelsDevModel>;
 }
 
-/** Module-level promise-dedup cache. */
+const CATALOG_MEM_TTL_MS = 5 * 60 * 1000;
+
+/** Module-level promise-dedup cache with bounded TTL. */
 let inflight: Promise<Record<string, ModelsDevProvider>> | null = null;
+let inflightExpiresAt = 0;
 
 /** Provider entries dropped by the threat scan on the most recent load. */
 let lastQuarantined: QuarantinedEntry[] = [];
@@ -116,13 +119,15 @@ export function modelsDevQuarantined(): QuarantinedEntry[] {
 
 /**
  * Fetch the models.dev catalog with full hardening. Concurrent callers
- * share the same in-flight promise.
+ * share the same in-flight promise within the TTL window.
  */
 export function loadModelsDevCatalog(): Promise<Record<string, ModelsDevProvider>> {
-	if (inflight) return inflight;
+	if (inflight && Date.now() < inflightExpiresAt) return inflight;
+	inflightExpiresAt = Date.now() + CATALOG_MEM_TTL_MS;
 	inflight = fetchAndValidate().catch((error) => {
 		// Reset on failure so future calls can retry.
 		inflight = null;
+		inflightExpiresAt = 0;
 		throw error;
 	});
 	return inflight;
@@ -131,6 +136,7 @@ export function loadModelsDevCatalog(): Promise<Record<string, ModelsDevProvider
 /** Test-only helper to clear the cache between runs. */
 export function resetModelsDevCatalogCache(): void {
 	inflight = null;
+	inflightExpiresAt = 0;
 	lastQuarantined = [];
 }
 
@@ -169,9 +175,7 @@ async function fetchAndValidate(): Promise<Record<string, ModelsDevProvider>> {
 	// be able to take out every other provider's entry — which is exactly what
 	// an all-or-nothing scan did.
 	const { clean, dropped } = quarantineEntries(parsed, "models.dev");
-	if (dropped.length > 0) {
-		lastQuarantined = dropped;
-	}
+	lastQuarantined = dropped;
 
 	const entries = Object.entries(clean);
 	if (entries.length > MAX_PROVIDER_ENTRIES) {

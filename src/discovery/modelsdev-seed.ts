@@ -17,7 +17,6 @@ import {
 	applyFreeTierFlag,
 	CATALOG_ONLY_CAPABILITY,
 	FREE_TIER_CAPABILITY,
-	isFreeTier,
 	SUBSCRIPTION_PLAN_CAPABILITY,
 } from "./free-tier.js";
 import { loadModelsDevCatalog, type ModelsDevModel, type ModelsDevProvider } from "./modelsdev-catalog.js";
@@ -305,23 +304,31 @@ function extractPricing(entry: ModelsDevModel): ModelPricing | undefined {
 	const cost = entry.cost;
 	if (!cost) return undefined;
 
-	const hasSignal =
-		isFiniteNumber(cost.input) ||
-		isFiniteNumber(cost.output) ||
-		isFiniteNumber(cost.cache_read) ||
-		isFiniteNumber(cost.cache_write) ||
-		isFiniteNumber(cost.batch?.input) ||
-		isFiniteNumber(cost.batch?.output);
-	if (!hasSignal) return undefined;
+	const hasBaseRates = isFiniteNumber(cost.input) && isFiniteNumber(cost.output);
+	if (!hasBaseRates) return undefined;
 
 	const pricing: ModelPricing = {
-		inputPerMillion: cost.input ?? 0,
-		outputPerMillion: cost.output ?? 0,
+		inputPerMillion: cost.input!,
+		outputPerMillion: cost.output!,
 	};
 	if (isFiniteNumber(cost.cache_read)) pricing.cacheReadPerMillion = cost.cache_read;
 	if (isFiniteNumber(cost.cache_write)) pricing.cacheWritePerMillion = cost.cache_write;
 	if (isFiniteNumber(cost.batch?.input)) pricing.batchInputPerMillion = cost.batch.input;
 	if (isFiniteNumber(cost.batch?.output)) pricing.batchOutputPerMillion = cost.batch.output;
+	if (isFiniteNumber(cost.context_over_200k?.input) && isFiniteNumber(cost.context_over_200k?.output)) {
+		const longBand = {
+			aboveInputTokens: 200_000,
+			inputPerMillion: cost.context_over_200k.input,
+			outputPerMillion: cost.context_over_200k.output,
+			...(isFiniteNumber(cost.context_over_200k.cache_read)
+				? { cacheReadPerMillion: cost.context_over_200k.cache_read }
+				: {}),
+		};
+		pricing.bands = [longBand];
+		pricing.longContextThresholdTokens = 200_000;
+		pricing.longContextInputPerMillion = longBand.inputPerMillion;
+		pricing.longContextOutputPerMillion = longBand.outputPerMillion;
+	}
 	return pricing;
 }
 

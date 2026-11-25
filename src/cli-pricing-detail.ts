@@ -5,20 +5,11 @@
  * @module
  */
 
-import type { CacheWriteTier, ModelPricing, PricingBand } from "./types.js";
+import { formatPrice } from "./cli-format.js";
+import { isInPeakWindow } from "./pricing-resolve.js";
+import type { CacheWriteTier, ModelPricing, PricingBand, PricingSchedule } from "./types.js";
 
-/**
- * A price with the digits it has: `$0.125`, `$0.006`, `$2.50`. The table
- * formatter rounds to cents, which turns a $0.006 cache read into $0.01.
- */
-export function formatPrice(price: number | undefined): string {
-	if (price === undefined || price === null) return "—";
-	if (price === 0) return "free";
-	const [whole, frac = ""] = Number(price.toPrecision(6)).toFixed(6).split(".");
-	let digits = frac;
-	while (digits.length > 2 && digits.endsWith("0")) digits = digits.slice(0, -1);
-	return `$${whole}.${digits}`;
-}
+export { formatPrice };
 
 /** `300` → `5m`, `3600` → `1h`, `43200` → `12h`. */
 export function formatTtl(seconds: number): string {
@@ -94,12 +85,38 @@ export function changeLines(pricing: ModelPricing): string[] {
 	});
 }
 
+function formatPeakWindows(windows: PricingSchedule["peakWindows"]): string {
+	return windows
+		.map((w) => `${String(w.startHourUtc).padStart(2, "0")}:00-${String(w.endHourUtc).padStart(2, "0")}:00 UTC`)
+		.join(", ");
+}
+
+/** Off-peak rates and peak schedule, when the provider varies price by UTC hour. */
+export function scheduleLine(pricing: ModelPricing, now: Date | number = Date.now()): string | null {
+	const s = pricing.schedule;
+	if (!s) return null;
+	const off = s.offPeak;
+	const rates = [
+		`${formatPrice(off.inputPerMillion)} / ${formatPrice(off.outputPerMillion)} in/out`,
+		...(off.cacheReadPerMillion !== undefined ? [`${formatPrice(off.cacheReadPerMillion)} read`] : []),
+	].join(", ");
+	const status = isInPeakWindow(s, now) ? "peak now" : "off-peak now";
+	const windows = s.peakWindows.length > 0 ? `; peak Mon-Fri ${formatPeakWindows(s.peakWindows)}` : "";
+	return `${rates} per million tokens (${status}${windows})`;
+}
+
 /** Every extra pricing line for `kosha model`, each prefixed `\n<label> `. */
-export function pricingDetail(pricing: ModelPricing | undefined, label: (text: string) => string): string {
+export function pricingDetail(
+	pricing: ModelPricing | undefined,
+	label: (text: string) => string,
+	now: Date | number = Date.now(),
+): string {
 	if (!pricing) return "";
 	let out = "";
 	const cache = cacheLine(pricing);
 	if (cache) out += `\n${label("Cache Pricing:")} ${cache}`;
+	const offPeak = scheduleLine(pricing, now);
+	if (offPeak) out += `\n${label("Off-Peak Pricing:")} ${offPeak}`;
 	for (const line of bandLines(pricing)) out += `\n${label("Long Prompts:")} ${line}`;
 	for (const line of changeLines(pricing)) out += `\n${label("Price Change:")} ${line}`;
 	if (pricing.citation)

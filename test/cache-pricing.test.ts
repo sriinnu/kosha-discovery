@@ -140,12 +140,19 @@ describe("cited prices: no write premium", () => {
 		]);
 		expect(model.pricing?.cacheWritePerMillion).toBe(0.3);
 		expect(model.pricing?.cacheWriteBilling).toBe("as-input");
-		const cost = estimateUsdCost(
+		const peakAt = Date.parse("2026-11-17T08:00:00Z"); // DeepSeek peak window (06:00-10:00 UTC)
+		const peakCost = estimateUsdCost(
 			{ inputTokens: 0, outputTokens: 0, cacheWriteTokens: 1_000_000 },
 			model.pricing as ModelPricing,
-			NOW,
+			peakAt,
 		);
-		expect(cost.cacheWriteUsd).toBeCloseTo(0.3, 9);
+		expect(peakCost.cacheWriteUsd).toBeCloseTo(0.3, 9);
+		const offPeakCost = estimateUsdCost(
+			{ inputTokens: 0, outputTokens: 0, cacheWriteTokens: 1_000_000 },
+			model.pricing as ModelPricing,
+			NOW, // 12:00 UTC is off-peak (0.15/M input & as-input write)
+		);
+		expect(offPeakCost.cacheWriteUsd).toBeCloseTo(0.15, 9);
 	});
 
 	it("Kimi K3's 5m write costs the same as input and its 1h write double", () => {

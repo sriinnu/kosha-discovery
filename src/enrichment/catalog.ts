@@ -14,14 +14,20 @@ import type { SnapshotCatalog } from "../discovery/snapshot-catalog.js";
 import type { Enricher, ModelCard, ModelPricing } from "../types.js";
 
 export class CatalogEnricher implements Enricher {
-	constructor(private readonly catalog: SnapshotCatalog) {}
+	private readonly byProvider = new Map<string, Map<string, ModelCard>>();
+
+	constructor(catalog: SnapshotCatalog) {
+		for (const [provider, cards] of catalog.providers) {
+			this.byProvider.set(provider, new Map(cards.map((card) => [card.id, card])));
+		}
+	}
 
 	async enrich(models: ModelCard[]): Promise<ModelCard[]> {
 		return models.map((model) => applyFreeTierFlag(this.enrichOne(model)));
 	}
 
 	private enrichOne(model: ModelCard): ModelCard {
-		const entry = this.catalog.providers.get(model.provider)?.find((card) => card.id === model.id);
+		const entry = this.byProvider.get(model.provider)?.get(model.id);
 		if (!entry) return { ...model };
 
 		const enriched: ModelCard = { ...model };
@@ -42,12 +48,35 @@ function fillPricing(current: ModelPricing | undefined, entry: ModelPricing): Mo
 	if (!current) return entry;
 	const filled: ModelPricing = { ...current };
 	for (const key of [
+		"reasoningInputPerMillion",
+		"reasoningOutputPerMillion",
 		"cacheReadPerMillion",
 		"cacheWritePerMillion",
+		"cacheWrite1hPerMillion",
+		"cacheStoragePerMillionPerHour",
 		"batchInputPerMillion",
 		"batchOutputPerMillion",
+		"longContextInputPerMillion",
+		"longContextOutputPerMillion",
+		"longContextThresholdTokens",
+		"imageInputPerImage",
+		"imageOutputPerImage",
+		"audioInputPerMillion",
+		"audioOutputPerMillion",
+		"audioInputPerSecond",
+		"audioOutputPerSecond",
+		"videoInputPerSecond",
+		"videoOutputPerSecond",
+		"videoInputPerMillion",
+		"inputPerMillionCharacters",
+		"outputPerMillionCharacters",
+		"citation",
 	] as const) {
-		if (filled[key] === undefined && entry[key] !== undefined) filled[key] = entry[key];
+		if (filled[key] === undefined && entry[key] !== undefined) {
+			(filled as unknown as Record<string, unknown>)[key] = entry[key];
+		}
 	}
+	if (!filled.cacheWrites?.length && entry.cacheWrites?.length) filled.cacheWrites = entry.cacheWrites;
+	if (!filled.bands?.length && entry.bands?.length) filled.bands = entry.bands;
 	return filled;
 }

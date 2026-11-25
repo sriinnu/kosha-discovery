@@ -7,8 +7,10 @@
  * @module
  */
 
+import { isPlanBilled } from "./discovery/free-tier.js";
 import {
 	DISCOVERY_SCHEMA_VERSION,
+	rawCapabilitiesForModel,
 	trustedCapabilitiesForModel,
 } from "./discovery-contract.js";
 import type {
@@ -17,6 +19,8 @@ import type {
 	DiscoveryCheapestResultV1,
 	TrustedCapability,
 } from "./discovery-contract.js";
+import { isRetired } from "./lifecycle.js";
+import { isUnverifiedZeroPrice } from "./price-trust.js";
 import { normalizeProviderId } from "./provider-catalog.js";
 import {
 	computeModelScore,
@@ -47,11 +51,17 @@ export function registryCheapestCandidates(
 		role: query.role,
 		capability: query.capability,
 	});
-	const candidates = discoveryCandidateModels(state, query).map(({ model, descriptor }) => ({
-		model,
-		descriptor,
-		score: computeModelScore(model, priceMetric as PricingMetric, 1, 1, effectiveRole),
-	}));
+	const candidates = discoveryCandidateModels(state, query)
+		.filter(({ model }) => !isPlanBilled(model))
+		.map(({ model, descriptor }) => {
+			const rawScore = computeModelScore(model, priceMetric as PricingMetric, 1, 1, effectiveRole);
+			const unverifiedZero = rawScore === 0 && isUnverifiedZeroPrice(model);
+			return {
+				model,
+				descriptor,
+				score: unverifiedZero ? undefined : rawScore,
+			};
+		});
 	const priced = candidates.filter((entry) => entry.score !== undefined).sort((a, b) => (a.score ?? Number.POSITIVE_INFINITY) - (b.score ?? Number.POSITIVE_INFINITY));
 	const unpriced = candidates.filter((entry) => entry.score === undefined);
 
@@ -93,13 +103,20 @@ export function registryExecutionBindingHints(
 		role: query.role,
 		capability: query.capability,
 	})) as PricingMetric;
-	const routes = discoveryCandidateModels(state, query).map(({ model, descriptor }) => ({
-		model,
-		descriptor,
-		isLocal: descriptor.isLocal,
-		isDirect: normalizeProviderId(model.originProvider) === descriptor.canonicalProviderId,
-		price: computeModelScore(model, priceMetric, 1, 1, effectiveRole),
-	})).sort((a, b) =>
+	const routes = discoveryCandidateModels(state, query)
+		.filter(({ model }) => !isPlanBilled(model))
+		.map(({ model, descriptor }) => {
+			const rawPrice = computeModelScore(model, priceMetric, 1, 1, effectiveRole);
+			const price = rawPrice === 0 && isUnverifiedZeroPrice(model) ? undefined : rawPrice;
+			return {
+				model,
+				descriptor,
+				isLocal: descriptor.isLocal,
+				isDirect: normalizeProviderId(model.originProvider) === descriptor.canonicalProviderId,
+				price,
+			};
+		})
+		.sort((a, b) =>
 		// I keep the sort deterministic so consumers get stable binding hints across identical snapshots.
 		(preferLocalProviders ? Number(b.isLocal) - Number(a.isLocal) : 0) ||
 		Number(b.isDirect) - Number(a.isDirect) ||
@@ -165,11 +182,19 @@ function modelMatchesDiscoveryQuery(
 	// candidate pool entirely so cheapest/binding projections never suggest a
 	// dead route. Deprecated models stay selectable (consumers may surface a
 	// migration warning) and are only demoted at the routing-rank layer.
-	if (model.status === "retired") return false;
+	if (isRetired(model)) return false;
 	const capabilities = trustedCapabilitiesForModel(model, descriptor);
 	// I only trust normalized capabilities here so free-form discoverer tags do not leak into route semantics.
-	const capability = normalizeTrustedCapabilityToken(query.capability);
-	if (capability && !capabilities.includes(capability)) return false;
+	if (query.capability) {
+		const capability = normalizeTrustedCapabilityToken(query.capability);
+		if (capability) {
+			if (!capabilities.includes(capability)) return false;
+		} else {
+			const needle = query.capability.trim().toLowerCase().replace(/[\s-]+/g, "_");
+			const rawNormalized = rawCapabilitiesForModel(model).map((c) => c.toLowerCase().replace(/[\s-]+/g, "_"));
+			if (!rawNormalized.includes(needle)) return false;
+		}
+	}
 	return !query.role || roleRequirements(query.role).every((requiredCapability) => capabilities.includes(requiredCapability));
 }
 
@@ -212,9 +237,16 @@ function normalizeTrustedCapabilityToken(value: string | undefined): TrustedCapa
 		embedding: "embeddings",
 		embeddings: "embeddings",
 		function_calling: "function_calling",
+		tool_calling: "function_calling",
 		tool_use: "function_calling",
 		tools: "function_calling",
 		vision: "vision",
+		audio: "audio",
+		speech_to_text: "audio",
+		text_to_speech: "audio",
+		image: "image_generation",
+		image_generation: "image_generation",
+		moderation: "moderation",
 		rerank: "rerank",
 		judgment: "judgment",
 		judgement: "judgment",

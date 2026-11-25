@@ -46,12 +46,11 @@ describe("provider contracts", () => {
 
 		const cards = await discoverer.discover(validCredential);
 
-		expect(calls.slice(0, 3)).toEqual([
+		const apiCalls = calls.filter((url) => url.startsWith("https://open.bigmodel.cn/"));
+		expect(apiCalls).toEqual([
 			"https://open.bigmodel.cn/api/paas/v4/models",
-			"https://open.bigmodel.cn/api/paas/v4/models",
-			"https://open.bigmodel.cn/api/paas/v4/models",
+			"https://open.bigmodel.cn/api/paas/v4/v1/models",
 		]);
-		expect(calls.at(-1)).toBe("https://open.bigmodel.cn/api/paas/v4/v1/models");
 		expect(cards).toHaveLength(1);
 		expect(cards[0].provider).toBe("glm");
 		expect(cards[0].originProvider).toBe("zhipu");
@@ -85,12 +84,11 @@ describe("provider contracts", () => {
 
 		const cards = await discoverer.discover(validCredential);
 
-		expect(calls.slice(0, 3)).toEqual([
+		const apiCalls = calls.filter((url) => url.startsWith("https://api.z.ai/"));
+		expect(apiCalls).toEqual([
 			"https://api.z.ai/api/paas/v4/models",
-			"https://api.z.ai/api/paas/v4/models",
-			"https://api.z.ai/api/paas/v4/models",
+			"https://api.z.ai/api/paas/v4/v1/models",
 		]);
-		expect(calls.at(-1)).toBe("https://api.z.ai/api/paas/v4/v1/models");
 		expect(cards).toHaveLength(1);
 		expect(cards[0].provider).toBe("zai");
 		expect(cards[0].originProvider).toBe("zai");

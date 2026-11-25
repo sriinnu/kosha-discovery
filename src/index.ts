@@ -67,6 +67,14 @@ export {
 } from "./discovery-contract.js";
 export { inferParallelToolCalls, inferStructuredOutputModes, inferToolDialect } from "./model-features.js";
 export { extractModelVersion, extractOriginProvider, normalizeModelId } from "./normalize.js";
+export type { ResolvedPricing, ResolveOptions } from "./pricing-resolve.js";
+export {
+	isInPeakWindow,
+	pricingAsOf,
+	pricingForSchedule,
+	resolvePricing,
+	writeRateFor,
+} from "./pricing-resolve.js";
 export type { ProviderDescriptor } from "./provider-catalog.js";
 export {
 	getProviderDescriptor,
@@ -95,6 +103,7 @@ export type {
 export { estimateUsdCost, normalizeTokenUsage, tallyCosts } from "./tally.js";
 export { inferTokenizerFamily } from "./tokenizer-family.js";
 export type {
+	CacheWriteTier,
 	CapabilitySummary,
 	CheapestModelMatch,
 	RouteAccess,
@@ -116,6 +125,9 @@ export type {
 	ModelRoleCard,
 	ModelRouteInfo,
 	ModelStatus,
+	PricingBand,
+	PricingChange,
+	PricingCitation,
 	PricingMetric,
 	PricingSchedule,
 	ProviderCredentialPrompt,

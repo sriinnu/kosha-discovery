@@ -13,6 +13,9 @@ import { type CatalogReport, describeCatalog } from "./catalog-source.js";
 import { degradedHint, truncateReason } from "./cli-commands.js";
 import { CYAN, c, DIM, GREEN, RED, YELLOW } from "./cli-format.js";
 import { extractOriginProvider, matchableModelId } from "./normalize.js";
+import { normalizeProviderId } from "./provider-catalog.js";
+import { redactSecrets } from "./security.js";
+import type { PricingAnomaly } from "./pricing-anomalies.js";
 import type { ModelRegistry } from "./registry.js";
 import type { ModelCard } from "./types.js";
 
@@ -96,16 +99,18 @@ export async function cmdDoctor(registry: ModelRegistry, flags: Record<string, s
 		.filter((row): row is HealthFinding => row !== null);
 
 	const credentials = collectCredentialFindings(registry);
+	const anomalies = await registry.pricingAnomalies();
 
 	if (f.json) {
 		process.stdout.write(
-			`${JSON.stringify({ catalog, credentials, deprecations, health: healthFindings }, null, 2)}\n`,
+			`${JSON.stringify({ catalog, credentials, deprecations, health: healthFindings, anomalies }, null, 2)}\n`,
 		);
 	} else {
 		renderCatalog(catalog);
 		renderCredentials(credentials);
 		renderDeprecations(deprecations);
 		renderHealth(healthFindings);
+		renderAnomalies(anomalies);
 	}
 
 	// CI gate: when `--ci` (or its `--fail-on-warning` alias) is set, fail the
@@ -252,8 +257,10 @@ function gatedFindings(findings: DeprecationFinding[], models: ModelCard[]): Dep
 		const key = family(model.id);
 		routesByFamily.set(key, [...(routesByFamily.get(key) ?? []), model]);
 	}
-	const isDirect = (model: ModelCard): boolean =>
-		model.provider === (model.originProvider ?? extractOriginProvider(model.id) ?? model.provider);
+	const isDirect = (model: ModelCard): boolean => {
+		const origin = model.originProvider ?? extractOriginProvider(model.id) ?? model.provider;
+		return (normalizeProviderId(model.provider) ?? model.provider) === (normalizeProviderId(origin) ?? origin);
+	};
 	const flagged = new Set(findings.map((finding) => `${finding.provider}\u0000${finding.modelId}`));
 
 	return findings.filter((finding) => {
@@ -337,7 +344,7 @@ function renderCredentials(findings: CredentialFinding[]): void {
 	}
 	for (const f of findings) {
 		process.stdout.write(`  ${c(YELLOW, degradedHint(f.reason, f.source))}  ${f.providerId}\n`);
-		process.stdout.write(`${c(DIM, `      ${truncateReason(f.reason)}`)}\n`);
+		process.stdout.write(`${c(DIM, `      ${truncateReason(redactSecrets(f.reason))}`)}\n`);
 	}
 	process.stdout.write("\n");
 }
@@ -403,6 +410,22 @@ function renderHealth(findings: HealthFinding[]): void {
 	}
 	if (unused.length > 0) {
 		process.stdout.write(c(DIM, `  no calls yet (${unused.length}): ${unused.map((h) => h.providerId).join(", ")}\n`));
+	}
+	process.stdout.write("\n");
+}
+
+function renderAnomalies(anomalies: PricingAnomaly[]): void {
+	process.stdout.write(`${c(CYAN, "Pricing anomalies")}\n`);
+	if (anomalies.length === 0) {
+		process.stdout.write(c(DIM, "  No >25% unexpected rate shifts recorded.\n"));
+		return;
+	}
+	const recent = anomalies.slice(-10).reverse();
+	for (const a of recent) {
+		const sign = a.deltaPct >= 0 ? "+" : "";
+		const pct = `${sign}${(a.deltaPct * 100).toFixed(0)}%`;
+		const tag = Math.abs(a.deltaPct) >= 0.5 ? c(RED, pct) : c(YELLOW, pct);
+		process.stdout.write(`  ${tag}  ${a.key} (${a.side}.${a.field}: ${a.previous} -> ${a.current})\n`);
 	}
 }
 

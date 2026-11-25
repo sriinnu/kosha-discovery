@@ -9,6 +9,7 @@
  * @module
  */
 
+import { effectiveBands, resolvePricing } from "./pricing-resolve.js";
 import { getProviderCacheBehavior } from "./provider-catalog.js";
 import type { ModelCard, ModelPricing, ProviderCacheBehavior } from "./types.js";
 
@@ -72,8 +73,11 @@ export function computeContextStrategy(input: ContextStrategyInput): ContextStra
 	const tokensUsed = Math.max(0, Math.floor(currentTokens));
 	const headroomTokens = Math.max(0, model.contextWindow - tokensUsed);
 	const headroomPercent = model.contextWindow > 0 ? (headroomTokens / model.contextWindow) * 100 : 0;
-	const longThreshold = model.pricing?.longContextThresholdTokens;
-	const inLongContextTier = longThreshold !== undefined && tokensUsed >= longThreshold;
+	const firstBand = model.pricing ? effectiveBands(resolvePricing(model.pricing))[0] : undefined;
+	const longThreshold = firstBand?.aboveInputTokens;
+	const inLongContextTier =
+		longThreshold !== undefined &&
+		(firstBand?.inclusive ? tokensUsed >= longThreshold : tokensUsed > longThreshold);
 
 	const situation: ContextSituation = {
 		tokensUsed,
@@ -202,9 +206,11 @@ function buildLongContextTierOption(
 	baselineCost: number | undefined,
 	expectedOutputTokens: number,
 ): StrategyOption {
-	const threshold = model.pricing?.longContextThresholdTokens;
-	const longIn = model.pricing?.longContextInputPerMillion;
-	const longOut = model.pricing?.longContextOutputPerMillion;
+	const resolvedBase = model.pricing ? resolvePricing(model.pricing) : undefined;
+	const firstBand = resolvedBase ? effectiveBands(resolvedBase)[0] : undefined;
+	const threshold = firstBand?.aboveInputTokens;
+	const longIn = firstBand?.inputPerMillion;
+	const longOut = firstBand?.outputPerMillion;
 
 	if (threshold === undefined || longIn === undefined || longOut === undefined) {
 		return {
@@ -384,12 +390,10 @@ function perTurnCost(
 	useLongContextTier: boolean,
 ): number | undefined {
 	if (!pricing) return undefined;
-	const inputRate = useLongContextTier
-		? (pricing.longContextInputPerMillion ?? pricing.inputPerMillion)
-		: pricing.inputPerMillion;
-	const outputRate = useLongContextTier
-		? (pricing.longContextOutputPerMillion ?? pricing.outputPerMillion)
-		: pricing.outputPerMillion;
+	const resolved = resolvePricing(pricing, useLongContextTier ? { promptTokens: inputTokens + 1 } : {});
+	const firstBand = effectiveBands(resolved)[0];
+	const inputRate = useLongContextTier && firstBand ? firstBand.inputPerMillion : resolved.inputPerMillion;
+	const outputRate = useLongContextTier && firstBand ? firstBand.outputPerMillion : resolved.outputPerMillion;
 	if (inputRate === undefined || outputRate === undefined) return undefined;
 	return (inputTokens * inputRate + outputTokens * outputRate) / 1_000_000;
 }

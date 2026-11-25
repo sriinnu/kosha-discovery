@@ -276,10 +276,18 @@ Query: `?provider=<id>` scopes the summary to one serving-layer provider.
 
 ### `GET /api/discovery-errors`
 
-Errors captured during the most recent discovery pass, one row per failing provider.
+Errors captured during the most recent discovery pass, one row per failing provider (redacted).
 
 ```json
 { "errors": [{ "providerId": "groq", "providerName": "Groq", "error": "…", "timestamp": 1784284454132 }], "count": 1, "hasErrors": true }
+```
+
+### `GET /api/pricing-anomalies`
+
+Recorded >25% unexpected rate shifts from manifest merges (`anomalies.json`).
+
+```json
+{ "anomalies": [{ "ts": 1784284454132, "key": "openai:gpt-4o", "field": "input", "side": "origin", "previous": 5, "current": 2.5, "deltaPct": -0.5, "promo": false }], "count": 1 }
 ```
 
 ### `GET /metrics`
@@ -304,7 +312,15 @@ Accepts a standard OpenAI chat-completions body. `model` is one of:
 |------|---------|---------|
 | canonical ID or alias | `claude-sonnet-5`, `sonnet`, `gpt-4o-mini` | resolve, pick the best credentialed route, forward |
 | `kosha:<strategy>` | `kosha:cheapest`, `kosha:fastest`, `kosha:reliable`, `kosha:balanced` | pick a route by strategy |
-| `kosha:<strategy>[filters]` | `kosha:cheapest[tool_use,128k,provider:groq]` | strategy plus capability / min-context / provider filters |
+| `kosha:<strategy>[filters]` | `kosha:cheapest[vision,tool_use,128k,provider:groq]` | strategy plus multi-capability / min-context / provider filters |
+
+### `POST /proxy/v1/embeddings`
+
+OpenAI-compatible embeddings proxy (`model`, `input`, …). Resolves forwardable embedding routes, enforces spend budgets, fails over across candidates on `5xx`/`429`/auth errors, and reconciles ledger cost from returned `usage`.
+
+### `POST /proxy/v1/messages`
+
+Native Anthropic Messages proxy (`ANTHROPIC_BASE_URL=http://127.0.0.1:3000/proxy`). Selects native Anthropic-wire routes (including `kosha:<strategy>` selectors), validates hosts via the SSRF allowlist, enforces budgets and failover, and reconciles both JSON and SSE stream usage to the ledger.
 
 Behaviour:
 

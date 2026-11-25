@@ -339,7 +339,9 @@ export const CITED_PRICES: readonly CitedPrice[] = [
 	flat("zai", ["glm-4.7", "glm-4.6", "glm-4.5"], ZAI, 0.6, 0.11, 2.2, asInput(0.6)),
 	flat("zai", ["glm-5.3-flash"], ZAI, 0.15, 0.03, 0.5, asInput(0.15)),
 	flat("zai", ["glm-5.3-flashx", "glm-5.3-flashx-legal"], ZAI, 0.37, 0.075, 1.25, asInput(0.37)),
+	flat("zai", ["glm-4.5-x"], ZAI, 2.2, 0.45, 8.9, asInput(2.2)),
 	flat("zai", ["glm-4.5-air"], ZAI, 0.2, 0.03, 1.1, asInput(0.2)),
+	flat("zai", ["glm-4.5-airx"], ZAI, 1.1, 0.22, 4.5, asInput(1.1)),
 
 	// ── DeepSeek: hit and miss prices only; a write is a miss (peak rates; the
 	//    off-peak half lives in price-schedules.ts) ────────────────────────
@@ -403,8 +405,12 @@ export const CITED_RELEASES: readonly CitedRelease[] = [
 	},
 ];
 
+const DEFAULT_RELEASE_INDEX = new Map<string, CitedRelease>(
+	CITED_RELEASES.flatMap((entry) => entry.modelIds.map((id) => [`${entry.providerId}/${id}`, entry])),
+);
+
 function citedReleaseFor(providerId: string, modelId: string): CitedRelease | undefined {
-	return CITED_RELEASES.find((entry) => entry.providerId === providerId && entry.modelIds.includes(modelId));
+	return DEFAULT_RELEASE_INDEX.get(`${providerId}/${modelId}`);
 }
 
 /** Pricing fields that describe caching. `cacheComplete` clears the ones an entry leaves out. */

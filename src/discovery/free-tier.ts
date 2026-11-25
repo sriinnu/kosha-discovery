@@ -35,7 +35,21 @@ export const SUBSCRIPTION_PLAN_CAPABILITY = "subscription_plan";
  * Idempotent: calling it twice does not duplicate the flag.
  */
 export function applyFreeTierFlag(card: ModelCard): ModelCard {
-	if (!isFreeTier(card)) return card;
+	if (!isFreeTier(card)) {
+		if (
+			card.pricing !== undefined &&
+			(card.capabilities.includes(FREE_TIER_CAPABILITY) || card.rawCapabilities?.includes(FREE_TIER_CAPABILITY))
+		) {
+			return {
+				...card,
+				capabilities: card.capabilities.filter((cap) => cap !== FREE_TIER_CAPABILITY),
+				...(card.rawCapabilities
+					? { rawCapabilities: card.rawCapabilities.filter((cap) => cap !== FREE_TIER_CAPABILITY) }
+					: {}),
+			};
+		}
+		return card;
+	}
 	if (card.capabilities.includes(FREE_TIER_CAPABILITY)) return card;
 	const capabilities = [...card.capabilities, FREE_TIER_CAPABILITY];
 	const rawCapabilities = card.rawCapabilities
@@ -46,10 +60,26 @@ export function applyFreeTierFlag(card: ModelCard): ModelCard {
 	return { ...card, capabilities, rawCapabilities };
 }
 
-/** True when the card explicitly priced both directions at zero. */
+/** True when the card explicitly priced both directions at zero for token-billed modes. */
 export function isFreeTier(card: ModelCard): boolean {
 	const pricing = card.pricing;
 	if (!pricing) return false;
+	if (card.mode !== "chat" && card.mode !== "embedding") return false;
+	if (
+		pricing.imageOutputPerImage !== undefined ||
+		pricing.imageInputPerImage !== undefined ||
+		pricing.audioInputPerSecond !== undefined ||
+		pricing.audioOutputPerSecond !== undefined ||
+		pricing.videoInputPerSecond !== undefined ||
+		pricing.videoOutputPerSecond !== undefined ||
+		pricing.inputPerMillionCharacters !== undefined ||
+		pricing.outputPerMillionCharacters !== undefined ||
+		pricing.webSearchPerThousandRequests !== undefined ||
+		pricing.mapsSearchPerThousandRequests !== undefined ||
+		pricing.requestPerThousand !== undefined
+	) {
+		return false;
+	}
 	return pricing.inputPerMillion === 0 && pricing.outputPerMillion === 0;
 }
 

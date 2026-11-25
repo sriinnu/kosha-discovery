@@ -90,8 +90,11 @@ export interface LiteLLMModelEntry {
 	output_vector_size?: number;
 }
 
-/** Module-level promise-dedup cache so concurrent callers share one fetch. */
+const CATALOG_MEM_TTL_MS = 5 * 60 * 1000;
+
+/** Module-level promise-dedup cache so concurrent callers share one fetch within TTL. */
 let inflight: Promise<Record<string, LiteLLMModelEntry>> | null = null;
+let inflightExpiresAt = 0;
 
 /** Model entries dropped by the threat scan on the most recent load. */
 let lastQuarantined: QuarantinedEntry[] = [];
@@ -113,21 +116,20 @@ export function liteLLMQuarantined(): QuarantinedEntry[] {
  * filtered map. Concurrent callers share the same in-flight promise.
  */
 export function loadLiteLLMCatalog(): Promise<Record<string, LiteLLMModelEntry>> {
-	if (inflight) return inflight;
+	if (inflight && Date.now() < inflightExpiresAt) return inflight;
+	inflightExpiresAt = Date.now() + CATALOG_MEM_TTL_MS;
 	inflight = fetchAndValidate().catch((error) => {
 		// Reset on failure so a future call can retry instead of memoising the error.
 		inflight = null;
+		inflightExpiresAt = 0;
 		throw error;
 	});
 	return inflight;
 }
 
-/**
- * Reset the cached catalog. Test-only helper — callers in production code
- * should rely on the process-lifetime cache.
- */
 export function resetLiteLLMCatalogCache(): void {
 	inflight = null;
+	inflightExpiresAt = 0;
 	lastQuarantined = [];
 }
 
@@ -165,9 +167,7 @@ async function fetchAndValidate(): Promise<Record<string, LiteLLMModelEntry>> {
 	// contributions; one unclean entry should cost that entry, not the pricing
 	// data for every model kosha knows about.
 	const { clean, dropped } = quarantineEntries(parsed, "litellm");
-	if (dropped.length > 0) {
-		lastQuarantined = dropped;
-	}
+	lastQuarantined = dropped;
 
 	const entries = Object.entries(clean);
 	if (entries.length > MAX_ENTRIES) {

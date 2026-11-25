@@ -78,6 +78,8 @@ export interface OpenAIChatRequest {
 	reasoning_effort?: string;
 	/** OpenAI end-user identifier; maps to Anthropic `metadata.user_id`. */
 	user?: string;
+	/** Explicit extended-thinking config when forwarded verbatim or mapped. */
+	thinking?: unknown;
 	/**
 	 * OpenAI fields that have no Anthropic equivalent (`n`, `seed`,
 	 * `logit_bias`, `presence_penalty`, `frequency_penalty`, …). Recorded so
@@ -113,11 +115,25 @@ export interface OpenAIChatResponse {
 // Anthropic wire shapes
 // ---------------------------------------------------------------------------
 
+export interface AnthropicCacheControl {
+	type: "ephemeral";
+	ttl?: "5m" | "1h";
+}
+
+export type AnthropicThinkingConfig =
+	| { type: "enabled"; budget_tokens: number }
+	| { type: "adaptive" }
+	| { type: "disabled" };
+
 export type AnthropicContentBlock =
-	| { type: "text"; text: string }
-	| { type: "image"; source: { type: "base64"; media_type: string; data: string } | { type: "url"; url: string } }
-	| { type: "tool_use"; id: string; name: string; input: unknown }
-	| { type: "tool_result"; tool_use_id: string; content?: string; is_error?: boolean };
+	| { type: "text"; text: string; cache_control?: AnthropicCacheControl }
+	| {
+			type: "image";
+			source: { type: "base64"; media_type: string; data: string } | { type: "url"; url: string };
+			cache_control?: AnthropicCacheControl;
+	  }
+	| { type: "tool_use"; id: string; name: string; input: unknown; cache_control?: AnthropicCacheControl }
+	| { type: "tool_result"; tool_use_id: string; content?: string; is_error?: boolean; cache_control?: AnthropicCacheControl };
 
 export interface AnthropicMessage {
 	role: "user" | "assistant";
@@ -129,6 +145,7 @@ export interface AnthropicTool {
 	description?: string;
 	input_schema: unknown;
 	strict?: boolean;
+	cache_control?: AnthropicCacheControl;
 }
 
 export type AnthropicToolChoice =
@@ -150,6 +167,7 @@ export interface AnthropicMessagesRequest {
 	tools?: AnthropicTool[];
 	tool_choice?: AnthropicToolChoice;
 	metadata?: { user_id?: string };
+	thinking?: AnthropicThinkingConfig;
 	output_config?: {
 		effort?: AnthropicEffort;
 		format?: { type: "json_schema"; schema: unknown };
@@ -162,6 +180,10 @@ export interface AnthropicUsage {
 	output_tokens?: number;
 	cache_creation_input_tokens?: number;
 	cache_read_input_tokens?: number;
+	cache_creation?: {
+		ephemeral_5m_input_tokens?: number;
+		ephemeral_1h_input_tokens?: number;
+	};
 }
 
 /** Subset of the Anthropic /v1/messages response we map back to OpenAI. */
@@ -284,6 +306,7 @@ export function coerceOpenAIChatRequest(body: Record<string, unknown>): OpenAICh
 	if (typeof body.parallel_tool_calls === "boolean") req.parallel_tool_calls = body.parallel_tool_calls;
 	if (body.response_format !== undefined) req.response_format = body.response_format;
 	if (typeof body.reasoning_effort === "string") req.reasoning_effort = body.reasoning_effort;
+	if (body.thinking && typeof body.thinking === "object") req.thinking = body.thinking;
 	if (typeof body.user === "string" && body.user.length > 0) req.user = body.user;
 	const unsupported: string[] = [];
 	if (typeof body.n === "number" && body.n > 1) unsupported.push("n");
@@ -393,11 +416,25 @@ export function translateOpenAIToAnthropicWithNotes(req: OpenAIChatRequest): Wir
 	const maxTokens = req.max_completion_tokens ?? req.max_tokens;
 	const out: AnthropicMessagesRequest = {
 		model: req.model,
-		max_tokens: maxTokens && maxTokens > 0 ? Math.floor(maxTokens) : DEFAULT_MAX_TOKENS,
+		max_tokens: maxTokens && maxTokens > 0 ? Math.max(1, Math.floor(maxTokens)) : DEFAULT_MAX_TOKENS,
 		messages: collapsed,
 	};
 	if (systemParts.length > 0) out.system = systemParts.join("\n\n");
-	applySampling(req, out, notes);
+	const thinking = normalizeThinkingConfig(req.thinking);
+	if (thinking) {
+		out.thinking = thinking;
+		if (thinking.type === "enabled" && out.max_tokens <= thinking.budget_tokens) {
+			out.max_tokens = thinking.budget_tokens + 1024;
+			notes.push(`raised max_tokens to ${out.max_tokens}: must exceed thinking.budget_tokens (${thinking.budget_tokens})`);
+		}
+	}
+	if (thinking?.type === "enabled") {
+		if (typeof req.temperature === "number" || typeof req.top_p === "number") {
+			notes.push("dropped sampling parameters: Anthropic rejects temperature/top_p when thinking is enabled");
+		}
+	} else {
+		applySampling(req, out, notes);
+	}
 	if (req.stop) {
 		const stops = (Array.isArray(req.stop) ? req.stop : [req.stop]).filter((stop) => stop.trim().length > 0);
 		if (stops.length > 0) out.stop_sequences = stops;
@@ -533,8 +570,29 @@ function translateTools(tools: unknown): AnthropicTool[] {
 		};
 		if (typeof tool.function.description === "string") out.description = tool.function.description;
 		if (tool.function.strict === true) out.strict = true;
+		const cc = extractCacheControl((raw as { cache_control?: unknown }).cache_control);
+		if (cc) out.cache_control = cc;
 		return out;
 	});
+}
+
+function extractCacheControl(raw: unknown): AnthropicCacheControl | undefined {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+	const obj = raw as { type?: unknown; ttl?: unknown };
+	if (obj.type !== "ephemeral") return undefined;
+	if (obj.ttl === "5m" || obj.ttl === "1h") return { type: "ephemeral", ttl: obj.ttl };
+	return { type: "ephemeral" };
+}
+
+function normalizeThinkingConfig(raw: unknown): AnthropicThinkingConfig | undefined {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+	const obj = raw as { type?: unknown; budget_tokens?: unknown };
+	if (obj.type === "adaptive") return { type: "adaptive" };
+	if (obj.type === "disabled") return { type: "disabled" };
+	if (obj.type === "enabled" && typeof obj.budget_tokens === "number" && Number.isFinite(obj.budget_tokens) && obj.budget_tokens > 0) {
+		return { type: "enabled", budget_tokens: Math.floor(obj.budget_tokens) };
+	}
+	return undefined;
 }
 
 /**
@@ -620,13 +678,20 @@ function userBlocks(content: OpenAIChatMessage["content"]): AnthropicContentBloc
 		if (isTextPart(part)) {
 			const text = typeof part === "string" ? part : (part as { text: string }).text;
 			if (!text) continue;
+			const cc =
+				part && typeof part === "object"
+					? extractCacheControl((part as { cache_control?: unknown }).cache_control)
+					: undefined;
 			const tail = blocks[blocks.length - 1];
-			if (tail && tail.type === "text") tail.text += text;
-			else blocks.push({ type: "text", text });
+			if (!cc && tail && tail.type === "text" && !tail.cache_control) tail.text += text;
+			else blocks.push({ type: "text", text, ...(cc ? { cache_control: cc } : {}) });
 			continue;
 		}
 		if (part && typeof part === "object" && (part as { type?: unknown }).type === "image_url") {
-			blocks.push(imageBlock(part as { image_url?: unknown }));
+			const img = imageBlock(part as { image_url?: unknown });
+			const cc = extractCacheControl((part as { cache_control?: unknown }).cache_control);
+			if (cc) img.cache_control = cc;
+			blocks.push(img);
 			continue;
 		}
 		throw new UnsupportedWireContentError(
@@ -663,7 +728,7 @@ function imageBlock(part: { image_url?: unknown }): AnthropicContentBlock {
 
 /** A block list that is a single text block collapses to a plain string (keeps request bodies small and readable). */
 function collapseTextOnly(blocks: AnthropicContentBlock[]): string | AnthropicContentBlock[] {
-	if (blocks.length === 1 && blocks[0].type === "text") return blocks[0].text;
+	if (blocks.length === 1 && blocks[0].type === "text" && !blocks[0].cache_control) return blocks[0].text;
 	return blocks;
 }
 
@@ -923,7 +988,15 @@ export function translateAnthropicStreamToOpenAI(
 		resolveUsage = resolve;
 	});
 	/** Reconciliation is only trustworthy once Anthropic reported the final output count. */
-	const settleUsage = (): void => resolveUsage(sawUsage && sawStop ? { ...usage } : null);
+	const settleUsage = (): void =>
+		resolveUsage(
+			sawUsage && sawStop
+				? {
+						...usage,
+						...(usage.cache_creation ? { cache_creation: { ...usage.cache_creation } } : {}),
+					}
+				: null,
+		);
 
 	const encodeChunk = (delta: Record<string, unknown>, finishReason: string | null = null): Uint8Array =>
 		encoder.encode(
@@ -942,6 +1015,23 @@ export function translateAnthropicStreamToOpenAI(
 		for (const key of ["input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"] as const) {
 			if (typeof u[key] === "number") {
 				usage[key] = u[key] as number;
+				sawUsage = true;
+			}
+		}
+		if (u.cache_creation && typeof u.cache_creation === "object" && !Array.isArray(u.cache_creation)) {
+			const cc = u.cache_creation as Record<string, unknown>;
+			const next = { ...(usage.cache_creation ?? {}) };
+			let updated = false;
+			if (typeof cc.ephemeral_5m_input_tokens === "number") {
+				next.ephemeral_5m_input_tokens = cc.ephemeral_5m_input_tokens;
+				updated = true;
+			}
+			if (typeof cc.ephemeral_1h_input_tokens === "number") {
+				next.ephemeral_1h_input_tokens = cc.ephemeral_1h_input_tokens;
+				updated = true;
+			}
+			if (updated) {
+				usage.cache_creation = next;
 				sawUsage = true;
 			}
 		}

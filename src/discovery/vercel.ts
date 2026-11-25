@@ -12,6 +12,7 @@
 
 import type { CredentialResult, ModelCard, ModelMode, ModelPricing, ToolDialect } from "../types.js";
 import { BaseDiscoverer } from "./base.js";
+import { evidenceFrom } from "./price-evidence.js";
 
 interface VercelPricingTier {
 	cost: string;
@@ -55,6 +56,8 @@ interface VercelModelPricing {
 	image_dimension_quality_pricing?: VercelImageDimensionQualityPrice[];
 	video_duration_pricing?: VercelVideoDurationPrice[];
 	video_token_pricing?: VercelVideoTokenPricing;
+	transcription_duration_cost_per_second?: string;
+	speech_input_character_cost?: string;
 	web_search?: string;
 	maps_search?: string;
 	request?: string;
@@ -119,7 +122,8 @@ export class VercelAIGatewayDiscoverer extends BaseDiscoverer {
 		const mode = this.inferMode(model);
 		const capabilities = this.inferCapabilities(model, mode);
 
-		return this.makeCard({
+		const pricing = this.parsePricing(model.pricing, mode);
+		const card = this.makeCard({
 			id: model.id,
 			name: model.name ?? model.id,
 			provider: this.providerId,
@@ -128,10 +132,16 @@ export class VercelAIGatewayDiscoverer extends BaseDiscoverer {
 			capabilities,
 			contextWindow: model.context_window ?? 0,
 			maxOutputTokens: model.max_tokens ?? 0,
-			pricing: this.parsePricing(model.pricing),
+			pricing,
+			...(pricing ? { pricingSource: "provider-live" as const } : {}),
 			toolDialect: this.inferToolDialect(mode, capabilities),
 			status: this.inferStatus(model),
 		});
+		if (pricing) {
+			const witness = evidenceFrom(card, "provider-api");
+			if (witness) card.priceEvidence = [witness];
+		}
+		return card;
 	}
 
 	private inferMode(model: VercelModel): ModelMode {
@@ -217,10 +227,10 @@ export class VercelAIGatewayDiscoverer extends BaseDiscoverer {
 		return "active";
 	}
 
-	private parsePricing(pricing: VercelModelPricing | undefined): ModelPricing | undefined {
+	private parsePricing(pricing: VercelModelPricing | undefined, mode?: ModelMode): ModelPricing | undefined {
 		if (!pricing) return undefined;
 
-		const inputPerMillion = this.parsePerToken(pricing.input) ?? this.firstTierPerMillion(pricing.input_tiers);
+		const rawInputPerMillion = this.parsePerToken(pricing.input) ?? this.firstTierPerMillion(pricing.input_tiers);
 		const outputPerMillion = this.parsePerToken(pricing.output) ?? this.firstTierPerMillion(pricing.output_tiers);
 		const cacheReadPerMillion =
 			this.parsePerToken(pricing.input_cache_read) ?? this.firstTierPerMillion(pricing.input_cache_read_tiers);
@@ -230,9 +240,22 @@ export class VercelAIGatewayDiscoverer extends BaseDiscoverer {
 		const videoOutputPerSecond = this.parseVideoPerSecond(pricing.video_duration_pricing);
 		const videoInputPerMillion = this.parseVideoTokenPerMillion(pricing.video_token_pricing?.with_video_input);
 		const videoOutputTokenPerMillion = this.parseVideoTokenPerMillion(pricing.video_token_pricing?.no_video_input);
+		const audioInputPerSecond = this.parseDollar(pricing.transcription_duration_cost_per_second);
+		const speechInputChar = this.parseDollar(pricing.speech_input_character_cost);
+		const inputPerMillionCharacters = speechInputChar === undefined ? undefined : speechInputChar * 1_000_000;
 		const webSearchPerThousandRequests = this.parseDollar(pricing.web_search);
 		const mapsSearchPerThousandRequests = this.parseDollar(pricing.maps_search);
 		const requestPerThousand = this.parseDollar(pricing.request);
+
+		// Vercel speech/transcription rows sometimes carry a tiny placeholder
+		// `input` token rate (e.g. `1e-10` -> $0.0001/M) alongside a duration
+		// or character price. Drop the placeholder so it does not rank as $0.00
+		// token pricing.
+		const hasAudioUnitRate = audioInputPerSecond !== undefined || inputPerMillionCharacters !== undefined;
+		const inputPerMillion =
+			mode === "audio" && hasAudioUnitRate && rawInputPerMillion !== undefined && rawInputPerMillion <= 0.001
+				? 0
+				: rawInputPerMillion;
 
 		const hasAnyPricing = [
 			inputPerMillion,
@@ -243,6 +266,8 @@ export class VercelAIGatewayDiscoverer extends BaseDiscoverer {
 			videoOutputPerSecond,
 			videoInputPerMillion,
 			videoOutputTokenPerMillion,
+			audioInputPerSecond,
+			inputPerMillionCharacters,
 			webSearchPerThousandRequests,
 			mapsSearchPerThousandRequests,
 			requestPerThousand,
@@ -259,6 +284,8 @@ export class VercelAIGatewayDiscoverer extends BaseDiscoverer {
 		if (imageOutputPerImage !== undefined) result.imageOutputPerImage = imageOutputPerImage;
 		if (videoOutputPerSecond !== undefined) result.videoOutputPerSecond = videoOutputPerSecond;
 		if (videoInputPerMillion !== undefined) result.videoInputPerMillion = videoInputPerMillion;
+		if (audioInputPerSecond !== undefined) result.audioInputPerSecond = audioInputPerSecond;
+		if (inputPerMillionCharacters !== undefined) result.inputPerMillionCharacters = inputPerMillionCharacters;
 		if (webSearchPerThousandRequests !== undefined) result.webSearchPerThousandRequests = webSearchPerThousandRequests;
 		if (mapsSearchPerThousandRequests !== undefined)
 			result.mapsSearchPerThousandRequests = mapsSearchPerThousandRequests;

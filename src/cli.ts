@@ -39,6 +39,7 @@ import {
 	showVersion,
 } from "./cli-commands.js";
 import { c, DIM, RED } from "./cli-format.js";
+import { isMainModule } from "./entry.js";
 import { ModelRegistry } from "./registry.js";
 
 // ---------------------------------------------------------------------------
@@ -68,19 +69,42 @@ interface ParsedArgs {
  * @param argv  The argument array, typically `process.argv.slice(2)`.
  * @returns     A {@link ParsedArgs} object.
  */
-function parseArgs(argv: string[]): ParsedArgs {
+export function parseArgs(argv: string[]): ParsedArgs {
 	const positional: string[] = [];
 	const flags: Record<string, string | boolean> = {};
 
 	let i = 0;
+	let stopFlags = false;
 	while (i < argv.length) {
 		const arg = argv[i];
-		if (arg.startsWith("--")) {
-			const key = arg.slice(2);
+		if (!stopFlags && arg === "--") {
+			stopFlags = true;
+			i += 1;
+			continue;
+		}
+		if (!stopFlags && (arg === "-h" || arg === "-?")) {
+			flags.help = true;
+			i += 1;
+			continue;
+		}
+		if (!stopFlags && (arg === "-v" || arg === "-V")) {
+			flags.version = true;
+			i += 1;
+			continue;
+		}
+		if (!stopFlags && arg.startsWith("--")) {
+			const body = arg.slice(2);
+			const eqIdx = body.indexOf("=");
+			if (eqIdx > 0) {
+				flags[body.slice(0, eqIdx)] = body.slice(eqIdx + 1);
+				i += 1;
+				continue;
+			}
+			const key = body;
 			const next = argv[i + 1];
 			// If the next token exists and is not itself a flag, treat it as
 			// the value for this flag; otherwise mark the flag as boolean true.
-			if (next && !next.startsWith("--")) {
+			if (next && !next.startsWith("-")) {
 				flags[key] = next;
 				i += 2;
 			} else {
@@ -229,8 +253,10 @@ async function main(): Promise<void> {
 	}
 }
 
-// Kick off and handle unhandled rejections with a clean error message
-main().catch((err) => {
-	console.error(c(RED, `Error: ${err.message}`));
-	process.exit(1);
-});
+// Kick off and handle unhandled rejections with a clean error message when invoked directly
+if (isMainModule(import.meta.url)) {
+	main().catch((err) => {
+		console.error(c(RED, `Error: ${err.message}`));
+		process.exit(1);
+	});
+}

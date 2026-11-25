@@ -89,15 +89,14 @@ the token as `Authorization: Bearer <token>` or in an `x-kosha-token` header. Co
 is constant-time. Read-only catalog routes (`/api/models`, `/health`, ...) stay open;
 `/metrics` has its own `KOSHA_METRICS_TOKEN`.
 
-Binding a non-loopback address with no token set prints a warning at startup but does
-not refuse to start -- some deployments terminate auth at a reverse proxy.
+Binding a non-loopback address without `KOSHA_PROXY_TOKEN` fails closed at startup unless `KOSHA_ALLOW_UNAUTHENTICATED=1` is set explicitly (for deployments terminating auth at a reverse proxy).
 
 Loopback is not a boundary against the browser: any web page can send requests to
 `127.0.0.1`, and a DNS-rebinding page can read the replies. So every route refuses a
 `Host` header that is not loopback or in `KOSHA_ALLOWED_HOSTS` (rebinding), an `Origin`
 that does not match `Host`, and `Sec-Fetch-Site: cross-site` (cross-site requests).
-Non-browser clients send no `Origin` and are unaffected. A server bound to a network
-interface skips the `Host` check unless `KOSHA_ALLOWED_HOSTS` is set; the `Origin` check
+Non-browser clients send no `Origin` and are unaffected. `Host` checks stay active even on
+non-loopback binds unless `KOSHA_ALLOWED_HOSTS=*` is explicitly set; the `Origin` check
 always applies. Bodies are capped at 32 MiB on `/proxy/*` and 64 KiB on `/api/refresh`.
 
 Tenant bucketing (per-tenant ledger rows and budgets) uses the `x-kosha-tenant: <name>`

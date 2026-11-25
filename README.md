@@ -245,7 +245,7 @@ Reference: [docs/api.md](docs/api.md#openai-compatible-proxy), [docs/operations.
 
 ### MCP server
 
-`kosha-mcp` serves the registry over the Model Context Protocol on stdio, so an agent can call `kosha_query_models`, `kosha_cheapest_model`, `kosha_ranked_routes`, `kosha_model_detail`, `kosha_model_routes`, `kosha_resolve_alias`, `kosha_provider_health`, and `kosha_context_strategy` without an HTTP server.
+`kosha-mcp` serves the registry over the Model Context Protocol on stdio, so an agent can call `kosha_query_models`, `kosha_newest_models`, `kosha_cheapest_model`, `kosha_ranked_routes`, `kosha_model_detail`, `kosha_model_routes`, `kosha_resolve_alias`, `kosha_provider_health`, and `kosha_context_strategy` without an HTTP server.
 
 ```bash
 claude mcp add kosha -- kosha-mcp
@@ -334,10 +334,10 @@ kosha model jev                   # mode: judgment
 ## How it works
 
 1. **Discovery** — one discoverer per provider runs concurrently (`Promise.allSettled`); each returns normalized `ModelCard`s. A failing provider is recorded in `discoveryErrors()` and doesn't block the others.
-2. **Enrichment** — pricing, context window, and output cap are filled from models.dev and LiteLLM where the provider API doesn't publish them; `pricingSource` on each card says which. Cards also carry `releaseDate` and a lifecycle `status` where a catalog publishes them.
+2. **Enrichment** — pricing, context window, and output cap are filled from models.dev and LiteLLM where the provider API doesn't publish them; `DirectProviderPricingEnricher` pings documented public provider `/models` JSON endpoints only in `community` mode when pricing or a provider witness is missing. `pricingSource` on each card says which source supplied it. Cards also carry `releaseDate` and a lifecycle `status` where a catalog publishes them.
 3. **Resilience** — a per-provider circuit breaker with exponential cooldown, plus stale-cache fallback, so a provider outage degrades to cached data rather than an error.
 4. **Cache and manifest** — results are cached under `~/.kosha/cache/` (24 h TTL) and exported as a versioned snapshot at `~/.kosha/registry.json` for other tools to read.
-5. **Proxy** — resolves the requested model or `kosha:<strategy>[filters]` selector against the registry, ranks candidate routes, forwards with failover, and records estimated and reconciled cost in `~/.kosha/ledger-YYYY-MM.jsonl`.
+5. **Proxy** — serves `/proxy/v1/chat/completions`, `/proxy/v1/embeddings`, and native `/proxy/v1/messages`, resolving models or multi-capability `kosha:<strategy>[filters]` selectors against the registry with failover and ledger reconciliation in `~/.kosha/ledger-YYYY-MM.jsonl`.
 
 Details: [docs/architecture.md](docs/architecture.md), [docs/resilience.md](docs/resilience.md).
 

@@ -125,10 +125,15 @@ export class GoogleDiscoverer extends BaseDiscoverer {
 	 */
 	private inferMode(model: GoogleModel): ModelMode {
 		const methods = model.supportedGenerationMethods ?? [];
+		const id = model.name.toLowerCase();
 		const displayLower = (model.displayName ?? "").toLowerCase();
 
+		if (id.includes("imagen")) return "image";
+		if (id.includes("veo")) return "video";
+		if (id.includes("lyria")) return "audio";
+
 		// Embedding models expose the "embedContent" generation method
-		if (methods.includes("embedContent") || displayLower.includes("embedding")) {
+		if (methods.includes("embedContent") || id.includes("embed") || displayLower.includes("embedding")) {
 			return "embedding";
 		}
 
@@ -143,9 +148,14 @@ export class GoogleDiscoverer extends BaseDiscoverer {
 	private inferCapabilities(model: GoogleModel): string[] {
 		const methods = model.supportedGenerationMethods ?? [];
 		const displayLower = (model.displayName ?? "").toLowerCase();
+		const id = model.name.toLowerCase();
 		const capabilities: string[] = [];
 
-		if (methods.includes("embedContent") || displayLower.includes("embedding")) {
+		if (id.includes("imagen")) return ["image_generation"];
+		if (id.includes("veo")) return ["video_generation"];
+		if (id.includes("lyria")) return ["audio"];
+
+		if (methods.includes("embedContent") || id.includes("embed") || displayLower.includes("embedding")) {
 			return ["embedding"];
 		}
 
@@ -154,18 +164,16 @@ export class GoogleDiscoverer extends BaseDiscoverer {
 		}
 
 		// Gemini models generally support code and NLU
-		const id = model.name.toLowerCase();
 		if (id.includes("gemini")) {
 			capabilities.push("code", "nlu");
 
-			// Pro, Ultra, and Flash variants support function calling
+			// Pro, Ultra, and Flash variants support function calling and vision
 			if (id.includes("pro") || id.includes("ultra") || id.includes("flash")) {
-				capabilities.push("function_calling");
+				capabilities.push("function_calling", "vision");
 			}
 
-			// These same variants also support multimodal vision input
-			if (id.includes("pro") || id.includes("ultra") || id.includes("flash")) {
-				capabilities.push("vision");
+			if (id.includes("2.5") || id.includes("3") || id.includes("thinking")) {
+				capabilities.push("reasoning");
 			}
 		}
 

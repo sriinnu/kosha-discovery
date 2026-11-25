@@ -48,11 +48,22 @@ import { readMonthlyBudgetUsd, readSpendForMonth, readTenantBudgetUsd } from "./
 import { registerDiscoveryRoutes } from "./discovery-routes.js";
 import { isMainModule } from "./entry.js";
 import { extractModelVersion, normalizeModelId } from "./normalize.js";
-import { registerProxyRoutes, snapshotProxyMetrics } from "./proxy.js";
+import { normalizeProviderId } from "./provider-catalog.js";
+import { registerProxyRoutes, drainPendingLedgerWrites, snapshotProxyMetrics } from "./proxy.js";
 import { ModelRegistry } from "./registry.js";
+import { redactSecrets } from "./security.js";
 import type { CheapestModelOptions, ModelMode, RoleQueryOptions } from "./types.js";
 
-const MODEL_MODES: readonly ModelMode[] = ["chat", "embedding", "image", "video", "audio", "moderation", "rerank"];
+const MODEL_MODES: readonly ModelMode[] = [
+	"chat",
+	"embedding",
+	"image",
+	"video",
+	"audio",
+	"moderation",
+	"rerank",
+	"judgment",
+];
 const PRICE_METRICS: readonly NonNullable<CheapestModelOptions["priceMetric"]>[] = ["input", "output", "blended"];
 
 /**
@@ -481,12 +492,16 @@ export function createServer(
 		}
 
 		const provider = registry.provider(model.provider);
+		const origin = model.originProvider ?? model.provider;
 		return ctx.json({
 			...model,
 			baseUrl: provider?.baseUrl,
 			version: extractModelVersion(model.id),
-			resolvedOriginProvider: model.originProvider ?? model.provider,
-			isDirectProvider: !model.originProvider || model.originProvider === model.provider,
+			resolvedOriginProvider: origin,
+			isDirectProvider:
+				!model.originProvider ||
+				(normalizeProviderId(model.originProvider) ?? model.originProvider) ===
+					(normalizeProviderId(model.provider) ?? model.provider),
 		});
 	});
 
@@ -541,11 +556,28 @@ export function createServer(
 	// POST /api/refresh triggers a fresh discovery pass. Optionally
 	// accepts { provider: "anthropic" } to refresh only one provider.
 	app.post("/api/refresh", async (ctx) => {
-		const body = (await ctx.req.json().catch(() => ({}))) as Record<string, string | undefined>;
-		const providerId = body.provider;
+		const rawBody = await ctx.req.text();
+		let providerId: string | undefined;
+		if (rawBody.trim().length > 0) {
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(rawBody);
+			} catch {
+				return ctx.json({ error: "request body must be valid JSON" }, 400);
+			}
+			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+				return ctx.json({ error: "request body must be a JSON object" }, 400);
+			}
+			const rawProvider = (parsed as Record<string, unknown>).provider;
+			if (rawProvider !== undefined && typeof rawProvider !== "string") {
+				return ctx.json({ error: "provider must be a string" }, 400);
+			}
+			providerId = rawProvider;
+		}
 
 		try {
 			await registry.refresh(providerId);
+			registryBootDegraded = false;
 			const providers = registry.providers_list();
 			const totalModels = providers.reduce((sum, p) => sum + p.models.length, 0);
 
@@ -579,11 +611,22 @@ export function createServer(
 	// Returns errors from the most recent discovery pass so operators
 	// can diagnose which providers failed and why.
 	app.get("/api/discovery-errors", (ctx) => {
-		const errors = registry.discoveryErrors();
+		const errors = registry.discoveryErrors().map((entry) => ({
+			...entry,
+			error: redactSecrets(entry.error),
+		}));
 		return ctx.json({
 			errors,
 			count: errors.length,
 			hasErrors: errors.length > 0,
+		});
+	});
+
+	app.get("/api/pricing-anomalies", async (ctx) => {
+		const anomalies = await registry.pricingAnomalies();
+		return ctx.json({
+			anomalies,
+			count: anomalies.length,
 		});
 	});
 
@@ -745,13 +788,14 @@ export async function startServer(port = 3000, host?: string): Promise<void> {
 	readMonthlyBudgetUsd();
 	readTenantBudgetUsd();
 	const bindHost = resolveBindHost(host);
-	if (!isLoopbackHost(bindHost) && !process.env.KOSHA_PROXY_TOKEN) {
-		console.error(
-			`Warning: binding ${bindHost} with no KOSHA_PROXY_TOKEN set — the /proxy routes forward requests using ` +
-				"your provider API keys and are open to anyone who can reach this port. Set KOSHA_PROXY_TOKEN or bind 127.0.0.1.",
+	if (!isLoopbackHost(bindHost) && !process.env.KOSHA_PROXY_TOKEN && process.env.KOSHA_ALLOW_UNAUTHENTICATED !== "1") {
+		throw new Error(
+			`Refusing to bind non-loopback host ${bindHost} without KOSHA_PROXY_TOKEN. ` +
+				"Set KOSHA_PROXY_TOKEN, bind 127.0.0.1, or pass KOSHA_ALLOW_UNAUTHENTICATED=1 to override.",
 		);
 	}
-	const registry = new ModelRegistry(await ModelRegistry.loadConfigFile());
+	const loadedConfig = await ModelRegistry.loadConfigFile();
+	const registry = new ModelRegistry(loadedConfig);
 
 	console.log("Discovering providers and models...");
 	// Boot is fault-tolerant: if discovery throws (network outage on this host,
@@ -780,11 +824,8 @@ export async function startServer(port = 3000, host?: string): Promise<void> {
 	// dropping streams mid-response; the proxy threads this signal into every
 	// upstream fetch alongside its per-request timeout.
 	const shutdownController = new AbortController();
-	// DNS rebinding is an attack on loopback servers. A server bound to a
-	// network interface is reached under names kosha can't know (LAN IP,
-	// reverse proxy), so it skips the Host check unless KOSHA_ALLOWED_HOSTS
-	// lists them; the Origin check still applies.
-	const allowedHosts = isLoopbackHost(bindHost) || process.env.KOSHA_ALLOWED_HOSTS ? allowedHostsFromEnv() : "any";
+	// Enforce Host header validation unless KOSHA_ALLOWED_HOSTS=* explicitly disables it.
+	const allowedHosts = allowedHostsFromEnv();
 	const app = createServer(registry, shutdownController.signal, { allowedHosts });
 
 	// IPv6 literals need brackets in a URL; everything else prints as-is.
@@ -809,14 +850,36 @@ export async function startServer(port = 3000, host?: string): Promise<void> {
 
 	const server = serve({ fetch: app.fetch, port, hostname: bindHost });
 
+	const rawAutoRefresh = process.env.KOSHA_AUTO_REFRESH_MS;
+	const autoRefreshMs =
+		rawAutoRefresh !== undefined
+			? Number(rawAutoRefresh)
+			: Math.max(60_000, Math.min(loadedConfig.cacheTtlMs ?? 6 * 60 * 60 * 1000, 86_400_000));
+	const refreshTimer =
+		Number.isFinite(autoRefreshMs) && autoRefreshMs > 0
+			? setInterval(() => {
+					void registry
+						.refresh()
+						.then(() => {
+							registryBootDegraded = false;
+						})
+						.catch(() => {});
+				}, autoRefreshMs).unref()
+			: null;
+
 	// Graceful shutdown: stop accepting new connections, abort in-flight
-	// upstream fetches (so SSE streams drain / bill correctly), then exit.
-	// A hard timeout guards against a hung keep-alive stalling close().
+	// upstream fetches, drain ledger writes, then exit.
 	const shutdown = (signal: string): void => {
 		console.log(`\n${signal} received — draining in-flight requests and shutting down.`);
+		if (refreshTimer) clearInterval(refreshTimer);
 		shutdownController.abort();
-		server.close(() => process.exit(0));
-		setTimeout(() => process.exit(0), 5_000).unref();
+		const drainAndExit = (): void => {
+			void drainPendingLedgerWrites()
+				.catch(() => {})
+				.finally(() => process.exit(0));
+		};
+		server.close(drainAndExit);
+		setTimeout(drainAndExit, 5_000).unref();
 	};
 	process.on("SIGTERM", () => shutdown("SIGTERM"));
 	process.on("SIGINT", () => shutdown("SIGINT"));

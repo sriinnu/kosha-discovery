@@ -402,8 +402,8 @@ export const PROVIDER_CATALOG: readonly ProviderDescriptor[] = [
 		name: "Cohere",
 		origin: "direct",
 		isLocal: false,
-		transport: "native-http",
-		defaultBaseUrl: "https://api.cohere.com",
+		transport: "openai-compatible-http",
+		defaultBaseUrl: "https://api.cohere.com/compatibility",
 		credentialRequired: true,
 		credentialEnvVars: ["CO_API_KEY"],
 		primaryCredentialEnvVar: "CO_API_KEY",
@@ -912,10 +912,10 @@ function planDescriptor(plan: SubscriptionPlan): ProviderDescriptor {
 
 const PROVIDER_LOOKUP = new Map<string, ProviderDescriptor>();
 for (const descriptor of PROVIDER_CATALOG) {
-	PROVIDER_LOOKUP.set(descriptor.providerId, descriptor);
-	PROVIDER_LOOKUP.set(descriptor.canonicalProviderId, descriptor);
+	PROVIDER_LOOKUP.set(descriptor.providerId.toLowerCase(), descriptor);
+	PROVIDER_LOOKUP.set(descriptor.canonicalProviderId.toLowerCase(), descriptor);
 	for (const alias of descriptor.aliases) {
-		PROVIDER_LOOKUP.set(alias, descriptor);
+		PROVIDER_LOOKUP.set(alias.toLowerCase(), descriptor);
 	}
 }
 
@@ -924,7 +924,9 @@ for (const descriptor of PROVIDER_CATALOG) {
  */
 export function normalizeProviderId(providerId: string | undefined): string | undefined {
 	if (!providerId) return undefined;
-	return PROVIDER_LOOKUP.get(providerId)?.canonicalProviderId ?? providerId;
+	const normalized = providerId.trim().toLowerCase();
+	if (!normalized) return undefined;
+	return PROVIDER_LOOKUP.get(normalized)?.canonicalProviderId ?? providerId;
 }
 
 /**
@@ -932,7 +934,9 @@ export function normalizeProviderId(providerId: string | undefined): string | un
  */
 export function getProviderDescriptor(providerId: string | undefined): ProviderDescriptor | undefined {
 	if (!providerId) return undefined;
-	return PROVIDER_LOOKUP.get(providerId);
+	const normalized = providerId.trim().toLowerCase();
+	if (!normalized) return undefined;
+	return PROVIDER_LOOKUP.get(normalized);
 }
 
 /**

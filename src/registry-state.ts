@@ -10,6 +10,7 @@ import { EventEmitter } from "node:events";
 import { AliasResolver } from "./aliases.js";
 import { KoshaCache } from "./cache.js";
 import type { DiscoveryDeltaV1, DiscoverySnapshotV1 } from "./discovery-contract.js";
+import type { RegistryIndex } from "./registry-index.js";
 import { HealthTracker } from "./resilience.js";
 import type {
 	CredentialResult,
@@ -71,6 +72,8 @@ export interface RegistryState {
 	lastSnapshotCache: DiscoverySnapshotV1 | null;
 	/** Recent deltas retained for polling consumers. */
 	deltaHistory: DiscoveryDeltaV1[];
+	/** Cached secondary indexes over `providerMap`, auto-invalidated on model array changes. */
+	index?: RegistryIndex | null;
 }
 
 /**
@@ -88,7 +91,7 @@ export interface DiscoveryDependencies {
 	/** Load fresh provider data from disk cache if available. */
 	loadFromCache: (providerIds?: string[]) => Promise<boolean>;
 	/** Persist current provider data to disk cache. */
-	saveToCache: () => Promise<void>;
+	saveToCache: (scopedProviders?: readonly string[]) => Promise<void>;
 	/** Fallback credential resolution when the credential module is unavailable. */
 	fallbackCredential: (providerId: string, explicitKey?: string) => CredentialResult;
 	/** Build a snapshot from the current in-memory state. */

@@ -6,6 +6,8 @@
  * @module
  */
 
+import { normalizeModelId } from "./normalize.js";
+
 /**
  * Curated default aliases mapping short names to canonical model IDs.
  *
@@ -171,9 +173,10 @@ export class AliasResolver {
 	 * Find all aliases that point to the given canonical model ID.
 	 */
 	reverseAliases(modelId: string): string[] {
+		const normalized = normalizeModelId(modelId);
 		const result: string[] = [];
 		for (const [alias, target] of this.aliases) {
-			if (target === modelId) {
+			if (target === modelId || (normalized !== modelId && target === normalized)) {
 				result.push(alias);
 			}
 		}

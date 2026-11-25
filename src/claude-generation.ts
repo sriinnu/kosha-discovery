@@ -25,8 +25,9 @@ function normalizeClaudeId(modelId: string): string {
 	return modelId
 		.toLowerCase()
 		.replace(/^.*\//, "")
+		.replace(/^(?:us|eu|apac|global|au|ca|jp|us-gov)\./, "")
 		.replace(/^anthropic\./, "")
-		.replace(/-v\d+:\d+$/, "")
+		.replace(/-v\d+(?::\d+)?$/, "")
 		.replace(/\./g, "-");
 }
 

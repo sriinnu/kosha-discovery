@@ -10,7 +10,7 @@
  * @module
  */
 
-import type { CacheWriteTier, ModelPricing, PricingBand, PricingChange } from "./types.js";
+import type { CacheWriteTier, ModelPricing, PricingBand, PricingChange, PricingSchedule } from "./types.js";
 
 /** One hour, the lifetime `cacheWrite1hPerMillion` mirrors. */
 export const ONE_HOUR_TTL_SECONDS = 3600;
@@ -20,6 +20,8 @@ export interface ResolveOptions {
 	at?: Date | number;
 	/** Total prompt tokens: uncached input plus cache reads and writes. */
 	promptTokens?: number;
+	/** Named upstream service tier (e.g. `"flex"` or `"priority"`), if present on `pricing.serviceTiers`. */
+	serviceTier?: string;
 }
 
 /** Flat rates for one request, plus which band (if any) it landed in. */
@@ -61,8 +63,35 @@ export function pricingAsOf<P extends ModelPricing>(pricing: P, at: Date | numbe
 	const due = changesInEffect(pricing.changes, t);
 	if (due.length === 0) return pricing;
 	let out: P = { ...pricing };
-	for (const change of due) out = { ...out, ...change.rates };
-	out = syncWriteMirrors(out);
+	let syncedDueWrites = false;
+	for (const change of due) {
+		out = { ...out, ...change.rates };
+		if (change.rates.cacheWrites && change.rates.cacheWrites.length > 0) {
+			syncedDueWrites = true;
+		} else if (
+			out.cacheWrites &&
+			(change.rates.cacheWritePerMillion !== undefined || change.rates.cacheWrite1hPerMillion !== undefined)
+		) {
+			const updatedTiers = out.cacheWrites.map((tier) => {
+				if (tier.ttlSeconds === ONE_HOUR_TTL_SECONDS && change.rates.cacheWrite1hPerMillion !== undefined) {
+					return { ...tier, perMillion: change.rates.cacheWrite1hPerMillion };
+				}
+				if (tier.ttlSeconds < ONE_HOUR_TTL_SECONDS && change.rates.cacheWritePerMillion !== undefined) {
+					return { ...tier, perMillion: change.rates.cacheWritePerMillion };
+				}
+				return tier;
+			});
+			out.cacheWrites = updatedTiers;
+			syncedDueWrites = true;
+		}
+		if (change.rates.bands && change.rates.bands.length > 0) {
+			const first = change.rates.bands[0];
+			out.longContextThresholdTokens = first.aboveInputTokens;
+			out.longContextInputPerMillion = first.inputPerMillion;
+			out.longContextOutputPerMillion = first.outputPerMillion;
+		}
+	}
+	if (syncedDueWrites) out = syncWriteMirrors(out);
 	const pending = (pricing.changes ?? []).filter((change) => !due.includes(change));
 	if (pending.length > 0) {
 		out.changes = pending;
@@ -82,6 +111,39 @@ export function syncWriteMirrors<P extends ModelPricing>(pricing: P): P {
 	const hour = sorted.find((tier) => tier.ttlSeconds === ONE_HOUR_TTL_SECONDS);
 	const out: P = { ...pricing, cacheWrites: sorted, cacheWritePerMillion: sorted[0].perMillion };
 	if (hour) out.cacheWrite1hPerMillion = hour.perMillion;
+	else delete out.cacheWrite1hPerMillion;
+	return out;
+}
+
+/** True when `at` falls inside one of `schedule.peakWindows` (UTC). */
+export function isInPeakWindow(schedule: PricingSchedule, at: Date | number = Date.now()): boolean {
+	const d = typeof at === "number" ? new Date(at) : at;
+	const day = d.getUTCDay();
+	const hour = d.getUTCHours();
+	for (const w of schedule.peakWindows) {
+		if (!w.days.includes(day)) continue;
+		if (w.startHourUtc <= w.endHourUtc) {
+			if (hour >= w.startHourUtc && hour < w.endHourUtc) return true;
+		} else if (hour >= w.startHourUtc || hour < w.endHourUtc) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/** Apply `schedule.offPeak` rates when `at` falls outside peak windows. */
+export function pricingForSchedule<P extends ModelPricing>(pricing: P, at: Date | number = Date.now()): P {
+	if (!pricing.schedule || isInPeakWindow(pricing.schedule, at)) return pricing;
+	const { offPeak } = pricing.schedule;
+	const out: P = {
+		...pricing,
+		inputPerMillion: offPeak.inputPerMillion,
+		outputPerMillion: offPeak.outputPerMillion,
+		...(offPeak.cacheReadPerMillion !== undefined ? { cacheReadPerMillion: offPeak.cacheReadPerMillion } : {}),
+	};
+	if (out.cacheWriteBilling === "as-input") {
+		out.cacheWritePerMillion = offPeak.inputPerMillion;
+	}
 	return out;
 }
 
@@ -124,7 +186,17 @@ export function effectiveBands(pricing: ModelPricing): PricingBand[] {
  * listed so far prices it (OpenAI, xAI, Gemini, MiniMax, Haiku 5.5).
  */
 export function resolvePricing(pricing: ModelPricing, options: ResolveOptions = {}): ResolvedPricing {
-	const current = pricingAsOf(pricing, timeOf(options.at));
+	const at = timeOf(options.at);
+	let current = pricingForSchedule(pricingAsOf(pricing, at), at);
+	if (options.serviceTier && current.serviceTiers?.[options.serviceTier]) {
+		const tier = current.serviceTiers[options.serviceTier];
+		current = {
+			...current,
+			inputPerMillion: tier.inputPerMillion,
+			outputPerMillion: tier.outputPerMillion,
+			...(tier.cacheReadPerMillion !== undefined ? { cacheReadPerMillion: tier.cacheReadPerMillion } : {}),
+		};
+	}
 	const band = bandFor(effectiveBands(current), options.promptTokens);
 	if (!band) return { ...current, band: null };
 	const scale = current.inputPerMillion > 0 ? band.inputPerMillion / current.inputPerMillion : 1;
@@ -141,7 +213,11 @@ export function resolvePricing(pricing: ModelPricing, options: ResolveOptions = 
 	if (read !== undefined) resolved.cacheReadPerMillion = read;
 	if (writes) {
 		resolved.cacheWrites = writes;
-		Object.assign(resolved, syncWriteMirrors({ ...resolved, cacheWrites: writes }));
+		const synced = syncWriteMirrors({ ...resolved, cacheWrites: writes });
+		resolved.cacheWrites = synced.cacheWrites;
+		resolved.cacheWritePerMillion = synced.cacheWritePerMillion;
+		if (synced.cacheWrite1hPerMillion !== undefined) resolved.cacheWrite1hPerMillion = synced.cacheWrite1hPerMillion;
+		else delete resolved.cacheWrite1hPerMillion;
 	} else {
 		const write = scaleRate(current.cacheWritePerMillion);
 		if (write !== undefined) resolved.cacheWritePerMillion = write;

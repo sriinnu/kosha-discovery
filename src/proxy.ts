@@ -55,6 +55,7 @@ import {
 import { isPlanBilled } from "./discovery/free-tier.js";
 import { isRetired } from "./lifecycle.js";
 import { isUnverifiedZeroPrice } from "./price-trust.js";
+import { resolvePricing } from "./pricing-resolve.js";
 import {
 	getProviderDescriptor,
 	listProviderDescriptors,
@@ -63,9 +64,11 @@ import {
 import type { ModelRegistry } from "./registry.js";
 import { parseRouteStrategy, type RouteStrategy } from "./registry-routing.js";
 import { fallbackRegistryCredential, getRegistryCredentialResolver } from "./registry-runtime.js";
-import type { ModelCard } from "./types.js";
+import { redactSecrets } from "./security.js";
+import type { ModelCard, ModelMode } from "./types.js";
 import {
 	type AnthropicMessagesResponse,
+	type AnthropicUsage,
 	coerceOpenAIChatRequest,
 	translateAnthropicStreamToOpenAI,
 	translateAnthropicToOpenAI,
@@ -146,6 +149,7 @@ export function snapshotProxyMetrics(): ProxyMetricsSnapshot {
 const ALLOWED_UPSTREAM_HOSTS: readonly string[] = (() => {
 	const hosts = new Set<string>();
 	for (const descriptor of listProviderDescriptors()) {
+		if (descriptor.isLocal) continue;
 		try {
 			hosts.add(new URL(descriptor.defaultBaseUrl).hostname);
 		} catch {
@@ -180,7 +184,6 @@ export function safeUpstreamUrl(rawUrl: string, isLocalProvider: boolean): URL |
 		if (host === "127.0.0.1") return parsed;
 		// WHATWG URL keeps IPv6 hostnames bracketed: new URL("http://[::1]").hostname === "[::1]".
 		if (host === "[::1]") return parsed;
-		if (host === "0.0.0.0") return parsed;
 		return null;
 	}
 	// Non-local: hostname must match one drawn from the in-process catalog.
@@ -206,6 +209,7 @@ interface KoshaHint {
 	/** Selection strategy: cheapest | fastest | reliable | balanced. */
 	strategy: RouteStrategy;
 	capability?: string;
+	capabilities: string[];
 	minContext?: number;
 	provider?: string;
 }
@@ -221,7 +225,7 @@ const MAX_MODEL_FIELD_LENGTH = 256;
  * then falls through to direct model/alias resolution).
  *
  * Examples: `kosha:cheapest`, `kosha:fastest[tool_use,128k]`,
- * `kosha:reliable[provider:groq]`, `kosha:balanced[vision]`.
+ * `kosha:cheapest[vision,tool_use,128k]`, `kosha:reliable[provider:groq]`.
  */
 function parseKoshaHint(model: string): KoshaHint | null {
 	if (!model.startsWith(KOSHA_PREFIX)) return null;
@@ -235,7 +239,7 @@ function parseKoshaHint(model: string): KoshaHint | null {
 	const strategy = parseRouteStrategy(head);
 	if (!strategy) return null;
 
-	const hint: KoshaHint = { strategy };
+	const hint: KoshaHint = { strategy, capabilities: [] };
 	if (filters === null) return hint;
 	for (const part of filters
 		.split(",")
@@ -245,10 +249,11 @@ function parseKoshaHint(model: string): KoshaHint | null {
 			hint.provider = part.slice("provider:".length);
 		} else if (/^\d+k$/i.test(part)) {
 			hint.minContext = Number.parseInt(part, 10) * 1_000;
-		} else if (!hint.capability) {
-			hint.capability = part;
+		} else {
+			hint.capabilities.push(part);
 		}
 	}
+	if (hint.capabilities.length > 0) hint.capability = hint.capabilities[0];
 	return hint;
 }
 
@@ -264,7 +269,11 @@ function isForwardable(model: ModelCard): boolean {
 	if (!descriptor) return false;
 	if (descriptor.transport === "openai-compatible-http") return true;
 	if (descriptor.transport === "native-http") {
-		return NATIVE_OPENAI_WIRE.has(model.provider) || TRANSLATABLE_WIRE.has(model.provider);
+		return (
+			NATIVE_OPENAI_WIRE.has(model.provider) ||
+			TRANSLATABLE_WIRE.has(model.provider) ||
+			descriptor.wire === "anthropic"
+		);
 	}
 	return false; // cloud-sdk (bedrock, vertex) needs per-SDK translation
 }
@@ -287,27 +296,55 @@ function isExecutableRoute(registry: ModelRegistry, model: ModelCard): boolean {
  * forwardable route. Duplicates (same provider + model id) are removed. An
  * empty list means nothing forwardable matched.
  */
-function resolveProxyCandidates(registry: ModelRegistry, requested: string): ModelCard[] {
+function isRouteForwardableForMode(model: ModelCard, mode: ModelMode): boolean {
+	if (!isForwardable(model)) return false;
+	if (mode === "embedding") {
+		const descriptor = getProviderDescriptor(model.provider);
+		if (model.provider === "anthropic" || descriptor?.wire === "anthropic") return false;
+	}
+	return true;
+}
+
+function resolveProxyCandidates(
+	registry: ModelRegistry,
+	requested: string,
+	mode: ModelMode = "chat",
+	extraWhere?: (model: ModelCard) => boolean,
+): ModelCard[] {
 	const hint = parseKoshaHint(requested);
 	if (hint !== null) {
+		const extraCaps = hint.capabilities.slice(1);
+		const matchesExtra = (model: ModelCard): boolean =>
+			extraCaps.every((cap) => registry.modelSupportsRole(model, cap)) && (extraWhere ? extraWhere(model) : true);
 		// Context and forwardability filter the candidates before the cut to 20.
 		// Filtering after it left nothing whenever the 20 cheapest failed them,
 		// and in 1.10.0 those were all catalog $0 routes.
 		// Routes with credentials and routes without get their own cut, so 20
 		// cheaper routes we can't call never push out one we can.
 		const query = {
-			mode: "chat" as const,
+			mode,
 			capability: hint.capability,
 			provider: hint.provider,
 			minContextWindow: hint.minContext ?? undefined,
 			limit: 20,
 		};
 		const exec = registry
-			.rankedRoutes({ ...query, where: (model) => isExecutableRoute(registry, model) }, hint.strategy)
+			.rankedRoutes(
+				{
+					...query,
+					where: (model) =>
+						isRouteForwardableForMode(model, mode) && registry.routeAccess(model).callable && matchesExtra(model),
+				},
+				hint.strategy,
+			)
 			.map((r) => r.model);
 		const fwd = registry
 			.rankedRoutes(
-				{ ...query, where: (model) => isForwardable(model) && !isExecutableRoute(registry, model) },
+				{
+					...query,
+					where: (model) =>
+						isRouteForwardableForMode(model, mode) && !isExecutableRoute(registry, model) && matchesExtra(model),
+				},
 				hint.strategy,
 			)
 			.map((r) => r.model);
@@ -330,15 +367,25 @@ function resolveProxyCandidates(registry: ModelRegistry, requested: string): Mod
 	// of the canonical pay-as-you-go one. (Only for a named model; across
 	// models, `kosha:cheapest` keeps plans after priced routes, since plans
 	// carry no price to rank by.)
-	const candidates = primary ? [primary, ...routes] : routes;
+	const matchesFilter = (m: ModelCard): boolean =>
+		(mode === "embedding" ? isRouteForwardableForMode(m, mode) : isRouteForwardableForMode(m, mode)) &&
+		(extraWhere ? extraWhere(m) : true);
+	const candidates = (primary ? [primary, ...routes] : routes).filter(matchesFilter);
 	for (const route of candidates) {
 		if (isPlanBilled(route) && isExecutableRoute(registry, route)) ordered.push(route);
 	}
-	if (primary && isExecutableRoute(registry, primary)) ordered.push(primary);
-	for (const route of routes) if (isExecutableRoute(registry, route)) ordered.push(route);
-	if (primary && isForwardable(primary)) ordered.push(primary);
-	for (const route of routes) if (isForwardable(route)) ordered.push(route);
-	return dedupeModels(ordered);
+	if (primary && matchesFilter(primary) && isExecutableRoute(registry, primary)) ordered.push(primary);
+	for (const route of candidates) {
+		if (matchesFilter(route) && isExecutableRoute(registry, route)) ordered.push(route);
+	}
+	if (primary && matchesFilter(primary)) ordered.push(primary);
+	for (const route of candidates) {
+		if (matchesFilter(route)) ordered.push(route);
+	}
+	const deduped = dedupeModels(ordered);
+	const healthy = deduped.filter((m) => registry.providerRouteHealth(m.provider).breakerState !== "open");
+	const opened = deduped.filter((m) => registry.providerRouteHealth(m.provider).breakerState === "open");
+	return [...healthy, ...opened];
 }
 
 /** Allowed shape of a tenant tag: short, filesystem/log-safe identifier. */
@@ -422,6 +469,148 @@ function buildUpstreamUrl(model: ModelCard, registry: ModelRegistry): string {
 	let path = descriptor?.chatCompletionsPath ?? "/chat/completions";
 	if (base.endsWith("/v1") && path.startsWith("/v1/")) path = path.slice(3);
 	return `${base}${path}`;
+}
+
+function buildEmbeddingsUpstreamUrl(safeChatUrl: URL): string {
+	const next = new URL(safeChatUrl.toString());
+	if (next.pathname.endsWith("/chat/completions")) {
+		next.pathname = `${next.pathname.slice(0, -"/chat/completions".length)}/embeddings`;
+	} else if (next.pathname.endsWith("/v1") || next.pathname.endsWith("/v1/")) {
+		next.pathname = `${next.pathname.replace(/\/$/, "")}/embeddings`;
+	} else {
+		next.pathname = "/v1/embeddings";
+	}
+	return next.toString();
+}
+
+function estimateEmbeddingTokens(input: unknown): number {
+	if (typeof input === "string") return Math.max(1, Math.ceil(input.length / 4));
+	if (Array.isArray(input)) {
+		if (input.length === 0) return 1;
+		if (typeof input[0] === "number") return Math.max(1, input.length);
+		let total = 0;
+		for (const item of input) {
+			if (typeof item === "string") total += Math.max(1, Math.ceil(item.length / 4));
+			else if (Array.isArray(item)) total += Math.max(1, item.length);
+			else total += 1;
+		}
+		return Math.max(1, total);
+	}
+	return 1;
+}
+
+function estimateEmbeddingCost(
+	model: ModelCard,
+	body: Record<string, unknown>,
+): { estimatedUsd: number; inputTokens: number; expectedOutputTokens: 0 } | null {
+	if (!model.pricing) return null;
+	const inputTokens = estimateEmbeddingTokens(body.input);
+	const resolved = resolvePricing(model.pricing, { promptTokens: inputTokens });
+	if (!Number.isFinite(resolved.inputPerMillion) || resolved.inputPerMillion < 0) return null;
+	return {
+		estimatedUsd: (inputTokens * resolved.inputPerMillion) / 1_000_000,
+		inputTokens,
+		expectedOutputTokens: 0,
+	};
+}
+
+/** Pass native Anthropic SSE bytes through untouched while capturing final usage. */
+function observeAnthropicStreamUsage(upstream: ReadableStream<Uint8Array>): {
+	stream: ReadableStream<Uint8Array>;
+	usage: Promise<AnthropicUsage | null>;
+} {
+	const decoder = new TextDecoder();
+	let buffer = "";
+	const usage: AnthropicUsage = {};
+	let sawUsage = false;
+	let sawDelta = false;
+	let resolve!: (value: AnthropicUsage | null) => void;
+	const usagePromise = new Promise<AnthropicUsage | null>((r) => {
+		resolve = r;
+	});
+	const settle = () =>
+		resolve(
+			sawUsage && sawDelta
+				? { ...usage, ...(usage.cache_creation ? { cache_creation: { ...usage.cache_creation } } : {}) }
+				: null,
+		);
+	const mergeUsage = (src: unknown): void => {
+		if (!src || typeof src !== "object") return;
+		const u = src as Record<string, unknown>;
+		for (const key of [
+			"input_tokens",
+			"output_tokens",
+			"cache_creation_input_tokens",
+			"cache_read_input_tokens",
+		] as const) {
+			if (typeof u[key] === "number") {
+				usage[key] = u[key] as number;
+				sawUsage = true;
+			}
+		}
+		if (u.cache_creation && typeof u.cache_creation === "object" && !Array.isArray(u.cache_creation)) {
+			const cc = u.cache_creation as Record<string, unknown>;
+			const next = { ...(usage.cache_creation ?? {}) };
+			let updated = false;
+			if (typeof cc.ephemeral_5m_input_tokens === "number") {
+				next.ephemeral_5m_input_tokens = cc.ephemeral_5m_input_tokens;
+				updated = true;
+			}
+			if (typeof cc.ephemeral_1h_input_tokens === "number") {
+				next.ephemeral_1h_input_tokens = cc.ephemeral_1h_input_tokens;
+				updated = true;
+			}
+			if (updated) {
+				usage.cache_creation = next;
+				sawUsage = true;
+			}
+		}
+	};
+	const scan = (flushAll: boolean): void => {
+		const parts = buffer.split(/\r?\n\r?\n/);
+		buffer = flushAll ? "" : (parts.pop() ?? "");
+		if (buffer.length > 1_048_576) buffer = "";
+		for (const raw of parts) {
+			const dataLine = raw
+				.split(/\r?\n/)
+				.find((l) => l.startsWith("data:"))
+				?.slice(5)
+				.trim();
+			if (!dataLine || dataLine === "[DONE]") continue;
+			try {
+				const ev = JSON.parse(dataLine) as {
+					type?: unknown;
+					message?: { usage?: unknown };
+					usage?: unknown;
+				};
+				if (ev.type === "message_start") mergeUsage(ev.message?.usage);
+				if (ev.type === "message_delta") {
+					mergeUsage(ev.usage);
+					sawDelta = true;
+				}
+			} catch {
+				// ignore malformed frame
+			}
+		}
+	};
+	const stream = upstream.pipeThrough(
+		new TransformStream<Uint8Array, Uint8Array>({
+			transform(chunk, controller) {
+				controller.enqueue(chunk);
+				buffer += decoder.decode(chunk, { stream: true });
+				scan(false);
+			},
+			flush() {
+				buffer += decoder.decode();
+				scan(true);
+				settle();
+			},
+			cancel() {
+				settle();
+			},
+		}),
+	);
+	return { stream, usage: usagePromise };
 }
 
 /**
@@ -574,6 +763,55 @@ function relayDroppingUsageChunk(upstream: ReadableStream<Uint8Array>): {
 // Route registration
 // ---------------------------------------------------------------------------
 
+const STREAM_IDLE_TIMEOUT_MS = 120_000;
+const RESOLVER_CACHE_TTL_MS = 60_000;
+
+const activeLedgerWrites = new Set<Promise<void>>();
+
+function trackLedgerWrite(promise: Promise<void>): Promise<void> {
+	activeLedgerWrites.add(promise);
+	return promise.finally(() => {
+		activeLedgerWrites.delete(promise);
+	});
+}
+
+/** Await every in-flight proxy ledger row/adjustment before process exit. */
+export async function drainPendingLedgerWrites(): Promise<void> {
+	while (activeLedgerWrites.size > 0) {
+		await Promise.allSettled(Array.from(activeLedgerWrites));
+	}
+}
+
+/** Cancel a slow upstream SSE stream if no chunk arrives inside `idleMs`. */
+function withStreamIdleTimeout(stream: ReadableStream<Uint8Array>, idleMs = STREAM_IDLE_TIMEOUT_MS): ReadableStream<Uint8Array> {
+	const reader = stream.getReader();
+	return new ReadableStream<Uint8Array>({
+		async pull(controller) {
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			try {
+				const chunk = await Promise.race([
+					reader.read(),
+					new Promise<never>((_, reject) => {
+						timer = setTimeout(() => {
+							void reader.cancel("stream idle timeout").catch(() => {});
+							reject(new Error(`upstream SSE idle timeout after ${idleMs}ms`));
+						}, idleMs);
+					}),
+				]);
+				if (chunk.done) controller.close();
+				else controller.enqueue(chunk.value);
+			} catch (err) {
+				controller.error(err);
+			} finally {
+				if (timer) clearTimeout(timer);
+			}
+		},
+		cancel(reason) {
+			return reader.cancel(reason);
+		},
+	});
+}
+
 export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdownSignal?: AbortSignal): void {
 	// Providers that answered 400 to stream_options.include_usage.
 	const streamUsageRefused = new Set<string>();
@@ -587,10 +825,30 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 	const unwrittenRows: LedgerEntry[] = [];
 	let replaying: Promise<boolean> | null = null;
 	const writeLedgerRow = (entry: LedgerEntry): Promise<void> =>
-		appendLedgerEntry(entry).catch((err: unknown) => {
-			unwrittenRows.push(entry);
-			console.error("kosha: ledger write failed:", err instanceof Error ? err.message : String(err));
-		});
+		trackLedgerWrite(
+			appendLedgerEntry(entry).catch((err: unknown) => {
+				unwrittenRows.push(entry);
+				console.error("kosha: ledger write failed:", err instanceof Error ? err.message : String(err));
+			}),
+		);
+	let cachedResolver: Awaited<ReturnType<typeof getRegistryCredentialResolver>> | null = null;
+	let cachedResolverAt = 0;
+	const resolveCredentials = async () => {
+		const now = Date.now();
+		if (cachedResolver && now - cachedResolverAt < RESOLVER_CACHE_TTL_MS) return cachedResolver;
+		cachedResolver = await getRegistryCredentialResolver();
+		cachedResolverAt = now;
+		return cachedResolver;
+	};
+	let budgetAdmissionTail: Promise<void> = Promise.resolve();
+	const runWithBudgetLock = <T>(fn: () => Promise<T>): Promise<T> => {
+		const run = budgetAdmissionTail.then(fn, fn);
+		budgetAdmissionTail = run.then(
+			() => undefined,
+			() => undefined,
+		);
+		return run;
+	};
 	const ledgerCaughtUp = (): Promise<boolean> => {
 		if (unwrittenRows.length === 0) return Promise.resolve(true);
 		// One replay at a time, so concurrent requests don't write a row twice.
@@ -622,7 +880,8 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 		return () => {
 			if (released) return;
 			released = true;
-			reservedUsd = Math.max(0, reservedUsd - usd);
+			const remainingGlobal = reservedUsd - usd;
+			reservedUsd = remainingGlobal > 1e-12 ? remainingGlobal : 0;
 			if (!tenant) return;
 			const left = (reservedByTenant.get(tenant) ?? 0) - usd;
 			if (left > 1e-12) reservedByTenant.set(tenant, left);
@@ -649,7 +908,11 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 		// ── Parse request ──────────────────────────────────────────────
 		let body: Record<string, unknown>;
 		try {
-			body = (await ctx.req.json()) as Record<string, unknown>;
+			const parsed: unknown = await ctx.req.json();
+			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+				return ctx.json({ error: "request body must be a JSON object" }, 400);
+			}
+			body = parsed as Record<string, unknown>;
 		} catch {
 			return ctx.json({ error: "request body must be valid JSON" }, 400);
 		}
@@ -669,9 +932,12 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			const primary = registry.model(requested);
 			if (primary && !isForwardable(primary)) {
 				const descriptor = getProviderDescriptor(primary.provider);
+				const error = isRetired(primary)
+					? `model '${primary.id}' on '${primary.provider}' is retired and no longer served`
+					: `provider '${primary.provider}' uses '${descriptor?.transport ?? "unknown"}' transport — proxy not yet supported`;
 				return ctx.json(
 					{
-						error: `provider '${primary.provider}' uses '${descriptor?.transport ?? "unknown"}' transport — proxy not yet supported`,
+						error,
 						resolvedModel: primary.id,
 						resolvedProvider: primary.provider,
 					},
@@ -765,8 +1031,8 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 		}
 
 		// Use the full 5-tier CredentialResolver (CLI files, ADC, OAuth, env vars)
-		// so the proxy honours the same credential sources as discovery.
-		const resolver = await getRegistryCredentialResolver();
+		// cached per proxy instance with a short TTL.
+		const resolver = await resolveCredentials();
 
 		// ── Forward, failing over on transport / 5xx errors ────────────
 		// We try ranked candidates in order, bounding the number of actual
@@ -788,7 +1054,13 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 		const includeUsage =
 			wantsStream && (body.stream_options as { include_usage?: unknown } | undefined)?.include_usage === true;
 
-		for (const model of candidates) {
+		for (let candidateIdx = 0; candidateIdx < candidates.length; candidateIdx++) {
+			const model = candidates[candidateIdx];
+			const hasMoreCandidates = candidateIdx + 1 < candidates.length;
+			// Release any prior candidate's budget hold immediately on failover so a
+			// subsequent unpriced/over-budget candidate cannot carry a stale hold.
+			hold.release?.();
+			hold.release = null;
 			// A key in config outranks env vars, exactly as it does for discovery.
 			const configuredKey = registry.configuredApiKey(model.provider);
 			const credential = resolver
@@ -836,10 +1108,13 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			// A subscription plan's model has no price either, but the plan is
 			// already paid: the request adds $0, so it passes and, like any
 			// route without a price, writes no ledger row.
+			// A shared key on a subscription plan host may be a pay-as-you-go key,
+			// so only exclusive plan credentials bypass budget checks and ledger writes.
+			const effectivePlanBilled = isPlanBilled(model) && credential.shared !== true;
 			if (
 				(budget !== null || tenantBudget !== null) &&
 				descriptor?.isLocal !== true &&
-				!isPlanBilled(model) &&
+				!effectivePlanBilled &&
 				(!estimateRequestCost(model, body) || isUnverifiedZeroPrice(model))
 			) {
 				attemptChain.push(`${model.provider}:unpriced`);
@@ -849,18 +1124,30 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			// The gate above only knows the cap isn't reached yet. A request
 			// whose own estimate would cross it is refused here, per route, so a
 			// cheaper route can still take it.
-			const routeEstimate = isPlanBilled(model) ? 0 : (estimateRequestCost(model, body)?.estimatedUsd ?? 0);
-			const tenantReserved = tenant ? (reservedByTenant.get(tenant) ?? 0) : 0;
-			const overGlobal = budget !== null && spent + reservedUsd + routeEstimate > budget;
-			const overTenant = tenantBudget !== null && tenantSpent + tenantReserved + routeEstimate > tenantBudget;
-			if (overGlobal || overTenant) {
-				attemptChain.push(`${model.provider}:over-budget`);
-				overBudgetCap ??= overGlobal ? "global" : "tenant";
-				continue;
+			const routeEstimate = effectivePlanBilled ? 0 : (estimateRequestCost(model, body)?.estimatedUsd ?? 0);
+			if (budget !== null || tenantBudget !== null) {
+				const decision = await runWithBudgetLock(async () => {
+					const now = Date.now();
+					if (budget !== null) spent = await readSpendForMonth(now);
+					if (tenantBudget !== null) tenantSpent = await readSpendForMonth(now, tenant);
+					const tenantReserved = tenant ? (reservedByTenant.get(tenant) ?? 0) : 0;
+					const overGlobal = budget !== null && spent + reservedUsd + routeEstimate > budget;
+					const overTenant = tenantBudget !== null && tenantSpent + tenantReserved + routeEstimate > tenantBudget;
+					if (overGlobal || overTenant) {
+						return overGlobal ? ("global" as const) : ("tenant" as const);
+					}
+					hold.release = reserve(routeEstimate, tenant);
+					return null;
+				});
+				if (decision !== null) {
+					attemptChain.push(`${model.provider}:over-budget`);
+					overBudgetCap ??= decision;
+					continue;
+				}
+			} else {
+				// Held until this request's ledger row lands; a failover swaps it at the loop top.
+				hold.release = reserve(routeEstimate, tenant);
 			}
-			// Held until this request's ledger row lands; a failover swaps it.
-			hold.release?.();
-			hold.release = reserve(routeEstimate, tenant);
 			const usesAnthropicWire = model.provider === "anthropic" || descriptor?.wire === "anthropic";
 			const upstreamHeaders: Record<string, string> = { "content-type": "application/json" };
 			let upstreamBody: string;
@@ -944,12 +1231,16 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			const releaseTimer = (): void => clearTimeout(upstreamTimer);
 			let upstream: Response;
 			try {
-				const signal = shutdownSignal ? AbortSignal.any([upstreamAbort.signal, shutdownSignal]) : upstreamAbort.signal;
+				const signals = [upstreamAbort.signal];
+				if (shutdownSignal) signals.push(shutdownSignal);
+				if (ctx.req.raw?.signal) signals.push(ctx.req.raw.signal);
+				const signal = signals.length === 1 ? signals[0] : AbortSignal.any(signals);
 				upstream = await fetch(upstreamUrlString, {
 					method: "POST",
 					headers: upstreamHeaders,
 					body: upstreamBody,
 					signal,
+					redirect: "error",
 				});
 				// A 400 here may be the provider refusing stream_options rather
 				// than the caller's request: retry once as the caller sent it. Only
@@ -963,6 +1254,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 						headers: upstreamHeaders,
 						body: plainBody,
 						signal,
+						redirect: "error",
 					});
 					if (upstream.status !== 400) streamUsageRefused.add(model.provider);
 					plainBody = null;
@@ -975,33 +1267,39 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 				registry.recordProxyOutcome(model.provider, { ok: false, latencyMs: errLatency, errorType });
 				bumpProxyMetric(model.provider, false, errLatency);
 				if (fetchAttempts < MAX_FETCHES) continue; // fail over
-				const message = err instanceof Error ? err.message : String(err);
+				const message = redactSecrets(err instanceof Error ? err.message : String(err));
 				return ctx.json(
 					{ error: `upstream unreachable: ${message}`, resolvedProvider: model.provider, attemptChain },
 					502,
 				);
 			}
 
-			// A retryable upstream failure (5xx) rolls over to the next route,
-			// unless we've spent our fetch budget — then we surface it.
-			// A shared key that a plan host listed models for may still be a
-			// pay-as-you-go key the plan refuses to bill: then the paid route for
-			// the same model should get the request, not the caller a 401.
+			// Retryable failures roll over when another candidate exists and our
+			// fetch budget isn't exhausted: 5xx server errors, 429 rate limits, and
+			// shared-key or fallback-eligible 401/403 auth failures.
 			const planRefusedSharedKey =
 				(isPlanBilled(model) || descriptor?.subscriptionPlan === true) &&
 				credential.shared === true &&
 				(upstream.status === 401 || upstream.status === 403);
-			if ((upstream.status >= 500 || planRefusedSharedKey) && fetchAttempts < MAX_FETCHES) {
+			const retryableAuthFailure = hasMoreCandidates && (upstream.status === 401 || upstream.status === 403);
+			const retryableThrottle = hasMoreCandidates && upstream.status === 429;
+			if ((upstream.status >= 500 || planRefusedSharedKey || retryableAuthFailure || retryableThrottle) && fetchAttempts < MAX_FETCHES) {
 				releaseTimer();
 				attemptChain.push(`${model.provider}:${upstream.status}`);
 				await upstream.body?.cancel().catch(() => {});
-				// A refused key says nothing about the provider's health.
+				// A refused shared plan key says nothing about the provider's health.
 				if (!planRefusedSharedKey) {
+					const errorType =
+						upstream.status === 429
+							? "throttled"
+							: upstream.status === 401 || upstream.status === 403
+								? "auth_error"
+								: "transport";
 					registry.recordProxyOutcome(model.provider, {
 						ok: false,
 						status: upstream.status,
 						latencyMs: Date.now() - attemptStart,
-						errorType: "transport",
+						errorType,
 					});
 					bumpProxyMetric(model.provider, false, Date.now() - attemptStart);
 				}
@@ -1032,7 +1330,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			// audit before paying. When the upstream returns a usage block we
 			// also reconcile the actual cost and record both on the ledger.
 			// A plan-billed route has no estimate: nothing is charged per token.
-			const estimate = isPlanBilled(model) ? null : estimateRequestCost(model, body);
+			const estimate = effectivePlanBilled ? null : estimateRequestCost(model, body);
 			// Catalog ids come from provider APIs and public catalogs; the scan
 			// allows newlines and non-Latin-1 text, either of which makes
 			// Headers throw after the upstream has already been paid.
@@ -1048,6 +1346,9 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			const upstreamStatus = upstream.status;
 			const upstreamOk = upstream.ok;
 			const requestId = randomUUID();
+			// Capture one timestamp so request and async stream adjustment rows
+			// always land in the same calendar-month partition.
+			const requestTs = Date.now();
 			// Only charge the ledger on a successful upstream response. A 4xx
 			// is the caller's fault (malformed request, bad key) and costs
 			// nothing upstream — charging it would let malformed traffic
@@ -1063,7 +1364,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			const recordSpend = (actual: ActualUsageCost | null): void => {
 				if (!estimate || !upstreamOk) return;
 				hold.write = writeLedgerRow({
-					ts: Date.now(),
+					ts: requestTs,
 					provider: model.provider,
 					modelId: model.id,
 					requested: safeRequested,
@@ -1089,7 +1390,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			const recordAdjustment = (actual: ActualUsageCost | null): void => {
 				if (!estimate || !upstreamOk || !actual) return;
 				void writeLedgerRow({
-					ts: Date.now(),
+					ts: requestTs,
 					provider: model.provider,
 					modelId: model.id,
 					requested: safeRequested,
@@ -1155,11 +1456,13 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 					// Estimate now; reconcile when (if) the stream reports usage.
 					recordSpend(null);
 					const { stream, usage } = translateAnthropicStreamToOpenAI(upstream.body, model.id, { includeUsage });
-					usage.then((u) => recordAdjustment(actualCostFromUsage(model, u, "anthropic"))).catch(() => {});
+					void trackLedgerWrite(
+						usage.then((u) => recordAdjustment(actualCostFromUsage(model, u, "anthropic"))).catch(() => {}),
+					);
 					releaseTimer();
 					responseHeaders.set("content-type", "text/event-stream; charset=utf-8");
 					responseHeaders.set("cache-control", "no-cache");
-					return new Response(stream, { status: 200, headers: responseHeaders });
+					return new Response(withStreamIdleTimeout(stream), { status: 200, headers: responseHeaders });
 				}
 				let raw: unknown;
 				try {
@@ -1197,9 +1500,11 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 				// Estimate now; reconcile when the stream ends with usage.
 				recordSpend(null);
 				const { stream, usage } = observeOpenAIStreamUsage(upstream.body, { dropUsageChunk: plainBody !== null });
-				usage.then((u) => recordAdjustment(actualCostFromUsage(model, u, "openai"))).catch(() => {});
+				void trackLedgerWrite(
+					usage.then((u) => recordAdjustment(actualCostFromUsage(model, u, "openai"))).catch(() => {}),
+				);
 				releaseTimer();
-				return new Response(stream, { status: upstream.status, headers: responseHeaders });
+				return new Response(withStreamIdleTimeout(stream), { status: upstream.status, headers: responseHeaders });
 			}
 			if (contentType.includes("application/json")) {
 				let text: string;
@@ -1208,7 +1513,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 				} catch (err) {
 					releaseTimer();
 					recordSpend(null);
-					const message = err instanceof Error ? err.message : String(err);
+					const message = redactSecrets(err instanceof Error ? err.message : String(err));
 					return ctx.json(
 						{ error: `upstream body could not be read: ${message}`, resolvedProvider: model.provider, attemptChain },
 						502,
@@ -1291,10 +1596,13 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 		return ctx.json({ error: "all upstream providers failed", attemptChain }, 502);
 	};
 
-	app.post("/proxy/v1/chat/completions", async (ctx) => {
+	const withHold = async (
+		ctx: Context,
+		handler: (ctx: Context, hold: SpendHold) => Promise<Response>,
+	): Promise<Response> => {
 		const hold: SpendHold = { release: null, write: null };
 		try {
-			return await handleChat(ctx, hold);
+			return await handler(ctx, hold);
 		} finally {
 			// Release the budget hold once the spend it stood for is in the
 			// ledger (or held for replay, which blocks budgeted requests anyway).
@@ -1304,7 +1612,561 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 				else release();
 			}
 		}
-	});
+	};
+
+	interface BudgetGateContext {
+		budget: number | null;
+		tenantBudget: number | null;
+		tenant: string | null;
+		spent: number;
+		tenantSpent: number;
+	}
+
+	const checkBudgetPrecheck = async (ctx: Context): Promise<BudgetGateContext | Response> => {
+		const taggedTenant = parseTenantTag(ctx.req.header("authorization"), ctx.req.header("x-kosha-tenant"));
+		let budget: number | null;
+		let tenantBudget: number | null;
+		try {
+			budget = readMonthlyBudgetUsd();
+			tenantBudget = readTenantBudgetUsd();
+		} catch (err) {
+			const message = err instanceof BudgetConfigError ? err.message : "budget could not be read";
+			console.error(`kosha: ${message}`);
+			return ctx.json({ error: `budget enforcement unavailable — ${message}` }, 503);
+		}
+		const tenant = taggedTenant ?? (tenantBudget !== null ? UNTAGGED_TENANT : null);
+		let spent = 0;
+		let tenantSpent = 0;
+		if (budget !== null || tenantBudget !== null) {
+			if (!(await ledgerCaughtUp())) {
+				return ctx.json(
+					{
+						error: "budget enforcement unavailable — spend could not be written to the ledger",
+						budgetUsd: budget ?? tenantBudget,
+					},
+					503,
+				);
+			}
+			try {
+				if (budget !== null) spent = await readSpendForMonth(Date.now());
+				if (tenantBudget !== null) tenantSpent = await readSpendForMonth(Date.now(), tenant);
+			} catch (err) {
+				console.error("kosha: ledger read failed:", err instanceof Error ? err.message : String(err));
+				return ctx.json(
+					{
+						error: "budget enforcement unavailable — ledger could not be read",
+						budgetUsd: budget ?? tenantBudget,
+					},
+					503,
+				);
+			}
+			if (budget !== null && spent >= budget && (budget > 0 || spent > 0)) {
+				return ctx.json({ error: "monthly budget exceeded", spentUsd: spent, budgetUsd: budget }, 429, {
+					"x-kosha-budget-remaining-usd": Math.max(0, budget - spent).toFixed(4),
+					"x-kosha-budget-usd": budget.toFixed(2),
+				});
+			}
+			if (tenantBudget !== null && tenantSpent >= tenantBudget && (tenantBudget > 0 || tenantSpent > 0)) {
+				return ctx.json(
+					{ error: "tenant monthly budget exceeded", tenant, spentUsd: tenantSpent, budgetUsd: tenantBudget },
+					429,
+					{
+						"x-kosha-budget-remaining-usd": Math.max(0, tenantBudget - tenantSpent).toFixed(4),
+						"x-kosha-budget-usd": tenantBudget.toFixed(2),
+					},
+				);
+			}
+		}
+		return { budget, tenantBudget, tenant, spent, tenantSpent };
+	};
+
+	const parseProxyBody = async (
+		ctx: Context,
+	): Promise<{ body: Record<string, unknown>; requested: string } | Response> => {
+		let body: Record<string, unknown>;
+		try {
+			const parsed: unknown = await ctx.req.json();
+			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+				return ctx.json({ error: "request body must be a JSON object" }, 400);
+			}
+			body = parsed as Record<string, unknown>;
+		} catch {
+			return ctx.json({ error: "request body must be valid JSON" }, 400);
+		}
+		const requested = typeof body.model === "string" ? body.model : undefined;
+		if (!requested) {
+			return ctx.json({ error: "missing required field: model" }, 400);
+		}
+		if (requested.length > MAX_MODEL_FIELD_LENGTH) {
+			return ctx.json({ error: `model must be at most ${MAX_MODEL_FIELD_LENGTH} characters` }, 400);
+		}
+		return { body, requested };
+	};
+
+	const handleEmbeddings = async (ctx: Context, hold: SpendHold): Promise<Response> => {
+		const parsedBody = await parseProxyBody(ctx);
+		if (parsedBody instanceof Response) return parsedBody;
+		const { body, requested } = parsedBody;
+		const candidates = resolveProxyCandidates(registry, requested, "embedding");
+		if (candidates.length === 0) {
+			return ctx.json({ error: `no embedding route found for '${requested}'` }, 404);
+		}
+		const safeRequested = headerSafe(requested, 200);
+		const gate = await checkBudgetPrecheck(ctx);
+		if (gate instanceof Response) return gate;
+		let { budget, tenantBudget, tenant, spent, tenantSpent } = gate;
+		const resolver = await resolveCredentials();
+		const MAX_FETCHES = 3;
+		const UPSTREAM_TIMEOUT_MS = 30_000;
+		const attemptChain: string[] = [];
+		let fetchAttempts = 0;
+		let sawCredentialedRoute = false;
+		let lastNoCred: { provider: string; envHint?: string } | null = null;
+		let skippedUnpriced = false;
+		let overBudgetCap: "global" | "tenant" | null = null;
+
+		for (let candidateIdx = 0; candidateIdx < candidates.length; candidateIdx++) {
+			const model = candidates[candidateIdx];
+			const hasMoreCandidates = candidateIdx + 1 < candidates.length;
+			hold.release?.();
+			hold.release = null;
+			const configuredKey = registry.configuredApiKey(model.provider);
+			const credential = resolver
+				? await resolver.resolve(model.provider, configuredKey)
+				: fallbackRegistryCredential(model.provider, configuredKey);
+			const descriptor = getProviderDescriptor(model.provider);
+			if (credential.shared && registry.provider(model.provider)?.authenticated !== true) {
+				attemptChain.push(`${model.provider}:unverified-shared-key`);
+				continue;
+			}
+			const bearerToken = credential.apiKey ?? (credential.source === "oauth" ? undefined : credential.accessToken);
+			if (descriptor && providerExecutionCredentialRequired(descriptor) && !bearerToken) {
+				lastNoCred = { provider: model.provider, envHint: descriptor.credentialEnvVars.join(" or ") };
+				attemptChain.push(`${model.provider}:no-credential`);
+				continue;
+			}
+			sawCredentialedRoute = true;
+			if (fetchAttempts >= MAX_FETCHES) break;
+			const safeUrl = safeUpstreamUrl(buildUpstreamUrl(model, registry), descriptor?.isLocal === true);
+			if (!safeUrl) {
+				attemptChain.push(`${model.provider}:untrusted-host`);
+				continue;
+			}
+			const effectivePlanBilled = isPlanBilled(model) && credential.shared !== true;
+			const estimate = effectivePlanBilled ? null : estimateEmbeddingCost(model, body);
+			if (
+				(budget !== null || tenantBudget !== null) &&
+				descriptor?.isLocal !== true &&
+				!effectivePlanBilled &&
+				(!estimate || isUnverifiedZeroPrice(model))
+			) {
+				attemptChain.push(`${model.provider}:unpriced`);
+				skippedUnpriced = true;
+				continue;
+			}
+			const routeEstimate = effectivePlanBilled ? 0 : (estimate?.estimatedUsd ?? 0);
+			if (budget !== null || tenantBudget !== null) {
+				const decision = await runWithBudgetLock(async () => {
+					const now = Date.now();
+					if (budget !== null) spent = await readSpendForMonth(now);
+					if (tenantBudget !== null) tenantSpent = await readSpendForMonth(now, tenant);
+					const tenantReserved = tenant ? (reservedByTenant.get(tenant) ?? 0) : 0;
+					const overGlobal = budget !== null && spent + reservedUsd + routeEstimate > budget;
+					const overTenant = tenantBudget !== null && tenantSpent + tenantReserved + routeEstimate > tenantBudget;
+					if (overGlobal || overTenant) return overGlobal ? ("global" as const) : ("tenant" as const);
+					hold.release = reserve(routeEstimate, tenant);
+					return null;
+				});
+				if (decision !== null) {
+					attemptChain.push(`${model.provider}:over-budget`);
+					overBudgetCap ??= decision;
+					continue;
+				}
+			} else {
+				hold.release = reserve(routeEstimate, tenant);
+			}
+			fetchAttempts += 1;
+			const attemptStart = Date.now();
+			const upstreamAbort = new AbortController();
+			const upstreamTimer = setTimeout(
+				() => upstreamAbort.abort(new DOMException(`upstream did not respond within ${UPSTREAM_TIMEOUT_MS}ms`, "TimeoutError")),
+				UPSTREAM_TIMEOUT_MS,
+			);
+			const upstreamHeaders: Record<string, string> = { "content-type": "application/json" };
+			if (bearerToken) upstreamHeaders.authorization = `Bearer ${bearerToken}`;
+			let upstream: Response;
+			try {
+				const signals = [upstreamAbort.signal];
+				if (shutdownSignal) signals.push(shutdownSignal);
+				if (ctx.req.raw?.signal) signals.push(ctx.req.raw.signal);
+				upstream = await fetch(buildEmbeddingsUpstreamUrl(safeUrl), {
+					method: "POST",
+					headers: upstreamHeaders,
+					body: JSON.stringify({ ...body, model: model.id }),
+					signal: signals.length === 1 ? signals[0] : AbortSignal.any(signals),
+					redirect: "error",
+				});
+			} catch (err) {
+				clearTimeout(upstreamTimer);
+				attemptChain.push(`${model.provider}:error`);
+				const errLatency = Date.now() - attemptStart;
+				const errorType = err instanceof Error && err.name === "TimeoutError" ? "timeout" : "transport";
+				registry.recordProxyOutcome(model.provider, { ok: false, latencyMs: errLatency, errorType });
+				bumpProxyMetric(model.provider, false, errLatency);
+				if (fetchAttempts < MAX_FETCHES) continue;
+				const message = redactSecrets(err instanceof Error ? err.message : String(err));
+				return ctx.json({ error: `upstream unreachable: ${message}`, resolvedProvider: model.provider, attemptChain }, 502);
+			}
+			clearTimeout(upstreamTimer);
+			const retryable =
+				hasMoreCandidates && (upstream.status >= 500 || upstream.status === 429 || upstream.status === 401 || upstream.status === 403);
+			if (retryable && fetchAttempts < MAX_FETCHES) {
+				attemptChain.push(`${model.provider}:${upstream.status}`);
+				await upstream.body?.cancel().catch(() => {});
+				const errorType = upstream.status === 429 ? "throttled" : upstream.status >= 500 ? "transport" : "auth_error";
+				registry.recordProxyOutcome(model.provider, {
+					ok: false,
+					status: upstream.status,
+					latencyMs: Date.now() - attemptStart,
+					errorType,
+				});
+				bumpProxyMetric(model.provider, false, Date.now() - attemptStart);
+				continue;
+			}
+			attemptChain.push(`${model.provider}:${upstream.status}`);
+			const latencyMs = Date.now() - attemptStart;
+			if (upstream.ok) {
+				registry.recordProxyOutcome(model.provider, { ok: true, status: upstream.status, latencyMs });
+				bumpProxyMetric(model.provider, true, latencyMs);
+			} else if (upstream.status >= 500 || upstream.status === 429) {
+				registry.recordProxyOutcome(model.provider, {
+					ok: false,
+					status: upstream.status,
+					latencyMs,
+					errorType: upstream.status === 429 ? "throttled" : "transport",
+				});
+				bumpProxyMetric(model.provider, false, latencyMs);
+			}
+			const responseHeaders = new Headers({
+				"x-kosha-model": headerSafe(model.id, 200),
+				"x-kosha-provider": headerSafe(model.provider, 100),
+				"x-kosha-requested": safeRequested,
+				"x-kosha-attempt-chain": headerSafe(attemptChain.join(",")),
+			});
+			const contentType = upstream.headers.get("content-type") ?? "";
+			if (contentType) responseHeaders.set("content-type", headerSafe(contentType, 200));
+			if (estimate) responseHeaders.set("x-kosha-estimated-cost-usd", estimate.estimatedUsd.toFixed(6));
+			const text = await upstream.text().catch(() => "");
+			let usageRaw: unknown = null;
+			try {
+				usageRaw = (JSON.parse(text) as { usage?: unknown }).usage ?? null;
+			} catch {
+				// non-JSON
+			}
+			const actual = upstream.ok ? actualCostFromUsage(model, usageRaw, "openai") : null;
+			if (upstream.ok) {
+				if (actual) {
+					responseHeaders.set("x-kosha-actual-cost-usd", actual.usd.toFixed(6));
+					responseHeaders.set("x-kosha-usage-source", "upstream");
+				} else {
+					responseHeaders.set("x-kosha-usage-source", "estimate");
+				}
+			}
+			if (estimate && upstream.ok) {
+				hold.write = writeLedgerRow({
+					ts: Date.now(),
+					provider: model.provider,
+					modelId: model.id,
+					requested: safeRequested,
+					tenant,
+					estimatedUsd: estimate.estimatedUsd,
+					estimatedInputTokens: estimate.inputTokens,
+					estimatedOutputTokens: 0,
+					upstreamStatus: upstream.status,
+					kind: "request",
+					requestId: randomUUID(),
+					...(actual
+						? {
+								actualUsd: actual.usd,
+								actualInputTokens: actual.inputTokens,
+								actualOutputTokens: actual.outputTokens,
+								usageSource: "upstream" as const,
+							}
+						: { usageSource: "estimate" as const }),
+				});
+			}
+			return new Response(text, { status: upstream.status, headers: responseHeaders });
+		}
+		if (!sawCredentialedRoute && lastNoCred) {
+			return ctx.json({ error: `no credential found for '${lastNoCred.provider}'`, attemptChain }, 401);
+		}
+		if (overBudgetCap !== null && fetchAttempts === 0) {
+			return ctx.json({ error: "monthly budget exceeded", attemptChain }, 429);
+		}
+		if (skippedUnpriced && fetchAttempts === 0) {
+			return ctx.json({ error: "no priced route for this embedding model", attemptChain }, 422);
+		}
+		return ctx.json({ error: "all upstream providers failed", attemptChain }, 502);
+	};
+
+	const handleAnthropicMessages = async (ctx: Context, hold: SpendHold): Promise<Response> => {
+		const parsedBody = await parseProxyBody(ctx);
+		if (parsedBody instanceof Response) return parsedBody;
+		const { body, requested } = parsedBody;
+		const isAnthropicWire = (m: ModelCard): boolean => {
+			const desc = getProviderDescriptor(m.provider);
+			return m.provider === "anthropic" || desc?.wire === "anthropic";
+		};
+		const candidates = resolveProxyCandidates(registry, requested, "chat", isAnthropicWire);
+		if (candidates.length === 0) {
+			return ctx.json({ error: `no Anthropic-wire route found for '${requested}'` }, 404);
+		}
+		const safeRequested = headerSafe(requested, 200);
+		const gate = await checkBudgetPrecheck(ctx);
+		if (gate instanceof Response) return gate;
+		let { budget, tenantBudget, tenant, spent, tenantSpent } = gate;
+		const resolver = await resolveCredentials();
+		const MAX_FETCHES = 3;
+		const UPSTREAM_TIMEOUT_MS = 30_000;
+		const attemptChain: string[] = [];
+		let fetchAttempts = 0;
+		let sawCredentialedRoute = false;
+		let lastNoCred: { provider: string; envHint?: string } | null = null;
+		let skippedUnpriced = false;
+		let overBudgetCap: "global" | "tenant" | null = null;
+
+		for (let candidateIdx = 0; candidateIdx < candidates.length; candidateIdx++) {
+			const model = candidates[candidateIdx];
+			const hasMoreCandidates = candidateIdx + 1 < candidates.length;
+			hold.release?.();
+			hold.release = null;
+			const configuredKey = registry.configuredApiKey(model.provider);
+			const credential = resolver
+				? await resolver.resolve(model.provider, configuredKey)
+				: fallbackRegistryCredential(model.provider, configuredKey);
+			const descriptor = getProviderDescriptor(model.provider);
+			if (credential.shared && registry.provider(model.provider)?.authenticated !== true) {
+				attemptChain.push(`${model.provider}:unverified-shared-key`);
+				continue;
+			}
+			const bearerToken = credential.apiKey ?? (credential.source === "oauth" ? undefined : credential.accessToken);
+			if (descriptor && providerExecutionCredentialRequired(descriptor) && !bearerToken) {
+				lastNoCred = { provider: model.provider, envHint: descriptor.credentialEnvVars.join(" or ") };
+				attemptChain.push(`${model.provider}:no-credential`);
+				continue;
+			}
+			sawCredentialedRoute = true;
+			if (fetchAttempts >= MAX_FETCHES) break;
+			const safeUrl = safeUpstreamUrl(buildUpstreamUrl(model, registry), descriptor?.isLocal === true);
+			if (!safeUrl) {
+				attemptChain.push(`${model.provider}:untrusted-host`);
+				continue;
+			}
+			const effectivePlanBilled = isPlanBilled(model) && credential.shared !== true;
+			const estimate = effectivePlanBilled ? null : estimateRequestCost(model, body);
+			if (
+				(budget !== null || tenantBudget !== null) &&
+				descriptor?.isLocal !== true &&
+				!effectivePlanBilled &&
+				(!estimate || isUnverifiedZeroPrice(model))
+			) {
+				attemptChain.push(`${model.provider}:unpriced`);
+				skippedUnpriced = true;
+				continue;
+			}
+			const routeEstimate = effectivePlanBilled ? 0 : (estimate?.estimatedUsd ?? 0);
+			if (budget !== null || tenantBudget !== null) {
+				const decision = await runWithBudgetLock(async () => {
+					const now = Date.now();
+					if (budget !== null) spent = await readSpendForMonth(now);
+					if (tenantBudget !== null) tenantSpent = await readSpendForMonth(now, tenant);
+					const tenantReserved = tenant ? (reservedByTenant.get(tenant) ?? 0) : 0;
+					const overGlobal = budget !== null && spent + reservedUsd + routeEstimate > budget;
+					const overTenant = tenantBudget !== null && tenantSpent + tenantReserved + routeEstimate > tenantBudget;
+					if (overGlobal || overTenant) return overGlobal ? ("global" as const) : ("tenant" as const);
+					hold.release = reserve(routeEstimate, tenant);
+					return null;
+				});
+				if (decision !== null) {
+					attemptChain.push(`${model.provider}:over-budget`);
+					overBudgetCap ??= decision;
+					continue;
+				}
+			} else {
+				hold.release = reserve(routeEstimate, tenant);
+			}
+			const targetUrl = new URL(safeUrl.toString());
+			targetUrl.pathname = descriptor?.anthropicMessagesPath ?? "/v1/messages";
+			const upstreamHeaders: Record<string, string> = {
+				"content-type": "application/json",
+				"x-api-key": bearerToken ?? "",
+				"anthropic-version": headerSafe(ctx.req.header("anthropic-version") ?? "2023-06-01", 32),
+			};
+			const betaHeader = ctx.req.header("anthropic-beta");
+			if (betaHeader) upstreamHeaders["anthropic-beta"] = headerSafe(betaHeader, 200);
+			fetchAttempts += 1;
+			const attemptStart = Date.now();
+			const upstreamAbort = new AbortController();
+			const upstreamTimer = setTimeout(
+				() => upstreamAbort.abort(new DOMException(`upstream did not respond within ${UPSTREAM_TIMEOUT_MS}ms`, "TimeoutError")),
+				UPSTREAM_TIMEOUT_MS,
+			);
+			const releaseTimer = () => clearTimeout(upstreamTimer);
+			let upstream: Response;
+			try {
+				const signals = [upstreamAbort.signal];
+				if (shutdownSignal) signals.push(shutdownSignal);
+				if (ctx.req.raw?.signal) signals.push(ctx.req.raw.signal);
+				upstream = await fetch(targetUrl.toString(), {
+					method: "POST",
+					headers: upstreamHeaders,
+					body: JSON.stringify({ ...body, model: model.id }),
+					signal: signals.length === 1 ? signals[0] : AbortSignal.any(signals),
+					redirect: "error",
+				});
+			} catch (err) {
+				releaseTimer();
+				attemptChain.push(`${model.provider}:error`);
+				const errLatency = Date.now() - attemptStart;
+				const errorType = err instanceof Error && err.name === "TimeoutError" ? "timeout" : "transport";
+				registry.recordProxyOutcome(model.provider, { ok: false, latencyMs: errLatency, errorType });
+				bumpProxyMetric(model.provider, false, errLatency);
+				if (fetchAttempts < MAX_FETCHES) continue;
+				const message = redactSecrets(err instanceof Error ? err.message : String(err));
+				return ctx.json({ error: `upstream unreachable: ${message}`, resolvedProvider: model.provider, attemptChain }, 502);
+			}
+			const planRefusedSharedKey =
+				(isPlanBilled(model) || descriptor?.subscriptionPlan === true) &&
+				credential.shared === true &&
+				(upstream.status === 401 || upstream.status === 403);
+			const retryable =
+				hasMoreCandidates &&
+				(upstream.status >= 500 ||
+					planRefusedSharedKey ||
+					upstream.status === 429 ||
+					upstream.status === 401 ||
+					upstream.status === 403) &&
+				fetchAttempts < MAX_FETCHES;
+			if (retryable) {
+				releaseTimer();
+				attemptChain.push(`${model.provider}:${upstream.status}`);
+				await upstream.body?.cancel().catch(() => {});
+				if (!planRefusedSharedKey) {
+					const errorType = upstream.status === 429 ? "throttled" : upstream.status >= 500 ? "transport" : "auth_error";
+					registry.recordProxyOutcome(model.provider, {
+						ok: false,
+						status: upstream.status,
+						latencyMs: Date.now() - attemptStart,
+						errorType,
+					});
+					bumpProxyMetric(model.provider, false, Date.now() - attemptStart);
+				}
+				continue;
+			}
+			attemptChain.push(`${model.provider}:${upstream.status}`);
+			const latencyMs = Date.now() - attemptStart;
+			if (upstream.ok) {
+				registry.recordProxyOutcome(model.provider, { ok: true, status: upstream.status, latencyMs });
+				bumpProxyMetric(model.provider, true, latencyMs);
+			} else if (upstream.status >= 500 || upstream.status === 429) {
+				registry.recordProxyOutcome(model.provider, {
+					ok: false,
+					status: upstream.status,
+					latencyMs,
+					errorType: upstream.status === 429 ? "throttled" : "transport",
+				});
+				bumpProxyMetric(model.provider, false, latencyMs);
+			}
+			const responseHeaders = new Headers({
+				"x-kosha-model": headerSafe(model.id, 200),
+				"x-kosha-provider": headerSafe(model.provider, 100),
+				"x-kosha-requested": safeRequested,
+				"x-kosha-attempt-chain": headerSafe(attemptChain.join(",")),
+			});
+			const contentType = upstream.headers.get("content-type") ?? "";
+			if (contentType) responseHeaders.set("content-type", headerSafe(contentType, 200));
+			if (estimate) responseHeaders.set("x-kosha-estimated-cost-usd", estimate.estimatedUsd.toFixed(6));
+			const requestId = randomUUID();
+			const requestTs = Date.now();
+			const recordRow = (actual: ActualUsageCost | null, kind: "request" | "adjustment" = "request") => {
+				if (!estimate || !upstream.ok) return;
+				const entry: LedgerEntry = {
+					ts: requestTs,
+					provider: model.provider,
+					modelId: model.id,
+					requested: safeRequested,
+					tenant,
+					estimatedUsd: kind === "request" ? estimate.estimatedUsd : 0,
+					estimatedInputTokens: kind === "request" ? estimate.inputTokens : 0,
+					estimatedOutputTokens: kind === "request" ? estimate.expectedOutputTokens : 0,
+					upstreamStatus: upstream.status,
+					kind,
+					requestId,
+					...(actual
+						? {
+								...(kind === "adjustment"
+									? {
+											adjustmentUsd: actual.usd - estimate.estimatedUsd,
+											adjustmentInputTokens: actual.inputTokens - estimate.inputTokens,
+											adjustmentOutputTokens: actual.outputTokens - estimate.expectedOutputTokens,
+										}
+									: {}),
+								actualUsd: actual.usd,
+								actualInputTokens: actual.inputTokens,
+								actualOutputTokens: actual.outputTokens,
+								cacheReadTokens: actual.cacheReadTokens,
+								cacheWriteTokens: actual.cacheWriteTokens,
+								usageSource: "upstream" as const,
+							}
+						: { usageSource: "estimate" as const }),
+				};
+				const p = writeLedgerRow(entry);
+				if (kind === "request") hold.write = p;
+			};
+			if (upstream.ok && upstream.body && contentType.includes("text/event-stream")) {
+				recordRow(null, "request");
+				const { stream, usage } = observeAnthropicStreamUsage(upstream.body);
+				void trackLedgerWrite(
+					usage.then((u) => recordRow(actualCostFromUsage(model, u, "anthropic"), "adjustment")).catch(() => {}),
+				);
+				releaseTimer();
+				return new Response(withStreamIdleTimeout(stream), { status: upstream.status, headers: responseHeaders });
+			}
+			const text = await upstream.text().catch(() => "");
+			releaseTimer();
+			let usageRaw: unknown = null;
+			try {
+				usageRaw = (JSON.parse(text) as { usage?: unknown }).usage ?? null;
+			} catch {
+				// non-JSON
+			}
+			const actual = upstream.ok ? actualCostFromUsage(model, usageRaw, "anthropic") : null;
+			if (upstream.ok) {
+				if (actual) {
+					responseHeaders.set("x-kosha-actual-cost-usd", actual.usd.toFixed(6));
+					responseHeaders.set("x-kosha-usage-source", "upstream");
+				} else {
+					responseHeaders.set("x-kosha-usage-source", "estimate");
+				}
+			}
+			recordRow(actual, "request");
+			return new Response(text, { status: upstream.status, headers: responseHeaders });
+		}
+		if (!sawCredentialedRoute && lastNoCred) {
+			return ctx.json({ error: `no credential found for '${lastNoCred.provider}'`, attemptChain }, 401);
+		}
+		if (overBudgetCap !== null && fetchAttempts === 0) {
+			return ctx.json({ error: "monthly budget exceeded", attemptChain }, 429);
+		}
+		if (skippedUnpriced && fetchAttempts === 0) {
+			return ctx.json({ error: "no priced route for this model", attemptChain }, 422);
+		}
+		return ctx.json({ error: "all upstream providers failed", attemptChain }, 502);
+	};
+
+	app.post("/proxy/v1/chat/completions", (ctx) => withHold(ctx, handleChat));
+	app.post("/proxy/v1/embeddings", (ctx) => withHold(ctx, handleEmbeddings));
+	app.post("/proxy/v1/messages", (ctx) => withHold(ctx, handleAnthropicMessages));
 }
 
 /** A request's claim on the budget while it is in flight. */

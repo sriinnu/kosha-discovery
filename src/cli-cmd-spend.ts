@@ -119,13 +119,28 @@ async function loadLedger(path: string): Promise<LedgerEntry[]> {
 			if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return;
 			throw err;
 		}
+		let corruptLines = 0;
 		for (const line of raw.split("\n")) {
 			if (!line) continue;
 			try {
-				rows.push(JSON.parse(line) as LedgerEntry);
+				const parsed: unknown = JSON.parse(line);
+				if (
+					!parsed ||
+					typeof parsed !== "object" ||
+					Array.isArray(parsed) ||
+					typeof (parsed as { ts?: unknown }).ts !== "number" ||
+					!Number.isFinite((parsed as { ts: number }).ts)
+				) {
+					corruptLines += 1;
+					continue;
+				}
+				rows.push(parsed as LedgerEntry);
 			} catch {
-				// skip corrupt line
+				corruptLines += 1;
 			}
+		}
+		if (corruptLines > 0) {
+			console.warn(`[kosha] skipped ${corruptLines} malformed ledger line(s) in ${file}`);
 		}
 	};
 	// Legacy append-only ledger.jsonl (pre-rotation) plus the monthly

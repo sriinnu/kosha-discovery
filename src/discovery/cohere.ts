@@ -64,6 +64,7 @@ export class CohereDiscoverer extends OpenAICompatibleDiscoverer {
 
 	/** Map a model ID to its primary {@link ModelMode}. */
 	private inferMode(lower: string): ModelMode {
+		if (this.looksLikeRerank(lower)) return "rerank";
 		if (this.looksLikeEmbedding(lower)) return "embedding";
 		return "chat";
 	}
@@ -71,10 +72,14 @@ export class CohereDiscoverer extends OpenAICompatibleDiscoverer {
 	/**
 	 * Infer capability flags from the lowercase model ID.
 	 *
-	 * - Embedding/rerank → `["embedding"]`
-	 * - All chat models  → `["chat", "function_calling"]` (+ `"nlu"` for command-r variants)
+	 * - Rerank models → `["rerank"]`
+	 * - Embedding models → `["embedding"]`
+	 * - All chat models → `["chat", "function_calling"]` (+ `"nlu"` for command-r variants)
 	 */
 	private inferCapabilities(lower: string): string[] {
+		if (this.looksLikeRerank(lower)) {
+			return ["rerank"];
+		}
 		if (this.looksLikeEmbedding(lower)) {
 			return ["embedding"];
 		}

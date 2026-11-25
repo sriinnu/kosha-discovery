@@ -19,7 +19,7 @@ import { randomBytes } from "crypto";
 import { appendFile, mkdir, readdir, readFile, rename, unlink, writeFile } from "fs/promises";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
-import { resolvePricing } from "./pricing-resolve.js";
+import { ONE_HOUR_TTL_SECONDS, resolvePricing, writeRateFor } from "./pricing-resolve.js";
 import { normalizeTokenUsage } from "./tally.js";
 import type { ModelCard } from "./types.js";
 
@@ -124,17 +124,45 @@ export function actualCostFromUsage(
 	if (!listed || typeof listed.inputPerMillion !== "number" || typeof listed.outputPerMillion !== "number") return null;
 	if (!(listed.inputPerMillion >= 0 && listed.outputPerMillion >= 0)) return null;
 	if (!rawUsage || typeof rawUsage !== "object") return null;
-	const usage = normalizeTokenUsage(rawUsage as Record<string, unknown>);
+	const rawObj = rawUsage as Record<string, unknown>;
+	const hasNested = (parentKey: string, childKey: string): boolean => {
+		const parent = rawObj[parentKey];
+		return (
+			!!parent &&
+			typeof parent === "object" &&
+			!Array.isArray(parent) &&
+			typeof (parent as Record<string, unknown>)[childKey] === "number"
+		);
+	};
+	const rawOpenAiInputInclusive =
+		"prompt_tokens" in rawObj || "promptTokens" in rawObj || hasNested("input_tokens_details", "cached_tokens");
+	const rawOpenAiOutputInclusive =
+		"completion_tokens" in rawObj ||
+		"completionTokens" in rawObj ||
+		hasNested("output_tokens_details", "reasoning_tokens");
+	const alreadyNormalized = "inputTokens" in rawObj || "cachedInputTokens" in rawObj || "reasoningTokens" in rawObj;
+	const usage = normalizeTokenUsage(rawObj);
 	if (!usage) return null;
 
 	const cacheRead = usage.cachedInputTokens ?? 0;
 	const cacheWrite = usage.cacheWriteTokens ?? 0;
-	const uncachedInput = shape === "openai" ? Math.max(0, usage.inputTokens - cacheRead) : usage.inputTokens;
-	// A long prompt moves the whole request into a higher band, and a dated
-	// price change applies from its day. The prompt counts cache reads and
-	// writes, as every provider with bands measures it; OpenAI's prompt_tokens
-	// already includes them.
-	const promptTokens = shape === "openai" ? usage.inputTokens : uncachedInput + cacheRead + cacheWrite;
+	const reasoning = usage.reasoningTokens ?? 0;
+	// normalizeTokenUsage already subtracts cached/write/reasoning tokens for raw OpenAI
+	// inclusive payloads. Never double-subtract an already-disjoint canonical TokenUsage;
+	// only subtract when a caller explicitly passed unnormalized camelCase inclusive counts.
+	const uncachedInput =
+		rawOpenAiInputInclusive || alreadyNormalized
+			? usage.inputTokens
+			: shape === "openai"
+				? Math.max(0, usage.inputTokens - cacheRead - cacheWrite)
+				: usage.inputTokens;
+	const billableOutput =
+		rawOpenAiOutputInclusive || alreadyNormalized
+			? usage.outputTokens
+			: shape === "openai"
+				? Math.max(0, usage.outputTokens - reasoning)
+				: usage.outputTokens;
+	const promptTokens = uncachedInput + cacheRead + cacheWrite;
 	const pricing = resolvePricing(listed, { at, promptTokens });
 	// Catalogs write 0 for a cache rate they don't know, so a $0 cache read on
 	// paid input is treated as unknown, not free. Billing it at 0 would let
@@ -144,19 +172,21 @@ export function actualCostFromUsage(
 		typeof listedRead === "number" && (listedRead > 0 || pricing.inputPerMillion === 0)
 			? listedRead
 			: pricing.inputPerMillion * (shape === "anthropic" ? 0.1 : 0.5);
-	const writeRate = pricing.cacheWritePerMillion ?? (shape === "anthropic" ? pricing.inputPerMillion * 1.25 : 0);
-	// Cache writes are billed by lifetime, and the catalog rate is the short-TTL
-	// one. Price the 1-hour share at its own rate when the entry carries it,
-	// else at Anthropic's published 2× input — the same shape as the read/write
-	// ratio fallbacks above, and only for the usage convention that reports the
-	// split in the first place.
+	const writeRate =
+		pricing.cacheWritePerMillion ??
+		(pricing.cacheWriteBilling === "as-input"
+			? pricing.inputPerMillion
+			: shape === "anthropic"
+				? pricing.inputPerMillion * 1.25
+				: 0);
 	const cacheWrite1h = Math.max(0, Math.min(usage.cacheWrite1hTokens ?? 0, cacheWrite));
 	const write1hRate =
-		pricing.cacheWrite1hPerMillion ?? (shape === "anthropic" ? pricing.inputPerMillion * 2 : writeRate);
+		writeRateFor(pricing, ONE_HOUR_TTL_SECONDS) ?? (shape === "anthropic" ? pricing.inputPerMillion * 2 : writeRate);
 
 	const usd =
 		tokensTimesRate(uncachedInput, pricing.inputPerMillion) +
-		tokensTimesRate(usage.outputTokens, pricing.outputPerMillion) +
+		tokensTimesRate(billableOutput, pricing.outputPerMillion) +
+		tokensTimesRate(reasoning, pricing.reasoningOutputPerMillion ?? pricing.outputPerMillion) +
 		tokensTimesRate(cacheRead, readRate) +
 		tokensTimesRate(cacheWrite - cacheWrite1h, writeRate) +
 		tokensTimesRate(cacheWrite1h, write1hRate);
@@ -165,7 +195,7 @@ export function actualCostFromUsage(
 	return {
 		usd,
 		inputTokens: uncachedInput,
-		outputTokens: usage.outputTokens,
+		outputTokens: billableOutput + reasoning,
 		cacheReadTokens: cacheRead,
 		cacheWriteTokens: cacheWrite,
 	};
@@ -217,7 +247,11 @@ export interface CostEstimate {
  * when the model has no usable pricing — the caller should treat that as
  * "cost unknown" rather than free.
  */
-export function estimateRequestCost(model: ModelCard, requestBody: Record<string, unknown>): CostEstimate | null {
+export function estimateRequestCost(
+	model: ModelCard,
+	requestBody: Record<string, unknown>,
+	at: Date | number = Date.now(),
+): CostEstimate | null {
 	const pricing = model.pricing;
 	if (!pricing) return null;
 	if (typeof pricing.inputPerMillion !== "number" || typeof pricing.outputPerMillion !== "number") return null;
@@ -226,17 +260,20 @@ export function estimateRequestCost(model: ModelCard, requestBody: Record<string
 	const inputTokens = approximateInputTokens(requestBody);
 	// `max_completion_tokens` is OpenAI's current spelling; `max_tokens` the legacy one.
 	const requestedOutput =
-		typeof requestBody.max_completion_tokens === "number" && requestBody.max_completion_tokens > 0
+		typeof requestBody.max_completion_tokens === "number" &&
+		Number.isFinite(requestBody.max_completion_tokens) &&
+		requestBody.max_completion_tokens > 0
 			? requestBody.max_completion_tokens
-			: typeof requestBody.max_tokens === "number" && requestBody.max_tokens > 0
+			: typeof requestBody.max_tokens === "number" && Number.isFinite(requestBody.max_tokens) && requestBody.max_tokens > 0
 				? requestBody.max_tokens
 				: undefined;
 	const expectedOutputTokens =
 		requestedOutput !== undefined ? Math.floor(requestedOutput) : DEFAULT_EXPECTED_OUTPUT_TOKENS;
 
+	const resolved = resolvePricing(pricing, { at, promptTokens: inputTokens });
 	const estimatedUsd =
-		tokensTimesRate(inputTokens, pricing.inputPerMillion) +
-		tokensTimesRate(expectedOutputTokens, pricing.outputPerMillion);
+		tokensTimesRate(inputTokens, resolved.inputPerMillion) +
+		tokensTimesRate(expectedOutputTokens, resolved.outputPerMillion);
 
 	return { estimatedUsd, inputTokens, expectedOutputTokens };
 }
@@ -276,6 +313,16 @@ function approximateInputTokens(body: Record<string, unknown>): number {
 				for (const call of toolCalls) {
 					const args = (call as { function?: { arguments?: unknown } } | null)?.function?.arguments;
 					if (typeof args === "string") chars += args.length;
+				}
+			}
+		}
+		// Anthropic-shaped requests carry top-level `system` (string or text blocks).
+		if (typeof body.system === "string") {
+			chars += body.system.length;
+		} else if (Array.isArray(body.system)) {
+			for (const part of body.system) {
+				if (part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string") {
+					chars += ((part as { text: string }).text).length;
 				}
 			}
 		}
@@ -368,20 +415,36 @@ export async function readSpendForMonth(
 			if ((err as NodeJS.ErrnoException)?.code === "ENOENT") continue;
 			throw err;
 		}
+		let corruptLines = 0;
 		for (const line of raw.split("\n")) {
 			if (!line) continue;
-			let row: LedgerEntry;
+			let parsed: unknown;
 			try {
-				row = JSON.parse(line) as LedgerEntry;
+				parsed = JSON.parse(line);
 			} catch {
-				continue; // skip corrupt lines, don't crash budget enforcement
+				corruptLines += 1;
+				continue;
 			}
+			if (
+				!parsed ||
+				typeof parsed !== "object" ||
+				Array.isArray(parsed) ||
+				typeof (parsed as { ts?: unknown }).ts !== "number" ||
+				!Number.isFinite((parsed as { ts: number }).ts)
+			) {
+				corruptLines += 1;
+				continue;
+			}
+			const row = parsed as LedgerEntry;
 			if (row.ts < cutoffStart || row.ts >= cutoffEnd) continue;
 			if (tenant && row.tenant !== tenant) continue;
 			total += ledgerRowUsd(row);
 		}
+		if (corruptLines > 0) {
+			console.warn(`[kosha] skipped ${corruptLines} malformed ledger line(s) in ${file}`);
+		}
 	}
-	return total;
+	return Math.max(0, total);
 }
 
 /** Strip control characters and bound length on a ledger string field. The
@@ -496,16 +559,9 @@ export async function trimLedgerPartitions(
 	return removed;
 }
 
-/**
- * Append one ledger entry atomically. The entry is written to the monthly
- * partition for its own `ts` (`ledger-YYYY-MM.jsonl`), keeping each file
- * bounded to a single month so budget reads don't scan the full history.
- *
- * Writes are append-only so concurrent processes don't clobber each other.
- * A best-effort atomic create-and-rename is used if the first append hits
- * ENOENT, so a fresh install comes up cleanly. After the write we run a
- * best-effort retention trim so old partitions age out without a cron job.
- */
+const TRIM_INTERVAL_MS = 60 * 60 * 1000;
+const lastTrimByTarget = new Map<string, number>();
+
 export async function appendLedgerEntry(entry: LedgerEntry, ledgerPath = currentLedgerPath()): Promise<void> {
 	await mkdir(dirname(ledgerPath), { recursive: true, mode: 0o700 });
 	const partPath = partitionPathFor(ledgerPath, entry.ts);
@@ -522,12 +578,17 @@ export async function appendLedgerEntry(entry: LedgerEntry, ledgerPath = current
 		await writeFile(tmp, line, { encoding: "utf-8", mode: 0o600 });
 		await rename(tmp, partPath);
 	}
-	// Opportunistic, best-effort retention sweep. Housekeeping must never
-	// break the append — the ledger is observability.
-	try {
-		await trimLedgerPartitions(ledgerPath, entry.ts);
-	} catch {
-		// swallowed
+	// Opportunistic, best-effort retention sweep at most once per hour per ledger + retention config.
+	const now = Date.now();
+	const trimKey = `${ledgerPath}:${process.env.KOSHA_LEDGER_RETENTION_MONTHS ?? ""}`;
+	const lastTrimAt = lastTrimByTarget.get(trimKey) ?? 0;
+	if (now - lastTrimAt >= TRIM_INTERVAL_MS) {
+		lastTrimByTarget.set(trimKey, now);
+		try {
+			await trimLedgerPartitions(ledgerPath, entry.ts);
+		} catch {
+			// swallowed
+		}
 	}
 }
 
