@@ -78,6 +78,9 @@ describe("spec-driven OpenAI-compatible providers", () => {
 		globalThis.fetch = (async (input: string | URL | Request) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
 			calls.push(url);
+			if (!url.startsWith("https://api.novita.ai/")) {
+				return new Response(JSON.stringify({ error: "not mocked" }), { status: 404 });
+			}
 			if (url.endsWith("/openai/models")) {
 				return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
 			}
@@ -87,7 +90,11 @@ describe("spec-driven OpenAI-compatible providers", () => {
 		try {
 			const cards = await getDiscoverer("novita")!.discover(validCredential);
 			expect(cards).toHaveLength(1);
-			expect(calls.at(-1)).toBe("https://api.novita.ai/openai/v1/models");
+			const apiCalls = calls.filter((url) => url.startsWith("https://api.novita.ai/"));
+			expect(apiCalls).toEqual([
+				"https://api.novita.ai/openai/models",
+				"https://api.novita.ai/openai/v1/models",
+			]);
 		} finally {
 			globalThis.fetch = original;
 		}

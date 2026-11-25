@@ -119,7 +119,7 @@ export function inferToolDialect(
 		return "none";
 	}
 	if (origin === "alibaba" || origin === "qwen" || /\bqwen/.test(id)) {
-		if (/qwen-?[23]|qwen2\.5|qwen3|qwen-(max|plus|turbo|flash|coder)/.test(id)) return "openai-tools";
+		if (/qwen-?[2-9]|qwen2\.5|qwen-(max|plus|turbo|flash|coder)/.test(id)) return "openai-tools";
 		return "none";
 	}
 
@@ -224,7 +224,7 @@ export function inferStructuredOutputModes(
 		return [];
 	}
 	if (origin === "alibaba" || origin === "qwen" || /\bqwen/.test(id)) {
-		if (/qwen-?[23]|qwen2\.5|qwen3|qwen-(max|plus|turbo|flash|coder)/.test(id)) return ["json-mode"];
+		if (/qwen-?[2-9]|qwen2\.5|qwen-(max|plus|turbo|flash|coder)/.test(id)) return ["json-mode"];
 		return [];
 	}
 

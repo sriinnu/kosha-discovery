@@ -80,28 +80,55 @@ const PROVIDER_SLUG_ALIASES: Record<string, readonly string[]> = {
  * (and the existing pricing enricher) can distinguish public-catalog
  * data from live-API data.
  */
+const groupedCatalogCache = new WeakMap<
+	Record<string, LiteLLMModelEntry>,
+	Map<string, Array<[string, LiteLLMModelEntry]>>
+>();
+
+function getCatalogByLiteLLMProvider(
+	catalog: Record<string, LiteLLMModelEntry>,
+): Map<string, Array<[string, LiteLLMModelEntry]>> {
+	const cached = groupedCatalogCache.get(catalog);
+	if (cached) return cached;
+	const grouped = new Map<string, Array<[string, LiteLLMModelEntry]>>();
+	for (const [key, entry] of Object.entries(catalog)) {
+		if (!entry || typeof entry !== "object") continue;
+		const litellmProvider = entry.litellm_provider;
+		if (typeof litellmProvider !== "string") continue;
+		let bucket = grouped.get(litellmProvider);
+		if (!bucket) {
+			bucket = [];
+			grouped.set(litellmProvider, bucket);
+		}
+		bucket.push([key, entry]);
+	}
+	groupedCatalogCache.set(catalog, grouped);
+	return grouped;
+}
+
 export async function getLiteLLMSeed(providerId: string): Promise<ModelCard[]> {
 	const slugs = PROVIDER_SLUG_ALIASES[providerId];
 	if (!slugs || slugs.length === 0) return [];
 
 	const catalog = await loadLiteLLMCatalog();
+	const grouped = getCatalogByLiteLLMProvider(catalog);
 	const seeds: ModelCard[] = [];
 	const seenIds = new Set<string>();
 
-	for (const [key, entry] of Object.entries(catalog)) {
+	for (const slug of slugs) {
+		const entries = grouped.get(slug);
+		if (!entries) continue;
+		for (const [key, entry] of entries) {
+			if (seeds.length >= MAX_MODELS_PER_SEED) break;
+
+			const id = canonicaliseModelId(key, providerId);
+			if (!id || seenIds.has(id)) continue;
+			seenIds.add(id);
+
+			const card = buildSeedCard(id, providerId, entry);
+			if (card) seeds.push(card);
+		}
 		if (seeds.length >= MAX_MODELS_PER_SEED) break;
-		if (!entry || typeof entry !== "object") continue;
-
-		const litellmProvider = entry.litellm_provider;
-		if (typeof litellmProvider !== "string") continue;
-		if (!slugs.includes(litellmProvider)) continue;
-
-		const id = canonicaliseModelId(key, providerId);
-		if (!id || seenIds.has(id)) continue;
-		seenIds.add(id);
-
-		const card = buildSeedCard(id, providerId, entry);
-		if (card) seeds.push(card);
 	}
 
 	return seeds;
@@ -229,23 +256,38 @@ function inferCapabilities(entry: LiteLLMModelEntry, mode: ModelMode): string[] 
 }
 
 /**
- * Convert LiteLLM per-token costs to per-million pricing.
- * Returns undefined unless both base input and output pricing are present.
+ * Convert LiteLLM costs into kosha's {@link ModelPricing} format.
+ * Returns undefined unless both base token rates or multimodal unit rates are present.
  */
-function extractPricing(entry: LiteLLMModelEntry): ModelPricing | undefined {
+export function extractLiteLLMPricing(entry: LiteLLMModelEntry): ModelPricing | undefined {
+	const reasoningInputCost = firstFinite(entry.input_cost_per_reasoning_token, entry.reasoning_input_cost_per_token);
+	const reasoningOutputCost = firstFinite(entry.output_cost_per_reasoning_token, entry.reasoning_output_cost_per_token);
+
 	const baseInput = isFiniteNumber(entry.input_cost_per_token) ? entry.input_cost_per_token : undefined;
 	const baseOutput = isFiniteNumber(entry.output_cost_per_token) ? entry.output_cost_per_token : undefined;
-	const reasoningInput = firstFinite(entry.input_cost_per_reasoning_token, entry.reasoning_input_cost_per_token);
-	const reasoningOutput = firstFinite(entry.output_cost_per_reasoning_token, entry.reasoning_output_cost_per_token);
+	const hasBaseTokenPricing = baseInput !== undefined && baseOutput !== undefined;
 
-	if (baseInput === undefined || baseOutput === undefined) return undefined;
+	const hasNonTokenPricing =
+		isFiniteNumber(entry.input_cost_per_image) ||
+		isFiniteNumber(entry.output_cost_per_image) ||
+		isFiniteNumber(entry.input_cost_per_audio_token) ||
+		isFiniteNumber(entry.output_cost_per_audio_token) ||
+		isFiniteNumber(entry.input_cost_per_audio_per_second) ||
+		isFiniteNumber(entry.output_cost_per_audio_per_second) ||
+		isFiniteNumber(entry.input_cost_per_video_per_second) ||
+		isFiniteNumber(entry.output_cost_per_video_per_second) ||
+		isFiniteNumber(entry.input_cost_per_video_token) ||
+		isFiniteNumber(entry.input_cost_per_character) ||
+		isFiniteNumber(entry.output_cost_per_character);
+
+	if (!hasBaseTokenPricing && !hasNonTokenPricing) return undefined;
 
 	const pricing: ModelPricing = {
-		inputPerMillion: baseInput * PER_MILLION,
-		outputPerMillion: baseOutput * PER_MILLION,
+		inputPerMillion: (baseInput ?? 0) * PER_MILLION,
+		outputPerMillion: (baseOutput ?? 0) * PER_MILLION,
 	};
-	if (reasoningInput !== undefined) pricing.reasoningInputPerMillion = reasoningInput * PER_MILLION;
-	if (reasoningOutput !== undefined) pricing.reasoningOutputPerMillion = reasoningOutput * PER_MILLION;
+	if (reasoningInputCost !== undefined) pricing.reasoningInputPerMillion = reasoningInputCost * PER_MILLION;
+	if (reasoningOutputCost !== undefined) pricing.reasoningOutputPerMillion = reasoningOutputCost * PER_MILLION;
 	if (isFiniteNumber(entry.cache_read_input_token_cost)) {
 		pricing.cacheReadPerMillion = entry.cache_read_input_token_cost * PER_MILLION;
 	}
@@ -258,7 +300,57 @@ function extractPricing(entry: LiteLLMModelEntry): ModelPricing | undefined {
 	if (isFiniteNumber(entry.output_cost_per_token_batches)) {
 		pricing.batchOutputPerMillion = entry.output_cost_per_token_batches * PER_MILLION;
 	}
+	if (isFiniteNumber(entry.input_cost_per_image)) pricing.imageInputPerImage = entry.input_cost_per_image;
+	if (isFiniteNumber(entry.output_cost_per_image)) pricing.imageOutputPerImage = entry.output_cost_per_image;
+	if (isFiniteNumber(entry.input_cost_per_audio_token)) {
+		pricing.audioInputPerMillion = entry.input_cost_per_audio_token * PER_MILLION;
+	}
+	if (isFiniteNumber(entry.output_cost_per_audio_token)) {
+		pricing.audioOutputPerMillion = entry.output_cost_per_audio_token * PER_MILLION;
+	}
+	if (isFiniteNumber(entry.input_cost_per_audio_per_second)) {
+		pricing.audioInputPerSecond = entry.input_cost_per_audio_per_second;
+	}
+	if (isFiniteNumber(entry.output_cost_per_audio_per_second)) {
+		pricing.audioOutputPerSecond = entry.output_cost_per_audio_per_second;
+	}
+	if (isFiniteNumber(entry.input_cost_per_video_per_second)) {
+		pricing.videoInputPerSecond = entry.input_cost_per_video_per_second;
+	}
+	if (isFiniteNumber(entry.output_cost_per_video_per_second)) {
+		pricing.videoOutputPerSecond = entry.output_cost_per_video_per_second;
+	}
+	if (isFiniteNumber(entry.input_cost_per_video_token)) {
+		pricing.videoInputPerMillion = entry.input_cost_per_video_token * PER_MILLION;
+	}
+	if (isFiniteNumber(entry.input_cost_per_character)) {
+		pricing.inputPerMillionCharacters = entry.input_cost_per_character * PER_MILLION;
+	}
+	if (isFiniteNumber(entry.output_cost_per_character)) {
+		pricing.outputPerMillionCharacters = entry.output_cost_per_character * PER_MILLION;
+	}
+
+	const tieredIn = firstFinite(entry.input_cost_per_token_above_128k_tokens, entry.input_cost_per_token_above_200k_tokens);
+	const tieredOut = firstFinite(entry.output_cost_per_token_above_128k_tokens, entry.output_cost_per_token_above_200k_tokens);
+	if (tieredIn !== undefined) pricing.longContextInputPerMillion = tieredIn * PER_MILLION;
+	if (tieredOut !== undefined) pricing.longContextOutputPerMillion = tieredOut * PER_MILLION;
+	if (
+		isFiniteNumber(entry.input_cost_per_token_above_128k_tokens) ||
+		isFiniteNumber(entry.output_cost_per_token_above_128k_tokens)
+	) {
+		pricing.longContextThresholdTokens = 128_000;
+	} else if (
+		isFiniteNumber(entry.input_cost_per_token_above_200k_tokens) ||
+		isFiniteNumber(entry.output_cost_per_token_above_200k_tokens)
+	) {
+		pricing.longContextThresholdTokens = 200_000;
+	}
+
 	return pricing;
+}
+
+function extractPricing(entry: LiteLLMModelEntry): ModelPricing | undefined {
+	return extractLiteLLMPricing(entry);
 }
 
 function firstFinite(...values: Array<number | undefined>): number | undefined {

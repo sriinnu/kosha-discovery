@@ -26,7 +26,9 @@ const PREFIX_TO_ORIGIN: Record<string, string> = {
 	deepseek: "deepseek",
 	"deepseek-ai": "deepseek",
 	"zai-org": "zai",
+	"z-ai": "zai",
 	moonshotai: "moonshot",
+	minimax: "minimax",
 	qwen: "qwen",
 	"01-ai": "01-ai",
 	"x-ai": "xai",
@@ -51,6 +53,9 @@ const PATTERN_TO_ORIGIN: Array<[RegExp, string]> = [
 	[/^mistral|^codestral|^pixtral/i, "mistral"],
 	[/^command-/i, "cohere"],
 	[/^deepseek/i, "deepseek"],
+	[/^kimi-/i, "moonshot"],
+	[/^glm-/i, "zai"],
+	[/^minimax-/i, "minimax"],
 	[/^qwen/i, "qwen"],
 ];
 

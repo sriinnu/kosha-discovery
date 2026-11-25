@@ -19,7 +19,10 @@ export type TrustedCapability =
 	| "function_calling"
 	| "embeddings"
 	| "vision"
+	| "audio"
+	| "image_generation"
 	| "video_generation"
+	| "moderation"
 	| "rerank"
 	| "judgment"
 	| "structured_output"
@@ -315,7 +318,19 @@ export function trustedCapabilitiesForModel(model: ModelCard, descriptor: Provid
 		caps.add("embeddings");
 	if (rawCaps.includes("function_calling")) caps.add("function_calling");
 	if (rawCaps.includes("vision")) caps.add("vision");
+	if (
+		model.mode === "audio" ||
+		rawCaps.includes("audio") ||
+		rawCaps.includes("audio_input") ||
+		rawCaps.includes("audio_output") ||
+		rawCaps.includes("speech_to_text") ||
+		rawCaps.includes("text_to_speech")
+	) {
+		caps.add("audio");
+	}
+	if (model.mode === "image" || rawCaps.includes("image_generation")) caps.add("image_generation");
 	if (model.mode === "video" || rawCaps.includes("video_generation")) caps.add("video_generation");
+	if (model.mode === "moderation" || rawCaps.includes("moderation")) caps.add("moderation");
 	if (rawCaps.includes("rerank") || lowerId.includes("rerank")) caps.add("rerank");
 	// System One / judgment models answer with typed values, not generated text,
 	// so they never get `chat` or `streaming` — `judgment` is the routable tag.

@@ -6,8 +6,8 @@ Only the latest minor release line on npm receives security fixes. Older lines m
 
 | Version | Supported |
 | ------- | --------- |
-| 1.16.x  | Yes       |
-| < 1.16  | No        |
+| 1.17.x  | Yes       |
+| < 1.17  | No        |
 
 ## Reporting a Vulnerability
 

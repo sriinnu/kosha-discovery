@@ -13,6 +13,24 @@ is tracked separately via `DISCOVERY_SCHEMA_VERSION` (v1 as of 0.8.0).
 
 ## [Unreleased]
 
+## [1.18.0] — 2026-11-25
+
+### Added
+
+- **Direct provider pricing extractor & fallback enricher** (`provider-live`, `"provider-api"` witness): extracts inline model pricing directly from provider responses (`Together`, `OpenRouter`, `Vercel`) and falls back in `community` mode only when public catalogs lack pricing or a provider witness.
+- **Registry secondary indexes (`src/registry-index.ts`)**: $O(1)$ lookups with coherence validation on provider model arrays, pre-indexed `CITED_RELEASES`, and `WeakMap`-grouped LiteLLM seeds; fixes `"provider/alias"` resolution (e.g. `anthropic/opus`).
+- **Additional proxy endpoints & multi-capability selectors**: added `POST /proxy/v1/embeddings` and native `POST /proxy/v1/messages` (with SSRF allowlist, atomic budget reservation lock, `CircuitBreaker` failover on `5xx`/`429`/non-final `401`/`403`, and SSE usage reconciliation), plus multi-capability filters (`kosha:cheapest[vision,tool_use,128k]`) and Anthropic `cache_control` / `thinking` preservation in `wire-anthropic.ts`.
+- **Expanded MCP surface**: added 5 tools (`kosha_compare_models`, `kosha_estimate_cost`, `kosha_pricing_anomalies`, `kosha_list_providers`, `kosha_refresh_registry`) and MCP resources (`kosha://snapshot`, `kosha://providers`, `kosha://anomalies`).
+- **Anomaly & CLI upgrades**: added `GET /api/pricing-anomalies`, surfaced anomalies in `kosha doctor`, unified sub-cent `formatPrice`, extended `ModelPricing` with `currency` and `serviceTiers`, added CLI `--flag=value` / `-h` / `-v` / `--` support, and added `package.json` subpath `exports` (`./registry`, `./types`, `./cost`, `./proxy`, `./security`, `./pricing-resolve`, `./discovery-contract`).
+
+### Fixed
+
+- Preserved unscoped providers, `credential_stamps`, manifest holds, and `providers_all` cache TTLs across scoped `refresh(provider)` runs; invalidated dropped per-provider cache entries.
+- Eliminated OpenAI Responses API double-billing of `input_tokens_details.cached_tokens` and `output_tokens_details.reasoning_tokens` in `tally.ts` and `cost.ts`, and stopped LiteLLM reseller rates from polluting `originPricing`.
+- Stripped stale `"free_tier"` tags when quarantine holds or curated price layers restore non-zero pricing.
+- Hardened daemon security & freshness: fail-fast on non-loopback binds without `KOSHA_PROXY_TOKEN` (unless `KOSHA_ALLOW_UNAUTHENTICATED=1`), kept `Host` validation active unless `KOSHA_ALLOWED_HOSTS=*`, 5-minute in-memory catalog TTLs, optional `KOSHA_AUTO_REFRESH_MS` background refresh, `drainPendingLedgerWrites()` on shutdown, strict MCP JSON-RPC validation (`-32600`/`-32602`), and secret redaction across health snapshots and doctor output.
+- Upgraded `rerank` mode classification (`cohere`, `nvidia`, `litellm`), OpenAI (`transcribe`, `sora`, `moderation`, `gpt-5`/`gpt-6`, `o3`/`o4`), Google (`imagen`, `veo`, `lyria`), OpenRouter, and Cohere OpenAI-compatible transport alignment.
+
 ## [1.17.1] — 2026-11-19
 
 ### Documentation

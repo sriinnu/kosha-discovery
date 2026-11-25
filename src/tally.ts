@@ -12,10 +12,19 @@
  * @module
  */
 
-import { resolvePricing } from "./pricing-resolve.js";
+import { resolvePricing, writeRateFor } from "./pricing-resolve.js";
 import type { ModelPricing } from "./types.js";
 
-/** Canonical, provider-agnostic token usage shape. */
+/**
+ * Canonical, provider-agnostic token usage shape.
+ *
+ * All token buckets (`inputTokens`, `outputTokens`, `cachedInputTokens`,
+ * `cacheWriteTokens`, `reasoningTokens`) are **disjoint**: `inputTokens` holds
+ * uncached input only and `outputTokens` holds non-reasoning output only, so
+ * their sum equals `totalTokens` across both OpenAI and Anthropic payloads.
+ * (`cacheWrite1hTokens` is the only subset field — it splits `cacheWriteTokens`
+ * by TTL.)
+ */
 export interface TokenUsage {
 	inputTokens: number;
 	outputTokens: number;
@@ -49,8 +58,10 @@ const FIELD_ALIASES: Record<keyof TokenUsage, readonly string[]> = {
 		"cachedTokens",
 		"cache_read_input_tokens",
 		"cacheReadInputTokens",
-		// OpenAI nests the cache hit count under prompt_tokens_details.
+		// OpenAI Chat Completions & Responses API + DeepSeek native cache hit counters.
 		"prompt_tokens_details.cached_tokens",
+		"input_tokens_details.cached_tokens",
+		"prompt_cache_hit_tokens",
 	],
 	cacheWriteTokens: ["cacheWriteTokens", "cache_creation_input_tokens", "cacheCreationInputTokens"],
 	// Anthropic nests the TTL split under cache_creation alongside the total.
@@ -59,7 +70,12 @@ const FIELD_ALIASES: Record<keyof TokenUsage, readonly string[]> = {
 		"cache_creation.ephemeral_1h_input_tokens",
 		"cacheCreation.ephemeral1hInputTokens",
 	],
-	reasoningTokens: ["reasoningTokens", "reasoning_tokens", "completion_tokens_details.reasoning_tokens"],
+	reasoningTokens: [
+		"reasoningTokens",
+		"reasoning_tokens",
+		"completion_tokens_details.reasoning_tokens",
+		"output_tokens_details.reasoning_tokens",
+	],
 };
 
 function readField(raw: Record<string, unknown>, aliases: readonly string[]): number | undefined {
@@ -89,15 +105,41 @@ function readPath(raw: Record<string, unknown>, path: string[]): unknown {
  * Returns `null` when neither an input nor output token count can be found —
  * that's "not a usage object," not "zero usage."
  */
+function hasNestedField(raw: Record<string, unknown>, parentKey: string, childKey: string): boolean {
+	const parent = raw[parentKey];
+	return (
+		!!parent &&
+		typeof parent === "object" &&
+		!Array.isArray(parent) &&
+		typeof (parent as Record<string, unknown>)[childKey] === "number"
+	);
+}
+
 export function normalizeTokenUsage(raw: Record<string, unknown> | null | undefined): NormalizedTokenUsage | null {
 	if (!raw || typeof raw !== "object") return null;
 
-	const inputTokens = readField(raw, FIELD_ALIASES.inputTokens) ?? 0;
-	const outputTokens = readField(raw, FIELD_ALIASES.outputTokens) ?? 0;
+	const rawInput = readField(raw, FIELD_ALIASES.inputTokens) ?? 0;
+	const rawOutput = readField(raw, FIELD_ALIASES.outputTokens) ?? 0;
 	const cachedInputTokens = readField(raw, FIELD_ALIASES.cachedInputTokens);
 	const cacheWriteTokens = readField(raw, FIELD_ALIASES.cacheWriteTokens);
 	const cacheWrite1hTokens = readField(raw, FIELD_ALIASES.cacheWrite1hTokens);
 	const reasoningTokens = readField(raw, FIELD_ALIASES.reasoningTokens);
+
+	// OpenAI Chat Completions reports `prompt_tokens` inclusive of `cached_tokens`
+	// and `completion_tokens` inclusive of `reasoning_tokens`. OpenAI Responses API
+	// similarly reports `input_tokens` inclusive of `input_tokens_details.cached_tokens`
+	// and `output_tokens` inclusive of `output_tokens_details.reasoning_tokens`.
+	// Subtract subsets so canonical TokenUsage buckets remain disjoint.
+	const openAiInputInclusive =
+		"prompt_tokens" in raw || "promptTokens" in raw || hasNestedField(raw, "input_tokens_details", "cached_tokens");
+	const openAiOutputInclusive =
+		"completion_tokens" in raw ||
+		"completionTokens" in raw ||
+		hasNestedField(raw, "output_tokens_details", "reasoning_tokens");
+	const inputTokens = openAiInputInclusive
+		? Math.max(0, rawInput - (cachedInputTokens ?? 0) - (cacheWriteTokens ?? 0))
+		: rawInput;
+	const outputTokens = openAiOutputInclusive ? Math.max(0, rawOutput - (reasoningTokens ?? 0)) : rawOutput;
 
 	const hasAnyUsage =
 		inputTokens > 0 ||
@@ -165,9 +207,12 @@ export function estimateUsdCost(
 	// number here — estimateUsdCost has no usage shape to infer a ratio from.
 	const cacheWriteTotal = usage.cacheWriteTokens ?? 0;
 	const cacheWrite1h = Math.max(0, Math.min(usage.cacheWrite1hTokens ?? 0, cacheWriteTotal));
+	const shortWriteRate =
+		pricing.cacheWritePerMillion ??
+		(pricing.cacheWriteBilling === "as-input" ? pricing.inputPerMillion : undefined);
+	const hourWriteRate = writeRateFor(pricing, 3600) ?? shortWriteRate;
 	const cacheWriteUsd = cacheWriteTotal
-		? tokensTimesRate(cacheWriteTotal - cacheWrite1h, pricing.cacheWritePerMillion) +
-			tokensTimesRate(cacheWrite1h, pricing.cacheWrite1hPerMillion ?? pricing.cacheWritePerMillion)
+		? tokensTimesRate(cacheWriteTotal - cacheWrite1h, shortWriteRate) + tokensTimesRate(cacheWrite1h, hourWriteRate)
 		: 0;
 	const reasoningUsd = usage.reasoningTokens
 		? tokensTimesRate(usage.reasoningTokens, pricing.reasoningOutputPerMillion ?? pricing.outputPerMillion)
@@ -213,6 +258,7 @@ export interface TallyResult extends UsdCostBreakdown {
 export function tallyCosts(
 	calls: readonly TallyCall[],
 	resolvePricing: (modelId: string) => ModelPricing | null | undefined,
+	at: Date | number = Date.now(),
 ): TallyResult {
 	const byModel = new Map<string, TallyModelSubtotal>();
 	const unpriced = new Set<string>();
@@ -224,7 +270,7 @@ export function tallyCosts(
 			continue;
 		}
 
-		const cost = estimateUsdCost(call.usage, pricing);
+		const cost = estimateUsdCost(call.usage, pricing, at);
 		const existing = byModel.get(call.modelId);
 		if (!existing) {
 			byModel.set(call.modelId, {
@@ -266,6 +312,7 @@ function mergeUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
 		outputTokens: a.outputTokens + b.outputTokens,
 		cachedInputTokens: (a.cachedInputTokens ?? 0) + (b.cachedInputTokens ?? 0) || undefined,
 		cacheWriteTokens: (a.cacheWriteTokens ?? 0) + (b.cacheWriteTokens ?? 0) || undefined,
+		cacheWrite1hTokens: (a.cacheWrite1hTokens ?? 0) + (b.cacheWrite1hTokens ?? 0) || undefined,
 		reasoningTokens: (a.reasoningTokens ?? 0) + (b.reasoningTokens ?? 0) || undefined,
 	};
 }

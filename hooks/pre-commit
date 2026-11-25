@@ -76,8 +76,12 @@ done
 # Scan the staged diff (not working tree) for leaked secrets.
 CREDENTIAL_PATTERNS=(
     # Provider API keys
-    'sk-[A-Za-z0-9]{20,}'                        # OpenAI
-    'sk-proj-[A-Za-z0-9]{20,}'                    # OpenAI project
+    'sk-[A-Za-z0-9_-]{20,}'                      # OpenAI / Anthropic / DeepSeek / Moonshot
+    'sk-proj-[A-Za-z0-9_-]{20,}'                 # OpenAI project
+    'gsk_[A-Za-z0-9_-]{20,}'                     # Groq
+    'xai-[A-Za-z0-9_-]{20,}'                     # xAI
+    'nvapi-[A-Za-z0-9_-]{20,}'                   # NVIDIA NIM
+    'pplx-[A-Za-z0-9_-]{20,}'                    # Perplexity
     'AKIA[A-Z0-9]{16}'                            # AWS access key ID
     'ghp_[A-Za-z0-9]{36,}'                        # GitHub PAT
     'gho_[A-Za-z0-9]{36,}'                        # GitHub OAuth
@@ -138,7 +142,10 @@ CONFIG_FILES=$(echo "$STAGED_FILES" \
     || true)
 
 if [ -n "$CONFIG_FILES" ]; then
-    echo "$CONFIG_FILES" | while IFS= read -r f; do
+    BLOCK_FLAG=$(mktemp "${TMPDIR:-/tmp}/kosha-precommit-XXXXXX")
+    trap 'rm -f "$BLOCK_FLAG"' EXIT
+    rm -f "$BLOCK_FLAG"
+    while IFS= read -r f; do
         [ -z "$f" ] && continue
         # Get staged content (not working tree) and look for base64 blobs (40+ chars,
         # mixed case to filter URL paths and snake_case identifiers).
@@ -161,13 +168,11 @@ if [ -n "$CONFIG_FILES" ]; then
                 truncated=$(echo "$line" | cut -c1-120)
                 echo -e "  ${RED}✗${NC} $truncated"
             done
-            # Signal to parent via temp file (subshell cannot set parent vars)
-            touch "${TMPDIR:-/tmp}/.kosha-precommit-blocked"
+            : > "$BLOCK_FLAG"
         fi
-    done
-    # Pick up signal from subshell
-    if [ -f "${TMPDIR:-/tmp}/.kosha-precommit-blocked" ]; then
-        rm -f "${TMPDIR:-/tmp}/.kosha-precommit-blocked"
+    done <<< "$CONFIG_FILES"
+    if [ -f "$BLOCK_FLAG" ]; then
+        rm -f "$BLOCK_FLAG"
         BLOCKED=1
     fi
 fi

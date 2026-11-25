@@ -13,8 +13,11 @@
  * @module
  */
 
+import { getProviderDescriptor } from "../provider-catalog.js";
 import type { CredentialResult, ModelCard, ModelMode } from "../types.js";
 import { BaseDiscoverer } from "./base.js";
+import { extractDirectProviderPricing } from "./direct-pricing-parse.js";
+import { evidenceFrom } from "./price-evidence.js";
 import { getPublicSeed } from "./public-seed.js";
 
 /** Shape of a single model from any OpenAI-compatible `/v1/models` response. */
@@ -33,6 +36,10 @@ export interface OpenAICompatibleModel {
 	max_input_tokens?: number;
 	/** Some embedding providers expose vector dimensionality. */
 	output_vector_size?: number;
+	/** Direct inline pricing exposed by some providers (e.g. Together AI). */
+	pricing?: Record<string, unknown>;
+	/** Alternate nested spec carrying inline pricing on compatible hosts. */
+	model_spec?: Record<string, unknown>;
 }
 
 /** Standard response shape from `GET /v1/models`. */
@@ -134,7 +141,11 @@ export abstract class OpenAICompatibleDiscoverer extends BaseDiscoverer {
 			throw firstError instanceof Error ? firstError : new Error(`${this.providerName} API request failed`);
 		}
 
-		return response.data.filter((model) => this.isRelevantModel(model)).map((model) => this.toCard(model));
+		const cards = response.data.filter((model) => this.isRelevantModel(model)).map((model) => this.toCard(model));
+		if (getProviderDescriptor(this.providerId)?.subscriptionPlan) {
+			return cards;
+		}
+		return this.mergeWithPublicSeed(cards);
 	}
 
 	/**
@@ -203,7 +214,12 @@ export abstract class OpenAICompatibleDiscoverer extends BaseDiscoverer {
 
 	/** Check if a lowercase model ID looks like an embedding model. */
 	protected looksLikeEmbedding(lower: string): boolean {
-		return lower.includes("embed") || lower.includes("rerank");
+		return lower.includes("embed");
+	}
+
+	/** Check if a lowercase model ID looks like a rerank model. */
+	protected looksLikeRerank(lower: string): boolean {
+		return lower.includes("rerank");
 	}
 
 	/** Check if a lowercase model ID looks like a vision model. */
@@ -248,7 +264,13 @@ export abstract class OpenAICompatibleDiscoverer extends BaseDiscoverer {
 	/** Build a ModelCard from a raw API model + classification. */
 	private toCard(model: OpenAICompatibleModel): ModelCard {
 		const classification = this.classifyModel(model);
-		return this.makeCard({
+		const isPlan = getProviderDescriptor(this.providerId)?.subscriptionPlan === true;
+		const directPricing = isPlan
+			? undefined
+			: extractDirectProviderPricing(model as unknown as Record<string, unknown>, {
+					perMillionInputOutput: this.providerId === "together",
+				});
+		const card = this.makeCard({
 			id: model.id,
 			name: model.id,
 			provider: this.providerId,
@@ -259,7 +281,13 @@ export abstract class OpenAICompatibleDiscoverer extends BaseDiscoverer {
 			maxOutputTokens: classification.maxOutputTokens ?? model.max_output_tokens ?? 0,
 			maxInputTokens: classification.maxInputTokens ?? model.max_input_tokens,
 			dimensions: classification.dimensions ?? model.output_vector_size,
+			...(directPricing ? { pricing: directPricing, pricingSource: "provider-live" as const } : {}),
 		});
+		if (directPricing) {
+			const witness = evidenceFrom(card, "provider-api");
+			if (witness) card.priceEvidence = [witness];
+		}
+		return card;
 	}
 }
 

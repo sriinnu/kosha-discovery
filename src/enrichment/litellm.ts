@@ -8,18 +8,13 @@
  */
 
 import { applyFreeTierFlag, isPlanBilled } from "../discovery/free-tier.js";
+import { extractLiteLLMPricing } from "../discovery/litellm-seed.js";
 import { inferParallelToolCalls, inferStructuredOutputModes, inferToolDialect } from "../model-features.js";
 import { normalizeModelId } from "../normalize.js";
+import { normalizeProviderId } from "../provider-catalog.js";
 import { inferTokenizerFamily } from "../tokenizer-family.js";
 import type { Enricher, ModelCard, ModelMode, ModelPricing, ModelStatus } from "../types.js";
 import { type LiteLLMModelEntry, loadLiteLLMCatalog } from "./litellm-catalog.js";
-
-/**
- * Multiplier to convert litellm's per-token costs into our standard
- * per-million-token pricing.  litellm stores costs as cost-per-single-token,
- * so we multiply by 1 000 000 to get the per-million figure.
- */
-const PER_MILLION = 1_000_000;
 
 /**
  * Enriches ModelCard data with pricing, context-window sizes, and capability
@@ -69,41 +64,51 @@ export class LiteLLMEnricher implements Enricher {
 			if (!enriched.pricing) {
 				enriched.pricing = entryPricing;
 			} else {
-				if (enriched.pricing.cacheReadPerMillion === undefined && entryPricing.cacheReadPerMillion !== undefined) {
-					enriched.pricing = {
-						...enriched.pricing,
-						cacheReadPerMillion: entryPricing.cacheReadPerMillion,
-					};
+				const mergedPricing = { ...enriched.pricing };
+				for (const key of [
+					"reasoningInputPerMillion",
+					"reasoningOutputPerMillion",
+					"cacheReadPerMillion",
+					"cacheWritePerMillion",
+					"cacheWrite1hPerMillion",
+					"cacheStoragePerMillionPerHour",
+					"batchInputPerMillion",
+					"batchOutputPerMillion",
+					"longContextInputPerMillion",
+					"longContextOutputPerMillion",
+					"longContextThresholdTokens",
+					"imageInputPerImage",
+					"imageOutputPerImage",
+					"audioInputPerMillion",
+					"audioOutputPerMillion",
+					"audioInputPerSecond",
+					"audioOutputPerSecond",
+					"videoInputPerSecond",
+					"videoOutputPerSecond",
+					"videoInputPerMillion",
+					"inputPerMillionCharacters",
+					"outputPerMillionCharacters",
+				] as const) {
+					if (mergedPricing[key] === undefined && entryPricing[key] !== undefined) {
+						(mergedPricing as Record<string, unknown>)[key] = entryPricing[key];
+					}
 				}
-				if (enriched.pricing.cacheWritePerMillion === undefined && entryPricing.cacheWritePerMillion !== undefined) {
-					enriched.pricing = {
-						...enriched.pricing,
-						cacheWritePerMillion: entryPricing.cacheWritePerMillion,
-					};
-				}
-				if (enriched.pricing.batchInputPerMillion === undefined && entryPricing.batchInputPerMillion !== undefined) {
-					enriched.pricing = {
-						...enriched.pricing,
-						batchInputPerMillion: entryPricing.batchInputPerMillion,
-					};
-				}
-				if (enriched.pricing.batchOutputPerMillion === undefined && entryPricing.batchOutputPerMillion !== undefined) {
-					enriched.pricing = {
-						...enriched.pricing,
-						batchOutputPerMillion: entryPricing.batchOutputPerMillion,
-					};
-				}
+				enriched.pricing = mergedPricing;
 			}
 		}
 
-		// Preserve proxy-route pricing while surfacing direct-origin reference pricing.
-		if (
-			entryPricing &&
-			enriched.originProvider &&
-			enriched.originProvider !== enriched.provider &&
-			!enriched.originPricing
-		) {
-			enriched.originPricing = entryPricing;
+		// Preserve proxy-route pricing while surfacing direct-origin reference pricing
+		// sourced ONLY from origin-provider entries (never a reseller's proxy row).
+		const originNorm = enriched.originProvider
+			? (normalizeProviderId(enriched.originProvider) ?? enriched.originProvider)
+			: undefined;
+		const servingNorm = normalizeProviderId(enriched.provider) ?? enriched.provider;
+		if (originNorm && originNorm !== servingNorm && !enriched.originPricing) {
+			const originEntry = this.lookupOriginModel(enriched);
+			const originPricing = originEntry ? this.extractPricing(originEntry) : undefined;
+			if (originPricing) {
+				enriched.originPricing = originPricing;
+			}
 		}
 
 		// Context window — only when unset (0)
@@ -249,19 +254,19 @@ export class LiteLLMEnricher implements Enricher {
 
 		const { id, provider, originProvider } = model;
 
-		// 1. Exact match
-		if (this.data[id]) return this.data[id];
-
-		// 2. provider/id format
+		// 1. Serving-provider prefixed match first so resellers don't collide on bare names
 		const prefixed = `${provider}/${id}`;
 		if (this.data[prefixed]) return this.data[prefixed];
 
-		// 3. originProvider/id — useful when the serving layer prefixes IDs
+		// 2. originProvider/id — useful when the serving layer prefixes IDs
 		//    differently (e.g. bedrock → anthropic).
 		if (originProvider && originProvider !== provider) {
 			const originPrefixed = `${originProvider}/${id}`;
 			if (this.data[originPrefixed]) return this.data[originPrefixed];
 		}
+
+		// 3. Bare exact match
+		if (this.data[id]) return this.data[id];
 
 		// 4. originProvider/normalizedId — strips date suffixes and provider
 		//    namespace segments so "anthropic.claude-opus-4-8-20250514-v1:0"
@@ -272,13 +277,13 @@ export class LiteLLMEnricher implements Enricher {
 			if (this.data[originNormPrefixed]) return this.data[originNormPrefixed];
 		}
 
-		// 5. Lowercase exact match
+		// 5. Lowercase provider/id
 		const lower = id.toLowerCase();
-		if (this.data[lower]) return this.data[lower];
-
-		// 6. Lowercase provider/id
 		const lowerPrefixed = `${provider}/${lower}`;
 		if (this.data[lowerPrefixed]) return this.data[lowerPrefixed];
+
+		// 6. Lowercase bare exact match
+		if (this.data[lower]) return this.data[lower];
 
 		// 7. Lowercase originProvider/normalizedId
 		if (originProvider) {
@@ -289,147 +294,42 @@ export class LiteLLMEnricher implements Enricher {
 		return undefined;
 	}
 
-	/** Convert litellm per-token costs to per-million pricing. */
-	private extractPricing(entry: LiteLLMModelEntry): ModelPricing | undefined {
-		const reasoningInputCost = this.firstFinite(
-			entry.input_cost_per_reasoning_token,
-			entry.reasoning_input_cost_per_token,
-		);
-		const reasoningOutputCost = this.firstFinite(
-			entry.output_cost_per_reasoning_token,
-			entry.reasoning_output_cost_per_token,
-		);
-
-		const baseInput = this.firstFinite(entry.input_cost_per_token);
-		const baseOutput = this.firstFinite(entry.output_cost_per_token);
-		const hasBaseTokenPricing = baseInput !== undefined && baseOutput !== undefined;
-
-		// Multimodal-only entries (TTS by-the-second, image generation, per-character
-		// Vertex models) legitimately publish no token-billed pricing — synthesizing
-		// 0/0 base on those is honest, and downstream free_tier detection skips
-		// non-chat modes. Cache-only / batch-only / reasoning-only entries, on the
-		// other hand, are incomplete catalog rows: synthesizing 0/0 base from them
-		// would falsely flag the model as free_tier, so we refuse.
-		const hasNonTokenPricing =
-			entry.input_cost_per_image !== undefined ||
-			entry.output_cost_per_image !== undefined ||
-			entry.input_cost_per_audio_token !== undefined ||
-			entry.output_cost_per_audio_token !== undefined ||
-			entry.input_cost_per_audio_per_second !== undefined ||
-			entry.output_cost_per_audio_per_second !== undefined ||
-			entry.input_cost_per_video_per_second !== undefined ||
-			entry.output_cost_per_video_per_second !== undefined ||
-			entry.input_cost_per_video_token !== undefined ||
-			entry.input_cost_per_character !== undefined ||
-			entry.output_cost_per_character !== undefined;
-
-		if (!hasBaseTokenPricing && !hasNonTokenPricing) {
-			return undefined;
-		}
-
-		const pricing: ModelPricing = {
-			inputPerMillion: (baseInput ?? 0) * PER_MILLION,
-			outputPerMillion: (baseOutput ?? 0) * PER_MILLION,
-		};
-		if (reasoningInputCost !== undefined) {
-			pricing.reasoningInputPerMillion = reasoningInputCost * PER_MILLION;
-		}
-		if (reasoningOutputCost !== undefined) {
-			pricing.reasoningOutputPerMillion = reasoningOutputCost * PER_MILLION;
-		}
-
-		if (entry.cache_read_input_token_cost !== undefined) {
-			pricing.cacheReadPerMillion = entry.cache_read_input_token_cost * PER_MILLION;
-		}
-		if (entry.cache_creation_input_token_cost !== undefined) {
-			pricing.cacheWritePerMillion = entry.cache_creation_input_token_cost * PER_MILLION;
-		}
-
-		if (entry.input_cost_per_token_batches !== undefined) {
-			pricing.batchInputPerMillion = entry.input_cost_per_token_batches * PER_MILLION;
-		}
-		if (entry.output_cost_per_token_batches !== undefined) {
-			pricing.batchOutputPerMillion = entry.output_cost_per_token_batches * PER_MILLION;
-		}
-
-		// Multimodal — images are already per-unit; audio/video tokens go through PER_MILLION.
-		if (entry.input_cost_per_image !== undefined) {
-			pricing.imageInputPerImage = entry.input_cost_per_image;
-		}
-		if (entry.output_cost_per_image !== undefined) {
-			pricing.imageOutputPerImage = entry.output_cost_per_image;
-		}
-		if (entry.input_cost_per_audio_token !== undefined) {
-			pricing.audioInputPerMillion = entry.input_cost_per_audio_token * PER_MILLION;
-		}
-		if (entry.output_cost_per_audio_token !== undefined) {
-			pricing.audioOutputPerMillion = entry.output_cost_per_audio_token * PER_MILLION;
-		}
-		if (entry.input_cost_per_audio_per_second !== undefined) {
-			pricing.audioInputPerSecond = entry.input_cost_per_audio_per_second;
-		}
-		if (entry.output_cost_per_audio_per_second !== undefined) {
-			pricing.audioOutputPerSecond = entry.output_cost_per_audio_per_second;
-		}
-		if (entry.input_cost_per_video_per_second !== undefined) {
-			pricing.videoInputPerSecond = entry.input_cost_per_video_per_second;
-		}
-		if (entry.output_cost_per_video_per_second !== undefined) {
-			pricing.videoOutputPerSecond = entry.output_cost_per_video_per_second;
-		}
-		if (entry.input_cost_per_video_token !== undefined) {
-			pricing.videoInputPerMillion = entry.input_cost_per_video_token * PER_MILLION;
-		}
-
-		// Character-billed providers (Vertex AI, Azure).
-		if (entry.input_cost_per_character !== undefined) {
-			pricing.inputPerMillionCharacters = entry.input_cost_per_character * PER_MILLION;
-		}
-		if (entry.output_cost_per_character !== undefined) {
-			pricing.outputPerMillionCharacters = entry.output_cost_per_character * PER_MILLION;
-		}
-
-		// Tiered long-context pricing — prefer 128k, fall back to 200k (Claude-style).
-		const tieredIn = this.firstFinite(
-			entry.input_cost_per_token_above_128k_tokens,
-			entry.input_cost_per_token_above_200k_tokens,
-		);
-		const tieredOut = this.firstFinite(
-			entry.output_cost_per_token_above_128k_tokens,
-			entry.output_cost_per_token_above_200k_tokens,
-		);
-		if (tieredIn !== undefined) {
-			pricing.longContextInputPerMillion = tieredIn * PER_MILLION;
-		}
-		if (tieredOut !== undefined) {
-			pricing.longContextOutputPerMillion = tieredOut * PER_MILLION;
-		}
-		if (
-			entry.input_cost_per_token_above_128k_tokens !== undefined ||
-			entry.output_cost_per_token_above_128k_tokens !== undefined
-		) {
-			pricing.longContextThresholdTokens = 128_000;
-		} else if (
-			entry.input_cost_per_token_above_200k_tokens !== undefined ||
-			entry.output_cost_per_token_above_200k_tokens !== undefined
-		) {
-			pricing.longContextThresholdTokens = 200_000;
-		}
-
-		return pricing;
-	}
-
 	/**
-	 * Return the first defined finite number from a list of optional values.
-	 * This allows tolerant support for field-name variants in upstream data.
+	 * Look up the direct-origin entry for a proxy/reseller model so a reseller's
+	 * own `{provider}/{id}` proxy price is never copied into `originPricing`.
 	 */
-	private firstFinite(...values: Array<number | undefined>): number | undefined {
-		for (const value of values) {
-			if (typeof value === "number" && Number.isFinite(value)) {
-				return value;
+	private lookupOriginModel(model: ModelCard): LiteLLMModelEntry | undefined {
+		if (!this.data || !model.originProvider) return undefined;
+		const origin = normalizeProviderId(model.originProvider) ?? model.originProvider;
+		const { id } = model;
+		const normalizedId = normalizeModelId(id);
+		const lower = id.toLowerCase();
+		const lowerNorm = normalizedId.toLowerCase();
+
+		for (const candidate of [
+			`${origin}/${id}`,
+			`${origin}/${normalizedId}`,
+			`${origin}/${lower}`,
+			`${origin}/${lowerNorm}`,
+		]) {
+			if (this.data[candidate]) return this.data[candidate];
+		}
+
+		// Bare ID only matches when LiteLLM tags the row with the same origin provider.
+		for (const bareCandidate of [id, lower, normalizedId, lowerNorm]) {
+			const row = this.data[bareCandidate];
+			if (!row) continue;
+			const rowProvider = row.litellm_provider?.toLowerCase();
+			if (rowProvider === origin || (origin === "google" && rowProvider === "gemini")) {
+				return row;
 			}
 		}
 		return undefined;
+	}
+
+	/** Convert litellm per-token costs to per-million pricing. */
+	private extractPricing(entry: LiteLLMModelEntry): ModelPricing | undefined {
+		return extractLiteLLMPricing(entry);
 	}
 
 	/** Map litellm mode strings to our ModelMode type. */
@@ -440,6 +340,8 @@ export class LiteLLMEnricher implements Enricher {
 				return "chat";
 			case "embedding":
 				return "embedding";
+			case "rerank":
+				return "rerank";
 			case "image_generation":
 				return "image";
 			case "video_generation":

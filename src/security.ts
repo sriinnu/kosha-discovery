@@ -151,22 +151,35 @@ const BIDI_OVERRIDE_PATTERN = /[\u202a-\u202e\u2066-\u2069]/;
 
 /** Known credential prefixes — each must be followed by enough chars to be a real key. */
 const CREDENTIAL_PATTERNS = [
-	/\bsk-[A-Za-z0-9]{20,}/,           // OpenAI API keys
-	/\bsk-proj-[A-Za-z0-9]{20,}/,      // OpenAI project keys
-	/\bAKIA[A-Z0-9]{16}/,              // AWS access key IDs
-	/\bghp_[A-Za-z0-9]{36,}/,          // GitHub personal access tokens
-	/\bgho_[A-Za-z0-9]{36,}/,          // GitHub OAuth tokens
-	/\bghs_[A-Za-z0-9]{36,}/,          // GitHub app installation tokens
-	/\bxoxb-[A-Za-z0-9-]{24,}/,        // Slack bot tokens
-	/\bxoxp-[A-Za-z0-9-]{24,}/,        // Slack user tokens
-	/\bAIza[A-Za-z0-9_-]{30,}/,        // Google API keys
-	/\bya29\.[A-Za-z0-9_-]{50,}/,      // Google OAuth access tokens
-	/\bglpat-[A-Za-z0-9-]{20,}/,       // GitLab personal access tokens
-	/\bnpm_[A-Za-z0-9]{36,}/,          // npm tokens
-	/\bpypi-[A-Za-z0-9]{50,}/,         // PyPI tokens
-	/\bhf_[A-Za-z0-9]{30,}/,           // Hugging Face tokens
-	/\bBearer\s+[A-Za-z0-9._\-]{40,}/, // Generic bearer tokens in data
+	/\bsk-[A-Za-z0-9_-]{20,}/,          // OpenAI / Anthropic / DeepSeek / Moonshot / OpenRouter keys
+	/\bsk-proj-[A-Za-z0-9_-]{20,}/,     // OpenAI project keys
+	/\bgsk_[A-Za-z0-9_-]{20,}/,         // Groq keys
+	/\bxai-[A-Za-z0-9_-]{20,}/,         // xAI keys
+	/\bnvapi-[A-Za-z0-9_-]{20,}/,       // NVIDIA NIM keys
+	/\bpplx-[A-Za-z0-9_-]{20,}/,        // Perplexity keys
+	/\bAKIA[A-Z0-9]{16}/,               // AWS access key IDs
+	/\bghp_[A-Za-z0-9]{36,}/,           // GitHub personal access tokens
+	/\bgho_[A-Za-z0-9]{36,}/,           // GitHub OAuth tokens
+	/\bghs_[A-Za-z0-9]{36,}/,           // GitHub app installation tokens
+	/\bxoxb-[A-Za-z0-9-]{24,}/,         // Slack bot tokens
+	/\bxoxp-[A-Za-z0-9-]{24,}/,         // Slack user tokens
+	/\bAIza[A-Za-z0-9_-]{30,}/,         // Google API keys
+	/\bya29\.[A-Za-z0-9_-]{50,}/,       // Google OAuth access tokens
+	/\bglpat-[A-Za-z0-9-]{20,}/,        // GitLab personal access tokens
+	/\bnpm_[A-Za-z0-9]{36,}/,           // npm tokens
+	/\bpypi-[A-Za-z0-9]{50,}/,          // PyPI tokens
+	/\bhf_[A-Za-z0-9]{30,}/,            // Hugging Face tokens
+	/\bBearer\s+[A-Za-z0-9._-]{40,}/,  // Generic bearer tokens in data
 ];
+
+/** Redact credential-shaped tokens from error strings surfaced via logs, MCP, or HTTP. */
+export function redactSecrets(text: string): string {
+	let out = text;
+	for (const pattern of CREDENTIAL_PATTERNS) {
+		out = out.replace(new RegExp(pattern.source, `${pattern.flags.replace("g", "")}g`), "[REDACTED]");
+	}
+	return out;
+}
 
 /** Script / HTML injection patterns (case-insensitive). */
 const SCRIPT_PATTERN = /<script[\s>]/i;

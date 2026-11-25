@@ -113,6 +113,7 @@ GET  /api/providers                        → summaries (no model arrays)
 GET  /api/providers/:id                    → provider with models
 GET  /api/resolve/:alias                   → { alias, resolved, isAlias }
 GET  /api/discovery-errors                 → { errors, count, hasErrors }
+GET  /api/pricing-anomalies                → { anomalies, count }
 GET  /api/discovery                        → stable v1 snapshot (docs/discovery-plane-v1.md)
 GET  /api/discovery/delta?sinceCursor=     → changes since a cursor
 GET  /api/discovery/watch                  → SSE stream of changes
@@ -127,9 +128,11 @@ POST /api/refresh  { "provider"?: "x" }    → re-discover; gated by KOSHA_PROXY
 ```
 GET  /proxy/v1/models                      → OpenAI-shaped list of forwardable chat models
 POST /proxy/v1/chat/completions            → OpenAI chat-completions body
+POST /proxy/v1/embeddings                  → OpenAI embeddings body
+POST /proxy/v1/messages                    → Native Anthropic Messages body
 ```
 
-`model` is a canonical ID, an alias, or a selector: `kosha:cheapest`, `kosha:fastest`, `kosha:reliable`, `kosha:balanced`, optionally with `[filters]` — a capability tag, `<N>k` minimum context, `provider:<id>` — e.g. `kosha:cheapest[tool_use,128k,provider:groq]`.
+`model` is a canonical ID, an alias, or a selector: `kosha:cheapest`, `kosha:fastest`, `kosha:reliable`, `kosha:balanced`, optionally with `[filters]` — one or more capability tags, `<N>k` minimum context, `provider:<id>` — e.g. `kosha:cheapest[vision,tool_use,128k,provider:groq]`.
 
 - Candidates are ranked and tried in order (max 3 fetches); 5xx / network errors fail over, 4xx is returned as-is. `x-kosha-attempt-chain` lists `provider:status` per attempt.
 - Anthropic routes are translated to and from `/v1/messages`: streaming, tools, `image_url`, `response_format` (json_schema on Claude 4.5+), `reasoning_effort`. Sampling params are dropped on generations that reject them; every lossy mapping is listed in `x-kosha-wire-notes`. Audio input and non-function tools fail over to an OpenAI-compatible route for the same model, or `422` if none is credentialed.
@@ -157,8 +160,13 @@ Both MCP tools return only routes you can call unless `include_uncallable: true`
 | `kosha_resolve_alias` | `alias` |
 | `kosha_provider_health` | `provider` |
 | `kosha_context_strategy` | `model`, `current_tokens`, `expected_output_tokens`, `expected_remaining_turns` |
+| `kosha_compare_models` | `models` |
+| `kosha_estimate_cost` | `model`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `service_tier` |
+| `kosha_pricing_anomalies` | `provider`, `limit` |
+| `kosha_list_providers` | `authenticated_only` |
+| `kosha_refresh_registry` | `provider` |
 
-Tool execution failures come back as `isError: true` results; unknown tools or bad arguments are JSON-RPC `-32602`. Details: `docs/mcp.md`.
+Also exposes MCP resources (`kosha://snapshot`, `kosha://providers`, `kosha://anomalies`). Tool execution failures come back as `isError: true` results; malformed JSON-RPC requests return `-32600`; unknown tools or bad arguments return `-32602`. Details: `docs/mcp.md`.
 
 ---
 

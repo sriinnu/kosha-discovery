@@ -30,13 +30,15 @@ if (previousPath && existsSync(previousPath)) {
 	// against nothing, the gate would take every price and drop every hold.
 	const text = await readFile(previousPath, "utf8");
 	const sigPath = process.env.SNAPSHOT_PREVIOUS_SIG;
-	if (sigPath) {
-		const { SNAPSHOT_PUBLIC_KEYS, snapshotSignatureValid } = await import("../dist/discovery/snapshot-catalog.js");
-		const signature = Buffer.from((await readFile(sigPath, "utf8")).trim(), "base64");
-		if (!snapshotSignatureValid(text, signature, SNAPSHOT_PUBLIC_KEYS)) {
-			console.error("[snapshot-gate] the previous snapshot's signature doesn't verify; refusing to gate against it");
-			process.exit(1);
-		}
+	if (!sigPath || !existsSync(sigPath)) {
+		console.error("[snapshot-gate] SNAPSHOT_PREVIOUS_SIG is required when gating against a previous snapshot");
+		process.exit(1);
+	}
+	const { SNAPSHOT_PUBLIC_KEYS, snapshotSignatureValid } = await import("../dist/discovery/snapshot-catalog.js");
+	const signature = Buffer.from((await readFile(sigPath, "utf8")).trim(), "base64");
+	if (!snapshotSignatureValid(text, signature, SNAPSHOT_PUBLIC_KEYS)) {
+		console.error("[snapshot-gate] the previous snapshot's signature doesn't verify; refusing to gate against it");
+		process.exit(1);
 	}
 	previous = JSON.parse(text);
 }

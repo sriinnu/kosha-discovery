@@ -102,8 +102,29 @@ describe("MCP initialize / ping", () => {
 
 	it("returns null for notifications and -32601 for unknown methods", async () => {
 		expect(await handleJsonRpc({ jsonrpc: "2.0", method: "notifications/initialized" }, deps)).toBeNull();
-		const res = await handleJsonRpc({ jsonrpc: "2.0", id: 2, method: "resources/list" }, deps);
+		const res = await handleJsonRpc({ jsonrpc: "2.0", id: 2, method: "kosha/unknown_method" }, deps);
 		expect(res?.error?.code).toBe(-32601);
+	});
+
+	it("lists and reads MCP resources", async () => {
+		const listRes = await handleJsonRpc({ jsonrpc: "2.0", id: 10, method: "resources/list" }, deps);
+		const list = resultOf<{ resources: Array<{ uri: string }> }>(listRes);
+		expect(list.resources.map((r) => r.uri)).toEqual(["kosha://snapshot", "kosha://providers", "kosha://anomalies"]);
+
+		const readRes = await handleJsonRpc(
+			{ jsonrpc: "2.0", id: 11, method: "resources/read", params: { uri: "kosha://providers" } },
+			deps,
+		);
+		const read = resultOf<{ contents: Array<{ uri: string; text: string }> }>(readRes);
+		expect(read.contents[0].uri).toBe("kosha://providers");
+		const parsed = JSON.parse(read.contents[0].text) as Array<{ id: string }>;
+		expect(parsed.map((p) => p.id)).toEqual(["groq", "deepinfra"]);
+
+		const missingRes = await handleJsonRpc(
+			{ jsonrpc: "2.0", id: 12, method: "resources/read", params: { uri: "kosha://nope" } },
+			deps,
+		);
+		expect(missingRes?.error?.code).toBe(-32602);
 	});
 });
 
@@ -144,6 +165,15 @@ describe("MCP tools", () => {
 			deps,
 		);
 		expect(unknown?.error?.code).toBe(-32602);
+	});
+
+	it("supports kosha_list_providers and kosha_pricing_anomalies tools", async () => {
+		const listed = await call("kosha_list_providers", { authenticated_only: true });
+		expect(listed.data.count).toBe(2);
+		expect(listed.data.providers.map((p: { id: string }) => p.id)).toEqual(["groq", "deepinfra"]);
+
+		const anomalies = await call("kosha_pricing_anomalies", { limit: 10 });
+		expect(Array.isArray(anomalies.data.anomalies)).toBe(true);
 	});
 
 	it("surfaces tool execution failures as isError results, not protocol errors", async () => {

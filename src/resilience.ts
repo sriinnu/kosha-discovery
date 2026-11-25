@@ -153,6 +153,21 @@ export class CircuitBreaker {
 	 *   the circuit transitions to `half-open` and returns true for the probe.
 	 * - `half-open` → true (the probe request is already in flight).
 	 */
+	private halfOpenProbeInFlight = false;
+
+	/**
+	 * Claim a single execution slot, gating concurrent half-open probes so a
+	 * recovering provider receives only one probe request at a time.
+	 */
+	tryAcquireProbe(): boolean {
+		if (!this.canExecute()) return false;
+		if (this.state === "half-open") {
+			if (this.halfOpenProbeInFlight) return false;
+			this.halfOpenProbeInFlight = true;
+		}
+		return true;
+	}
+
 	canExecute(): boolean {
 		if (this.state === "closed") {
 			return true;
@@ -164,6 +179,7 @@ export class CircuitBreaker {
 				// Transition to half-open: allow a single probe
 				this.state = "half-open";
 				this.successCount = 0;
+				this.halfOpenProbeInFlight = false;
 				return true;
 			}
 			return false;
@@ -182,6 +198,7 @@ export class CircuitBreaker {
 	 */
 	onSuccess(): void {
 		this.lastSuccessTime = Date.now();
+		this.halfOpenProbeInFlight = false;
 
 		if (this.state === "half-open") {
 			this.successCount++;
@@ -209,6 +226,7 @@ export class CircuitBreaker {
 	onFailure(error?: string): void {
 		this.lastFailureTime = Date.now();
 		this.lastError = error;
+		this.halfOpenProbeInFlight = false;
 
 		if (this.state === "half-open") {
 			// Probe failed — reopen immediately

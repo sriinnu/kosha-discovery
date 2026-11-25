@@ -78,6 +78,21 @@ export class KoshaCache {
 			}
 			const raw = await handle.readFile("utf-8");
 			const entry = JSON.parse(raw) as CacheEntry<T>;
+			if (
+				!entry ||
+				typeof entry !== "object" ||
+				Array.isArray(entry) ||
+				typeof entry.timestamp !== "number" ||
+				!Number.isFinite(entry.timestamp) ||
+				entry.timestamp <= 0 ||
+				!("data" in entry)
+			) {
+				console.warn(`KoshaCache: malformed cache envelope for key "${sanitizeKeyForLog(key)}"; invalidating`);
+				await handle.close();
+				handle = undefined;
+				await this.invalidate(key);
+				return null;
+			}
 			assertCleanPayload(entry, `cache/${key}`);
 			return entry;
 		} catch (err: unknown) {
@@ -100,11 +115,11 @@ export class KoshaCache {
 	 * Uses atomic write (temp file + rename) so a crash mid-write
 	 * cannot leave a corrupted cache file behind.
 	 */
-	async set<T>(key: string, data: T): Promise<void> {
+	async set<T>(key: string, data: T, options?: { timestamp?: number }): Promise<void> {
 		await this.ensureDir();
 		const entry: CacheEntry<T> = {
 			data,
-			timestamp: Date.now(),
+			timestamp: options?.timestamp ?? Date.now(),
 		};
 		const filePath = this.keyToPath(key);
 		const tmpPath = `${filePath}.${randomBytes(4).toString("hex")}.tmp`;

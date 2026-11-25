@@ -1,6 +1,6 @@
 {
 	"name": "@sriinnu/kosha-discovery",
-	"version": "1.17.1",
+	"version": "1.18.0",
 	"description": "Tells your agent which model to use and what it costs, across 46 AI providers, 21 subscription plans and local runtimes",
 	"mcpName": "io.github.sriinnu/kosha-discovery",
 	"type": "module",
@@ -69,6 +69,34 @@
 		"./tally": {
 			"types": "./dist/tally.d.ts",
 			"import": "./dist/tally.js"
+		},
+		"./registry": {
+			"types": "./dist/registry.d.ts",
+			"import": "./dist/registry.js"
+		},
+		"./types": {
+			"types": "./dist/types.d.ts",
+			"import": "./dist/types.js"
+		},
+		"./cost": {
+			"types": "./dist/cost.d.ts",
+			"import": "./dist/cost.js"
+		},
+		"./proxy": {
+			"types": "./dist/proxy.d.ts",
+			"import": "./dist/proxy.js"
+		},
+		"./security": {
+			"types": "./dist/security.d.ts",
+			"import": "./dist/security.js"
+		},
+		"./pricing-resolve": {
+			"types": "./dist/pricing-resolve.d.ts",
+			"import": "./dist/pricing-resolve.js"
+		},
+		"./discovery-contract": {
+			"types": "./dist/discovery-contract.d.ts",
+			"import": "./dist/discovery-contract.js"
 		}
 	},
 	"scripts": {

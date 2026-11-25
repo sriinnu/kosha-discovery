@@ -265,14 +265,16 @@ export async function cmdDiscover(registry: ModelRegistry, flags: Record<string,
  */
 export async function cmdLatest(registry: ModelRegistry, flags: Record<string, string | boolean>): Promise<void> {
 	const provider = typeof flags.provider === "string" ? flags.provider : undefined;
-	console.log(
-		c(
-			DIM,
-			provider
-				? `Fetching latest details for provider "${provider}"...`
-				: "Fetching latest details for all providers...",
-		),
-	);
+	if (!flags.json) {
+		console.log(
+			c(
+				DIM,
+				provider
+					? `Fetching latest details for provider "${provider}"...`
+					: "Fetching latest details for all providers...",
+			),
+		);
+	}
 
 	const result = await registry.fetchLatestDetails({
 		providers: provider ? [provider] : undefined,
@@ -300,7 +302,7 @@ export async function cmdLatest(registry: ModelRegistry, flags: Record<string, s
  * @param flags     CLI flags (supports `--json`).
  */
 export async function cmdEnrich(registry: ModelRegistry, flags: Record<string, string | boolean>): Promise<void> {
-	console.log(c(DIM, "Re-enriching cached models with LiteLLM pricing data..."));
+	if (!flags.json) console.log(c(DIM, "Re-enriching cached models with LiteLLM pricing data..."));
 	const result = await registry.enrichOnly();
 
 	if (result === null) {
@@ -467,7 +469,9 @@ export async function cmdProviders(registry: ModelRegistry, flags: Record<string
  */
 export async function cmdRefresh(registry: ModelRegistry, flags: Record<string, string | boolean>): Promise<void> {
 	const provider = typeof flags.provider === "string" ? flags.provider : undefined;
-	console.log(c(DIM, provider ? `Refreshing provider "${provider}"...` : "Refreshing all providers..."));
+	if (!flags.json) {
+		console.log(c(DIM, provider ? `Refreshing provider "${provider}"...` : "Refreshing all providers..."));
+	}
 	await registry.refresh(provider);
 
 	if (flags.json) {

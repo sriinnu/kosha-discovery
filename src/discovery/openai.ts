@@ -91,9 +91,14 @@ export class OpenAIDiscoverer extends BaseDiscoverer {
 			return false;
 		}
 
-		// Keep chat, embedding, image, and audio models
+		// Keep chat, embedding, image, video, moderation, and audio models
 		return (
-			this.isChatModel(lower) || this.isEmbeddingModel(lower) || this.isImageModel(lower) || this.isAudioModel(lower)
+			this.isChatModel(lower) ||
+			this.isEmbeddingModel(lower) ||
+			this.isImageModel(lower) ||
+			this.isVideoModel(lower) ||
+			this.isModerationModel(lower) ||
+			this.isAudioModel(lower)
 		);
 	}
 
@@ -104,7 +109,9 @@ export class OpenAIDiscoverer extends BaseDiscoverer {
 			id.startsWith("o1") ||
 			id.startsWith("o3") ||
 			id.startsWith("o4") ||
-			id.startsWith("chatgpt-")
+			id.startsWith("chatgpt-") ||
+			id.includes("codex") ||
+			id.includes("computer-use")
 		);
 	}
 
@@ -113,14 +120,30 @@ export class OpenAIDiscoverer extends BaseDiscoverer {
 		return id.includes("embedding");
 	}
 
-	/** Check if the model ID belongs to the image generation family (DALL-E). */
+	/** Check if the model ID belongs to the image generation family (DALL-E / gpt-image). */
 	private isImageModel(id: string): boolean {
-		return id.includes("dall-e");
+		return id.includes("dall-e") || id.includes("gpt-image");
 	}
 
-	/** Check if the model ID belongs to the audio family (Whisper / TTS). */
+	/** Check if the model ID belongs to the video generation family (Sora). */
+	private isVideoModel(id: string): boolean {
+		return id.includes("sora");
+	}
+
+	/** Check if the model ID belongs to the moderation family. */
+	private isModerationModel(id: string): boolean {
+		return id.includes("moderation");
+	}
+
+	/** Check if the model ID belongs to the audio family (Whisper / TTS / Transcribe / Realtime / Audio). */
 	private isAudioModel(id: string): boolean {
-		return id.includes("whisper") || id.includes("tts");
+		return (
+			id.includes("whisper") ||
+			id.includes("tts") ||
+			id.includes("transcribe") ||
+			id.includes("realtime") ||
+			id.includes("-audio")
+		);
 	}
 
 	/** Convert an OpenAI model object into a normalized {@link ModelCard}. */
@@ -142,51 +165,63 @@ export class OpenAIDiscoverer extends BaseDiscoverer {
 	private inferMode(id: string): ModelMode {
 		if (this.isEmbeddingModel(id)) return "embedding";
 		if (this.isImageModel(id)) return "image";
+		if (this.isVideoModel(id)) return "video";
+		if (this.isModerationModel(id)) return "moderation";
 		if (this.isAudioModel(id)) return "audio";
 		return "chat";
 	}
 
 	/**
 	 * Infer capability flags from the model ID.
-	 *
-	 * Key design decisions:
-	 *  - o-series reasoning models (o1, o3, o4) do NOT get "function_calling"
-	 *    because their reasoning loop does not support tool use in the same way.
-	 *  - GPT-4o / GPT-4 Turbo get "vision" since they accept image inputs.
-	 *  - GPT-4o-mini lacks vision but retains function_calling.
 	 */
 	private inferCapabilities(id: string): string[] {
-		// Embedding models — single capability
 		if (this.isEmbeddingModel(id)) {
 			return ["embedding"];
 		}
 
-		// Image generation models (DALL-E)
 		if (this.isImageModel(id)) {
 			return ["image_generation"];
 		}
 
-		// Audio models — Whisper for STT, TTS for speech synthesis
+		if (this.isVideoModel(id)) {
+			return ["video_generation"];
+		}
+
+		if (this.isModerationModel(id)) {
+			return ["moderation"];
+		}
+
 		if (this.isAudioModel(id)) {
-			if (id.includes("whisper")) return ["speech_to_text"];
+			if (id.includes("whisper") || id.includes("transcribe")) return ["speech_to_text"];
 			if (id.includes("tts")) return ["text_to_speech"];
-			return ["audio"];
+			return ["chat", "audio"];
 		}
 
-		// Reasoning models (o1, o3, o4 series) — no function_calling
-		// because their chain-of-thought architecture handles tool use differently
-		if (id.startsWith("o1") || id.startsWith("o3") || id.startsWith("o4")) {
-			return ["chat", "code", "nlu"];
+		// o1 models remain without function_calling for legacy loop compatibility
+		if (id.startsWith("o1")) {
+			return ["chat", "code", "nlu", "reasoning"];
 		}
 
-		// GPT-4o-mini — capable but lacks vision (must be checked before gpt-4o)
+		// o3 / o4 reasoning models support tool use as well as reasoning
+		if (id.startsWith("o3") || id.startsWith("o4")) {
+			return ["chat", "function_calling", "code", "nlu", "reasoning"];
+		}
+
+		// GPT-5, GPT-6, Codex, Computer-Use, GPT-4o, and GPT-4 Turbo — vision + tools + code
+		if (
+			id.startsWith("gpt-5") ||
+			id.startsWith("gpt-6") ||
+			id.includes("codex") ||
+			id.includes("computer-use") ||
+			(id.includes("gpt-4o") && !id.includes("gpt-4o-mini")) ||
+			id.includes("gpt-4-turbo")
+		) {
+			return ["chat", "vision", "function_calling", "code", "nlu"];
+		}
+
+		// GPT-4o-mini
 		if (id.includes("gpt-4o-mini")) {
 			return ["chat", "function_calling", "code", "nlu"];
-		}
-
-		// GPT-4o and GPT-4 Turbo — full capabilities including vision
-		if (id.includes("gpt-4o") || id.includes("gpt-4-turbo")) {
-			return ["chat", "vision", "function_calling", "code", "nlu"];
 		}
 
 		// GPT-4 (non-turbo, non-4o)

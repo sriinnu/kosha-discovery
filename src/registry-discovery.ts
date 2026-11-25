@@ -29,6 +29,7 @@ import {
 import { diffSnapshots, fullSnapshotChanges } from "./registry-delta.js";
 import { registryModels, registryProviderDescriptor } from "./registry-query.js";
 import type { ProviderObservation, RegistryState } from "./registry-state.js";
+import { redactSecrets } from "./security.js";
 import type { ModelCard, ProviderCredentialPrompt } from "./types.js";
 
 /**
@@ -259,6 +260,7 @@ export function registrySerializeModel(state: RegistryState, model: ModelCard): 
 		dimensions: model.dimensions ?? null,
 		maxInputTokens: model.maxInputTokens ?? null,
 		discoveredAt: model.discoveredAt,
+		...(model.firstSeenAt !== undefined ? { firstSeenAt: model.firstSeenAt } : {}),
 		source: model.source,
 		aliases: [...model.aliases],
 		region: model.region ?? null,
@@ -313,7 +315,7 @@ export function registryBuildHealthRecord(state: RegistryState, providerId: stri
 		providerId,
 		state: stateLabel,
 		failureCount: breaker.failureCount,
-		lastError: breaker.lastError ?? null,
+		lastError: breaker.lastError ? redactSecrets(breaker.lastError) : null,
 		lastSuccessAt: breaker.lastSuccessTime || provider?.lastRefreshed || null,
 		lastFailureAt: breaker.lastFailureTime || null,
 		latencyClass,

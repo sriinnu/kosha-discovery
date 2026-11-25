@@ -220,6 +220,17 @@ export interface ModelPricing {
 	changes?: PricingChange[];
 	/** The earliest pending `changes[].effectiveAt`: after it, the flat fields are stale. */
 	pricingValidUntil?: string;
+	/** ISO-4217 currency code for published rates (defaults to `"USD"` when omitted). */
+	currency?: string;
+	/** Optional named upstream service tiers (e.g. OpenAI `"flex"` / `"priority"`). */
+	serviceTiers?: Record<
+		string,
+		{
+			inputPerMillion: number;
+			outputPerMillion: number;
+			cacheReadPerMillion?: number;
+		}
+	>;
 	/** Where the cited rates on this card came from (kosha's own table only). */
 	citation?: PricingCitation;
 }

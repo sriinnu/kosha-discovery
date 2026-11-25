@@ -29,7 +29,10 @@ import {
 import { pricingDetail } from "./cli-pricing-detail.js";
 import { isPlanBilled } from "./discovery/free-tier.js";
 import { isRetired } from "./lifecycle.js";
+import { resolvePricing } from "./pricing-resolve.js";
+import { getProviderCacheBehavior } from "./provider-catalog.js";
 import type { ModelRegistry } from "./registry.js";
+import type { ModelPricing } from "./types.js";
 
 // ── model (detail view) ─────────────────────────────────────────────────
 
@@ -86,35 +89,51 @@ export async function cmdModel(
 	}
 
 	const providerName = registry.provider(model.provider)?.name ?? model.provider;
-	const pricingStr = model.pricing
-		? `${formatPrice(model.pricing.inputPerMillion)} / ${formatPrice(model.pricing.outputPerMillion)} per million tokens (in/out)`
+	const resolved = model.pricing ? resolvePricing(model.pricing) : undefined;
+	const pricingStr = resolved
+		? `${formatPrice(resolved.inputPerMillion)} / ${formatPrice(resolved.outputPerMillion)} per million tokens (in/out)${resolved.band ? ` [prompt ${resolved.band.inclusive ? ">=" : ">"} ${resolved.band.aboveInputTokens.toLocaleString()} tokens]` : ""}`
 		: isPlanBilled(model)
 			? c(DIM, "included in the subscription plan (no per-token price)")
 			: c(DIM, "unknown");
 	// Cache pricing is optional — only displayed when the model has it
 	// Cache writes by lifetime, long-prompt bands, dated changes and the cited page.
 	const cacheStr = pricingDetail(model.pricing, (text) => text);
+	const unitPricingStr = formatUnitPricingLines(model.pricing);
 	// Reasoning pricing is optional — shown when providers expose it.
 	const reasoningStr =
-		model.pricing?.reasoningInputPerMillion !== undefined || model.pricing?.reasoningOutputPerMillion !== undefined
-			? `\nReasoning Pricing: ${formatPrice(model.pricing?.reasoningInputPerMillion)} in / ${formatPrice(model.pricing?.reasoningOutputPerMillion)} out per million tokens`
+		resolved?.reasoningInputPerMillion !== undefined || resolved?.reasoningOutputPerMillion !== undefined
+			? `\nReasoning Pricing: ${formatPrice(resolved?.reasoningInputPerMillion)} in / ${formatPrice(resolved?.reasoningOutputPerMillion)} out per million tokens`
 			: "";
 	// Batch API pricing — shown when providers offer async batch discounts.
-	const batchDiscount = formatBatchDiscount(model.pricing);
+	const batchDiscount = formatBatchDiscount(resolved);
 	const batchStr =
-		model.pricing?.batchInputPerMillion !== undefined || model.pricing?.batchOutputPerMillion !== undefined
-			? `\nBatch Pricing: ${formatPrice(model.pricing?.batchInputPerMillion)} in / ${formatPrice(model.pricing?.batchOutputPerMillion)} out per million tokens${batchDiscount ? ` ${batchDiscount}` : ""}`
+		resolved?.batchInputPerMillion !== undefined || resolved?.batchOutputPerMillion !== undefined
+			? `\nBatch Pricing: ${formatPrice(resolved?.batchInputPerMillion)} in / ${formatPrice(resolved?.batchOutputPerMillion)} out per million tokens${batchDiscount ? ` ${batchDiscount}` : ""}`
 			: "";
-	const originPricingStr = model.originPricing
-		? `\nOrigin Pricing: ${formatPrice(model.originPricing.inputPerMillion)} / ${formatPrice(model.originPricing.outputPerMillion)} per million tokens (in/out)` +
-			(model.originPricing.reasoningInputPerMillion !== undefined ||
-			model.originPricing.reasoningOutputPerMillion !== undefined
-				? `\nOrigin Reasoning Pricing: ${formatPrice(model.originPricing.reasoningInputPerMillion)} in / ${formatPrice(model.originPricing.reasoningOutputPerMillion)} out per million tokens`
+	const resolvedOrigin = model.originPricing ? resolvePricing(model.originPricing) : undefined;
+	const originPricingStr = resolvedOrigin
+		? `\nOrigin Pricing: ${formatPrice(resolvedOrigin.inputPerMillion)} / ${formatPrice(resolvedOrigin.outputPerMillion)} per million tokens (in/out)` +
+			(resolvedOrigin.reasoningInputPerMillion !== undefined ||
+			resolvedOrigin.reasoningOutputPerMillion !== undefined
+				? `\nOrigin Reasoning Pricing: ${formatPrice(resolvedOrigin.reasoningInputPerMillion)} in / ${formatPrice(resolvedOrigin.reasoningOutputPerMillion)} out per million tokens`
 				: "") +
-			(model.originPricing.batchInputPerMillion !== undefined || model.originPricing.batchOutputPerMillion !== undefined
-				? `\nOrigin Batch Pricing: ${formatPrice(model.originPricing.batchInputPerMillion)} in / ${formatPrice(model.originPricing.batchOutputPerMillion)} out per million tokens`
+			(resolvedOrigin.batchInputPerMillion !== undefined || resolvedOrigin.batchOutputPerMillion !== undefined
+				? `\nOrigin Batch Pricing: ${formatPrice(resolvedOrigin.batchInputPerMillion)} in / ${formatPrice(resolvedOrigin.batchOutputPerMillion)} out per million tokens`
 				: "")
 		: "";
+	const evidenceSources = model.priceEvidence?.map((entry) => entry.source).filter(Boolean) ?? [];
+	const provenanceLine =
+		model.pricingSource || evidenceSources.length > 0
+			? `\n${c(BOLD, "Price Provenance:")} ${[model.pricingSource, evidenceSources.length > 0 ? `witnesses: ${evidenceSources.join(", ")}` : undefined].filter(Boolean).join(" | ")}`
+			: "";
+	const statusLine =
+		model.status && model.status !== "active"
+			? `\n${c(BOLD, "Status:")} ${model.status}${model.deprecationDate ? ` (sunset ${model.deprecationDate})` : ""}${model.replacedBy ? ` -> ${model.replacedBy}` : ""}`
+			: model.deprecationDate
+				? `\n${c(BOLD, "Sunset:")} ${model.deprecationDate}${model.replacedBy ? ` -> ${model.replacedBy}` : ""}`
+				: "";
+	const cacheBehavior = getProviderCacheBehavior(model.provider);
+	const cacheBehaviorLine = cacheBehavior ? `\n${c(BOLD, "Cache Behavior:")} ${cacheBehavior.mode}` : "";
 
 	// Origin provider line: only shown when distinct from the serving-layer provider
 	const originLine =
@@ -130,17 +149,38 @@ export async function cmdModel(
 ${c(BOLD, "Model:")} ${model.id}
 ${c(BOLD, "Name:")} ${model.name}
 ${c(BOLD, "Provider:")} ${providerName}${originLine}${regionLine}${projectLine}
-${c(BOLD, "Mode:")} ${model.mode}
+${c(BOLD, "Mode:")} ${model.mode}${statusLine}
 ${c(BOLD, "Aliases:")} ${model.aliases.length > 0 ? model.aliases.join(", ") : c(DIM, "none")}
 ${c(BOLD, "Context Window:")} ${model.contextWindow > 0 ? `${formatNumber(model.contextWindow)} tokens` : c(DIM, model.source === "api" ? "unknown (the provider doesn't say, and no catalog lists it yet)" : "unknown")}
 ${c(BOLD, "Max Output:")} ${model.maxOutputTokens > 0 ? formatNumber(model.maxOutputTokens) + " tokens" : c(DIM, "unknown")}${model.dimensions ? `\n${c(BOLD, "Dimensions:")} ${formatNumber(model.dimensions)}` : ""}
 ${c(BOLD, "Capabilities:")} ${model.capabilities.join(", ")}
-${c(BOLD, "Pricing:")} ${pricingStr}${cacheStr}${reasoningStr}${batchStr}${originPricingStr}
+${c(BOLD, "Pricing:")} ${pricingStr}${cacheStr}${unitPricingStr}${reasoningStr}${batchStr}${originPricingStr}${provenanceLine}${cacheBehaviorLine}
 ${c(BOLD, "Source:")} ${model.source}
 ${c(BOLD, "Released:")} ${model.releaseDate ?? c(DIM, "unknown (no catalog dates it yet)")}
 ${c(BOLD, "Discovered:")} ${formatTimestamp(model.discoveredAt)}
 `.trim(),
 	);
+}
+
+function formatUnitPricingLines(pricing: ModelPricing | undefined): string {
+	if (!pricing) return "";
+	const parts: string[] = [];
+	if (pricing.imageOutputPerImage !== undefined) parts.push(`${formatPrice(pricing.imageOutputPerImage)}/image out`);
+	if (pricing.imageInputPerImage !== undefined) parts.push(`${formatPrice(pricing.imageInputPerImage)}/image in`);
+	if (pricing.audioInputPerSecond !== undefined) parts.push(`${formatPrice(pricing.audioInputPerSecond)}/s audio in`);
+	if (pricing.audioOutputPerSecond !== undefined) parts.push(`${formatPrice(pricing.audioOutputPerSecond)}/s audio out`);
+	if (pricing.videoInputPerSecond !== undefined) parts.push(`${formatPrice(pricing.videoInputPerSecond)}/s video in`);
+	if (pricing.videoOutputPerSecond !== undefined) parts.push(`${formatPrice(pricing.videoOutputPerSecond)}/s video out`);
+	if (pricing.inputPerMillionCharacters !== undefined || pricing.outputPerMillionCharacters !== undefined) {
+		parts.push(
+			`${formatPrice(pricing.inputPerMillionCharacters)} / ${formatPrice(pricing.outputPerMillionCharacters)} per M chars (in/out)`,
+		);
+	}
+	if (pricing.requestPerThousand !== undefined) parts.push(`${formatPrice(pricing.requestPerThousand)}/1K requests`);
+	if (pricing.webSearchPerThousandRequests !== undefined) {
+		parts.push(`${formatPrice(pricing.webSearchPerThousandRequests)}/1K web searches`);
+	}
+	return parts.length > 0 ? `\nUnit Pricing: ${parts.join(", ")}` : "";
 }
 
 // ── resolve ──────────────────────────────────────────────────────────────

@@ -31,8 +31,11 @@ import { createRequire } from "node:module";
 import { computeContextStrategy } from "./context-strategy.js";
 import { isMainModule } from "./entry.js";
 import { newestModels } from "./newest.js";
+import { resolvePricing } from "./pricing-resolve.js";
+import { getProviderCacheBehavior, normalizeProviderId } from "./provider-catalog.js";
 import { ModelRegistry } from "./registry.js";
 import { parseRouteStrategy, ROUTE_STRATEGIES } from "./registry-routing.js";
+import { redactSecrets } from "./security.js";
 import { routeAccessHint } from "./route-access.js";
 import type { ModelMode, RouteAccess } from "./types.js";
 
@@ -79,6 +82,7 @@ export interface JsonRpcMessage {
 /** Standard JSON-RPC 2.0 error codes used by this server. */
 const JSON_RPC = {
 	PARSE_ERROR: -32700,
+	INVALID_REQUEST: -32600,
 	METHOD_NOT_FOUND: -32601,
 	INVALID_PARAMS: -32602,
 	INTERNAL_ERROR: -32603,
@@ -247,6 +251,93 @@ export const TOOLS = [
 			required: ["model", "current_tokens"],
 		},
 	},
+	{
+		name: "kosha_compare_models",
+		description:
+			"Compare two or more models side-by-side: resolved pricing (active tier/band/schedule), context window, max output, capabilities, prompt-cache behavior, and lifecycle status.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				models: {
+					type: "array",
+					items: { type: "string" },
+					description: "List of model IDs, aliases, or provider/model pairs to compare",
+				},
+			},
+			required: ["models"],
+		},
+	},
+	{
+		name: "kosha_estimate_cost",
+		description:
+			"Estimate the USD cost of a single request for a model given input, output, cache-read, and cache-write token counts (applying long-context bands, active schedules, and optional service_tier).",
+		inputSchema: {
+			type: "object",
+			properties: {
+				model: { type: "string", description: "Model ID or alias" },
+				input_tokens: { type: "number", description: "Uncached input token count" },
+				output_tokens: { type: "number", description: "Output token count (default 0)" },
+				cache_read_tokens: { type: "number", description: "Cached input tokens read (default 0)" },
+				cache_write_tokens: { type: "number", description: "Cached input tokens written (default 0)" },
+				service_tier: { type: "string", description: "Optional service tier (e.g. flex, priority)" },
+			},
+			required: ["model", "input_tokens"],
+		},
+	},
+	{
+		name: "kosha_pricing_anomalies",
+		description: "List unexpected (>25%) pricing changes detected across catalog refreshes.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				provider: { type: "string", description: "Filter anomalies to a serving provider ID" },
+				limit: { type: "number", description: "Maximum number of anomalies to return (default 50)" },
+			},
+		},
+	},
+	{
+		name: "kosha_list_providers",
+		description:
+			"List all discovered providers with model counts, credential status, prompt-cache behavior, and runtime circuit-breaker health.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				authenticated_only: { type: "boolean", description: "Only return authenticated providers (default false)" },
+			},
+		},
+	},
+	{
+		name: "kosha_refresh_registry",
+		description:
+			"Force a live refresh of the registry cache (all providers or a single provider ID) and report updated counts and any redacted errors.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				provider: { type: "string", description: "Optional provider ID to scope the refresh" },
+			},
+		},
+	},
+] as const;
+
+export const RESOURCES = [
+	{
+		uri: "kosha://snapshot",
+		name: "Discovery Snapshot (v1)",
+		description: "Full canonical v1 discovery snapshot JSON across all providers and models.",
+		mimeType: "application/json",
+	},
+	{
+		uri: "kosha://providers",
+		name: "Providers & Cache Behavior",
+		description: "Discovered providers with auth status, cache behavior, and route health.",
+		mimeType: "application/json",
+	},
+	{
+		uri: "kosha://anomalies",
+		name: "Pricing Anomalies",
+		description: "Recorded >25% pricing-diff events from manifest merges.",
+		mimeType: "application/json",
+	},
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -287,9 +378,30 @@ async function loadRegistry(): Promise<ModelRegistry> {
 	return reg;
 }
 
+const MAX_TOOL_LIMIT = 200;
+const MAX_STDIO_BUFFER_BYTES = 10 * 1024 * 1024;
+
+function clampLimit(value: unknown, fallback: number): number {
+	return typeof value === "number" && Number.isFinite(value)
+		? Math.min(Math.max(1, Math.floor(value)), MAX_TOOL_LIMIT)
+		: fallback;
+}
+
 async function getRegistry(): Promise<ModelRegistry> {
-	if (registryInstance) return registryInstance;
-	registryReady ??= loadRegistry();
+	if (registryInstance) {
+		const ttl = registryInstance.toJSON().providers.length > 0 ? 86_400_000 : 0;
+		const discoveredAt = registryInstance.toJSON().discoveredAt;
+		if (discoveredAt > 0 && ttl > 0 && Date.now() - discoveredAt > ttl) {
+			void registryInstance.refresh().catch(() => {});
+		}
+		return registryInstance;
+	}
+	if (!registryReady) {
+		registryReady = loadRegistry().catch((err) => {
+			registryReady = null;
+			throw err;
+		});
+	}
 	return registryReady;
 }
 
@@ -317,7 +429,7 @@ export async function callTool(
 				mode: args.mode as ModelMode | undefined,
 				capability: args.capability as string | undefined,
 			});
-			const limit = typeof args.limit === "number" ? args.limit : 20;
+			const limit = clampLimit(args.limit, 20);
 			return models.slice(0, limit).map((m) => ({
 				id: m.id,
 				provider: m.provider,
@@ -330,7 +442,7 @@ export async function callTool(
 		}
 
 		case "kosha_newest_models": {
-			const limit = typeof args.limit === "number" ? Math.min(Math.max(1, Math.floor(args.limit)), 200) : 25;
+			const limit = clampLimit(args.limit, 25);
 			return newestModels(reg.models(), {
 				days: typeof args.days === "number" && args.days > 0 ? args.days : 30,
 				limit,
@@ -362,7 +474,7 @@ export async function callTool(
 			// An agent acts on row one, so by default every row is one it can call.
 			const result = reg.cheapestModels({
 				...query,
-				limit: typeof args.limit === "number" ? args.limit : 5,
+				limit: clampLimit(args.limit, 5),
 				callableOnly: !includeUncallable,
 			});
 			const row = (m: (typeof result.matches)[number]) => ({
@@ -412,7 +524,7 @@ export async function callTool(
 					`unknown strategy '${String(args.strategy)}' — expected one of ${ROUTE_STRATEGIES.join(", ")}`,
 				);
 			}
-			const limit = typeof args.limit === "number" && args.limit > 0 ? Math.floor(args.limit) : 5;
+			const limit = clampLimit(args.limit, 5);
 			const minContext = typeof args.min_context_k === "number" ? args.min_context_k * 1_000 : undefined;
 			const includeUncallable = args.include_uncallable === true;
 			const ranked = reg.rankedRoutes(
@@ -457,7 +569,10 @@ export async function callTool(
 		}
 
 		case "kosha_model_detail": {
-			const model = reg.model(args.model as string);
+			if (typeof args.model !== "string" || args.model.trim().length === 0) {
+				throw new ToolInputError("model must be a non-empty string");
+			}
+			const model = reg.model(args.model);
 			if (!model) return { error: `model '${args.model}' not found` };
 			const provider = reg.provider(model.provider);
 			return {
@@ -468,7 +583,10 @@ export async function callTool(
 		}
 
 		case "kosha_model_routes": {
-			const routes = reg.modelRouteInfo(args.model as string);
+			if (typeof args.model !== "string" || args.model.trim().length === 0) {
+				throw new ToolInputError("model must be a non-empty string");
+			}
+			const routes = reg.modelRouteInfo(args.model);
 			if (routes.length === 0) return { error: `model '${args.model}' not found` };
 			return routes.map((r) => ({
 				provider: r.provider,
@@ -482,7 +600,10 @@ export async function callTool(
 		}
 
 		case "kosha_resolve_alias": {
-			const resolved = reg.resolve(args.alias as string);
+			if (typeof args.alias !== "string" || args.alias.trim().length === 0) {
+				throw new ToolInputError("alias must be a non-empty string");
+			}
+			const resolved = reg.resolve(args.alias);
 			const model = reg.model(resolved);
 			return {
 				alias: args.alias,
@@ -498,15 +619,18 @@ export async function callTool(
 			const errors = reg.discoveryErrors();
 			const errorByProvider = new Map(errors.map((e) => [e.providerId, e.error]));
 			const list = args.provider ? providers.filter((p) => p.id === args.provider) : providers;
-			return list.map((p) => ({
-				id: p.id,
-				name: p.name,
-				authenticated: p.authenticated,
-				credentialSource: p.credentialSource ?? null,
-				modelCount: p.models.length,
-				lastRefreshed: p.lastRefreshed ?? null,
-				lastError: errorByProvider.get(p.id) ?? null,
-			}));
+			return list.map((p) => {
+				const err = errorByProvider.get(p.id);
+				return {
+					id: p.id,
+					name: p.name,
+					authenticated: p.authenticated,
+					credentialSource: p.credentialSource ?? null,
+					modelCount: p.models.length,
+					lastRefreshed: p.lastRefreshed ?? null,
+					lastError: err ? redactSecrets(err) : null,
+				};
+			});
 		}
 
 		case "kosha_context_strategy": {
@@ -533,6 +657,146 @@ export async function callTool(
 				expectedOutputTokens: typeof args.expected_output_tokens === "number" ? args.expected_output_tokens : undefined,
 				candidateAlternatives: candidates,
 			});
+		}
+
+		case "kosha_compare_models": {
+			if (!Array.isArray(args.models) || args.models.length === 0) {
+				throw new ToolInputError("models must be a non-empty array of model IDs or aliases");
+			}
+			const requestedList = args.models.filter((m): m is string => typeof m === "string" && m.trim().length > 0);
+			if (requestedList.length === 0) {
+				throw new ToolInputError("models must contain at least one non-empty string");
+			}
+			return {
+				models: requestedList.map((requested) => {
+					const m = reg.model(requested);
+					if (!m) return { requested, found: false };
+					const resolved = m.pricing ? resolvePricing(m.pricing) : null;
+					return {
+						requested,
+						found: true,
+						id: m.id,
+						name: m.name,
+						provider: m.provider,
+						originProvider: m.originProvider ?? m.provider,
+						mode: m.mode,
+						contextWindow: m.contextWindow,
+						maxOutputTokens: m.maxOutputTokens,
+						capabilities: m.capabilities,
+						pricing: m.pricing ?? null,
+						resolvedPricing: resolved,
+						cacheBehavior: getProviderCacheBehavior(m.provider) ?? null,
+						status: m.status ?? "active",
+						deprecationDate: m.deprecationDate ?? null,
+						replacedBy: m.replacedBy ?? null,
+					};
+				}),
+			};
+		}
+
+		case "kosha_estimate_cost": {
+			if (typeof args.model !== "string" || args.model.trim().length === 0) {
+				throw new ToolInputError("model is required");
+			}
+			const model = reg.model(args.model);
+			if (!model) return { error: `model '${args.model}' not found` };
+			if (!model.pricing) return { error: `model '${model.id}' has no pricing data` };
+			const readNonNeg = (raw: unknown, name: string, fallback: number | undefined = 0): number => {
+				if (raw === undefined) {
+					if (fallback === undefined) throw new ToolInputError(`${name} must be a non-negative finite number`);
+					return fallback;
+				}
+				if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0) {
+					throw new ToolInputError(`${name} must be a non-negative finite number`);
+				}
+				return raw;
+			};
+			const inputTokens = readNonNeg(args.input_tokens, "input_tokens", undefined);
+			const outputTokens = readNonNeg(args.output_tokens, "output_tokens", 0);
+			const cacheReadTokens = readNonNeg(args.cache_read_tokens, "cache_read_tokens", 0);
+			const cacheWriteTokens = readNonNeg(args.cache_write_tokens, "cache_write_tokens", 0);
+			const serviceTier =
+				typeof args.service_tier === "string" && args.service_tier.trim().length > 0
+					? args.service_tier.trim()
+					: undefined;
+			const serviceTierApplied = Boolean(serviceTier && model.pricing.serviceTiers?.[serviceTier]);
+			const resolved = resolvePricing(model.pricing, {
+				promptTokens: inputTokens + cacheReadTokens + cacheWriteTokens,
+				...(serviceTier ? { serviceTier } : {}),
+			});
+			const inputUsd = (inputTokens * resolved.inputPerMillion) / 1_000_000;
+			const outputUsd = (outputTokens * resolved.outputPerMillion) / 1_000_000;
+			const listedRead = resolved.cacheReadPerMillion;
+			const cacheReadRate =
+				typeof listedRead === "number" && (listedRead > 0 || resolved.inputPerMillion === 0)
+					? listedRead
+					: resolved.inputPerMillion;
+			const cacheWriteRate = resolved.cacheWritePerMillion ?? resolved.inputPerMillion;
+			const cacheReadUsd = (cacheReadTokens * cacheReadRate) / 1_000_000;
+			const cacheWriteUsd = (cacheWriteTokens * cacheWriteRate) / 1_000_000;
+			return {
+				model: model.id,
+				provider: model.provider,
+				currency: resolved.currency ?? "USD",
+				...(serviceTierApplied ? { serviceTier } : {}),
+				appliedBand: resolved.band
+					? { aboveInputTokens: resolved.band.aboveInputTokens, inclusive: resolved.band.inclusive === true }
+					: null,
+				inputUsd,
+				outputUsd,
+				cacheReadUsd,
+				cacheWriteUsd,
+				totalUsd: inputUsd + outputUsd + cacheReadUsd + cacheWriteUsd,
+			};
+		}
+
+		case "kosha_pricing_anomalies": {
+			const limit = clampLimit(args.limit, 50);
+			const providerFilter =
+				typeof args.provider === "string" && args.provider.trim().length > 0
+					? (normalizeProviderId(args.provider) ?? args.provider.trim())
+					: undefined;
+			let anomalies = await reg.pricingAnomalies();
+			if (providerFilter) {
+				const prefix = `${providerFilter}:`;
+				anomalies = anomalies.filter((a) => a.key.startsWith(prefix));
+			}
+			const recent = anomalies.slice(-limit).reverse();
+			return { count: recent.length, total: anomalies.length, anomalies: recent };
+		}
+
+		case "kosha_list_providers": {
+			const authenticatedOnly = args.authenticated_only === true;
+			const providers = reg.providers_list().filter((p) => !authenticatedOnly || p.authenticated);
+			return {
+				count: providers.length,
+				providers: providers.map((p) => ({
+					id: p.id,
+					name: p.name,
+					authenticated: p.authenticated,
+					credentialSource: p.credentialSource ?? null,
+					modelCount: p.models.length,
+					lastRefreshed: p.lastRefreshed ?? null,
+					cacheBehavior: getProviderCacheBehavior(p.id) ?? null,
+					health: reg.providerRouteHealth(p.id),
+				})),
+			};
+		}
+
+		case "kosha_refresh_registry": {
+			if (args.provider !== undefined && (typeof args.provider !== "string" || args.provider.trim().length === 0)) {
+				throw new ToolInputError("provider must be a non-empty string when provided");
+			}
+			const provider = typeof args.provider === "string" ? args.provider.trim() : undefined;
+			await reg.refresh(provider);
+			const errors = reg.discoveryErrors().map((e) => ({ ...e, error: redactSecrets(e.error) }));
+			return {
+				refreshedAt: Date.now(),
+				...(provider ? { provider } : {}),
+				providerCount: reg.providers_list().length,
+				modelCount: reg.models().length,
+				errors,
+			};
 		}
 
 		default:
@@ -562,23 +826,68 @@ function fail(id: JsonRpcMessage["id"], code: number, message: string): JsonRpcM
  * malformed params) surface as JSON-RPC errors.
  */
 export async function handleJsonRpc(msg: JsonRpcMessage, deps: McpDeps = defaultDeps): Promise<JsonRpcMessage | null> {
-	const { id, method, params } = msg;
+	if (!msg || typeof msg !== "object" || Array.isArray(msg)) {
+		return fail(null, JSON_RPC.INVALID_REQUEST, "Invalid Request");
+	}
+	const { id, method, params, jsonrpc } = msg;
+	if (jsonrpc !== undefined && jsonrpc !== "2.0") {
+		return fail(id ?? null, JSON_RPC.INVALID_REQUEST, "Invalid Request");
+	}
+	if (typeof method !== "string" || method.length === 0) {
+		return fail(id ?? null, JSON_RPC.INVALID_REQUEST, "Invalid Request");
+	}
 
 	// Notifications carry no id — no response expected.
-	if (!method || method.startsWith("notifications/")) return null;
+	if (method.startsWith("notifications/")) return null;
 
 	switch (method) {
 		case "initialize": {
 			const requested = (params as { protocolVersion?: unknown } | undefined)?.protocolVersion;
 			return ok(id, {
 				protocolVersion: negotiateProtocolVersion(requested),
-				capabilities: { tools: {} },
+				capabilities: { tools: {}, resources: {} },
 				serverInfo: { name: "kosha", version: KOSHA_MCP_VERSION },
 			});
 		}
 
 		case "ping":
 			return ok(id, {});
+
+		case "resources/list":
+			return ok(id, { resources: RESOURCES });
+
+		case "resources/read": {
+			const uri = (params as { uri?: unknown } | undefined)?.uri;
+			if (typeof uri !== "string" || uri.length === 0) {
+				return fail(id, JSON_RPC.INVALID_PARAMS, "resources/read requires a string `uri`");
+			}
+			try {
+				const reg = await deps.registry();
+				let payload: unknown;
+				if (uri === "kosha://snapshot") {
+					payload = reg.discoverySnapshot();
+				} else if (uri === "kosha://providers") {
+					payload = reg.providers_list().map((p) => ({
+						id: p.id,
+						name: p.name,
+						authenticated: p.authenticated,
+						modelCount: p.models.length,
+						cacheBehavior: getProviderCacheBehavior(p.id) ?? null,
+						health: reg.providerRouteHealth(p.id),
+					}));
+				} else if (uri === "kosha://anomalies") {
+					payload = await reg.pricingAnomalies();
+				} else {
+					return fail(id, JSON_RPC.INVALID_PARAMS, `unknown resource uri: ${uri}`);
+				}
+				return ok(id, {
+					contents: [{ uri, mimeType: "application/json", text: JSON.stringify(payload, null, 2) }],
+				});
+			} catch (err) {
+				const rawMessage = err instanceof Error ? err.message : String(err);
+				return fail(id, JSON_RPC.INTERNAL_ERROR, redactSecrets(rawMessage));
+			}
+		}
 
 		case "tools/list":
 			return ok(id, { tools: TOOLS });
@@ -588,15 +897,19 @@ export async function handleJsonRpc(msg: JsonRpcMessage, deps: McpDeps = default
 			if (typeof call.name !== "string") {
 				return fail(id, JSON_RPC.INVALID_PARAMS, "tools/call requires a string `name`");
 			}
-			const args =
-				call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments)
-					? (call.arguments as Record<string, unknown>)
-					: {};
+			if (
+				call.arguments !== undefined &&
+				(typeof call.arguments !== "object" || call.arguments === null || Array.isArray(call.arguments))
+			) {
+				return fail(id, JSON_RPC.INVALID_PARAMS, "tools/call `arguments` must be an object");
+			}
+			const args = (call.arguments as Record<string, unknown> | undefined) ?? {};
 			try {
 				const result = await callTool(call.name, args, deps);
 				return ok(id, { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] });
 			} catch (err) {
-				const message = err instanceof Error ? err.message : String(err);
+				const rawMessage = err instanceof Error ? err.message : String(err);
+				const message = redactSecrets(rawMessage);
 				if (err instanceof ToolInputError) return fail(id, JSON_RPC.INVALID_PARAMS, message);
 				return ok(id, { content: [{ type: "text", text: message }], isError: true });
 			}
@@ -618,6 +931,11 @@ export function runStdioServer(deps: McpDeps = defaultDeps): void {
 	const pending = new Set<Promise<void>>();
 	process.stdin.setEncoding("utf-8");
 	process.stdin.on("data", (chunk: string) => {
+		if (Buffer.byteLength(buffer, "utf8") + Buffer.byteLength(chunk, "utf8") > MAX_STDIO_BUFFER_BYTES) {
+			buffer = "";
+			send(fail(null, JSON_RPC.INVALID_REQUEST, "Request frame exceeds maximum buffer size"));
+			return;
+		}
 		buffer += chunk;
 		const lines = buffer.split("\n");
 		buffer = lines.pop() ?? "";

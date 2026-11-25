@@ -243,7 +243,7 @@ pass them programmatically.
 Provider entries merge field by field across layers, so a project that turns
 a provider off doesn't drop the key `~/.kosharc.json` gave it.
 
-## New providers (Unreleased)
+## New providers (1.17.0+)
 
 | Provider | Env vars (first match wins) | Notes |
 |---|---|---|

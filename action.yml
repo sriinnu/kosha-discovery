@@ -23,7 +23,7 @@ inputs:
       action was released with, so a new npm publish does not change what your
       CI runs until you move the action tag. Set `latest` to opt back in.
     required: false
-    default: "1.17.1"
+    default: "1.18.0"
 
 outputs:
   findings:
@@ -73,15 +73,16 @@ runs:
         const { readFileSync } = require("node:fs");
         const [report, scope] = process.argv.slice(2);
         const { deprecations } = JSON.parse(readFileSync(report, "utf8"));
-        console.log(`## kosha model check\n\nChecked: ${scope.split(",").map((m) => `\`${m}\``).join(", ")}\n`);
+        const escCell = (v) => String(v ?? "—").replace(/[\r\n|]+/g, " ").replace(/`/g, "'").trim();
+        console.log(`## kosha model check\n\nChecked: ${scope.split(",").map((m) => `\`${escCell(m)}\``).join(", ")}\n`);
         if (deprecations.length === 0) {
           console.log("All routes healthy.");
         } else {
           if (process.env.STATUS === "0") console.log("Advisory only: a reseller route is retiring, but every model is still served directly.\n");
           console.log("| Model | Provider | Status | Sunset | Replacement |\n|---|---|---|---|---|");
           for (const f of deprecations) {
-            const sunset = f.deprecationDate ? `${f.deprecationDate} (${f.daysUntilSunset}d)` : "—";
-            console.log(`| \`${f.modelId}\` | ${f.provider} | ${f.status ?? "—"} | ${sunset} | ${f.replacedBy ?? "—"} |`);
+            const sunset = f.deprecationDate ? `${escCell(f.deprecationDate)} (${escCell(f.daysUntilSunset)}d)` : "—";
+            console.log(`| \`${escCell(f.modelId)}\` | ${escCell(f.provider)} | ${escCell(f.status)} | ${sunset} | ${escCell(f.replacedBy)} |`);
           }
         }
         NODE
@@ -96,11 +97,13 @@ runs:
         if [[ "$STATUS" -ne 0 ]]; then
           node -e '
             const { deprecations } = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            const escCmd = (s) => String(s ?? "").replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
             for (const f of deprecations) {
               const why = f.status === "missing" ? "is listed by no provider"
                 : f.deprecationDate ? `retires ${f.deprecationDate}` : f.status;
               const where = f.provider === "-" ? f.modelId : `${f.provider}/${f.modelId}`;
-              console.log(`::error title=kosha model check::${where} ${why}${f.replacedBy ? ` (use ${f.replacedBy})` : ""}`);
+              const text = `${where} ${why}${f.replacedBy ? ` (use ${f.replacedBy})` : ""}`;
+              console.log(`::error title=kosha model check::${escCmd(text)}`);
             }
           ' "$REPORT"
           exit "$STATUS"

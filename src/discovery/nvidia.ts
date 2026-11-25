@@ -108,8 +108,8 @@ export class NvidiaDiscoverer extends OpenAICompatibleDiscoverer {
 
 	/** Map a model ID to its primary {@link ModelMode}. */
 	private inferMode(id: string): ModelMode {
+		if (this.looksLikeRerank(id)) return "rerank";
 		if (id.includes("embed")) return "embedding";
-		if (id.includes("rerank")) return "embedding";
 		return "chat";
 	}
 
@@ -117,14 +117,18 @@ export class NvidiaDiscoverer extends OpenAICompatibleDiscoverer {
 	 * Infer capability flags from the model ID.
 	 *
 	 * Key heuristics:
+	 * - Rerank models get "rerank" only
 	 * - Embedding models get "embedding" only
 	 * - Models with "vlm", "vision", or known vision model names get "vision"
 	 * - Instruct/chat models get "function_calling" (NVIDIA API supports it)
 	 * - Code-specialized models get "code"
 	 */
 	private inferCapabilities(id: string): string[] {
+		if (this.looksLikeRerank(id)) {
+			return ["rerank"];
+		}
 		// Embedding models
-		if (id.includes("embed") || id.includes("rerank")) {
+		if (id.includes("embed")) {
 			return ["embedding"];
 		}
 

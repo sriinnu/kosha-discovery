@@ -46,6 +46,7 @@ export interface ResolvedCatalogSource {
 
 let configured: { mode?: CatalogSource; file?: string } = {};
 let localInflight: Promise<SnapshotCatalog> | null = null;
+let localInflightFile: string | null = null;
 
 export function isCatalogSource(value: unknown): value is CatalogSource {
 	return typeof value === "string" && (CATALOG_SOURCES as readonly string[]).includes(value);
@@ -68,8 +69,12 @@ export function configureCatalogSource(config?: Pick<KoshaConfig, "catalogSource
  * rather than a quiet fallback: someone who typed `KOSHA_CATALOG_SOURCE=locl`
  * meant to stop the network fetch.
  */
-export function resolveCatalogSource(): ResolvedCatalogSource {
+export function resolveCatalogSource(
+	configOverride?: Pick<KoshaConfig, "catalogSource" | "catalogFile">,
+): ResolvedCatalogSource {
 	const envMode = process.env[CATALOG_SOURCE_ENV]?.trim();
+	const cfgMode = isCatalogSource(configOverride?.catalogSource) ? configOverride?.catalogSource : configured.mode;
+	const cfgFile = typeof configOverride?.catalogFile === "string" ? configOverride.catalogFile : configured.file;
 	let mode: CatalogSource = "community";
 	let origin: ResolvedCatalogSource["origin"] = "default";
 	if (envMode) {
@@ -78,13 +83,13 @@ export function resolveCatalogSource(): ResolvedCatalogSource {
 		}
 		mode = envMode;
 		origin = "env";
-	} else if (configured.mode) {
-		mode = configured.mode;
+	} else if (cfgMode) {
+		mode = cfgMode;
 		origin = "config";
 	}
 	if (mode !== "local") return { mode, origin };
 
-	const raw = process.env[CATALOG_FILE_ENV]?.trim() || configured.file;
+	const raw = process.env[CATALOG_FILE_ENV]?.trim() || cfgFile;
 	if (!raw) {
 		throw new Error(
 			`catalog source is "local" but no catalog file is set (${CATALOG_FILE_ENV} or catalogFile in ~/.kosharc.json)`,
@@ -98,8 +103,11 @@ export function resolveCatalogSource(): ResolvedCatalogSource {
  * never served after switching away from it. `community` keeps the bare
  * keys, so existing caches stay valid.
  */
-export function catalogCacheKey(key: string): string {
-	const { mode } = resolveCatalogSource();
+export function catalogCacheKey(
+	key: string,
+	configOverride?: Pick<KoshaConfig, "catalogSource" | "catalogFile">,
+): string {
+	const { mode } = resolveCatalogSource(configOverride);
 	return mode === "community" ? key : `${mode}_${key}`;
 }
 
@@ -118,12 +126,23 @@ export async function getLocalSeed(providerId: string): Promise<ModelCard[]> {
 
 /** Load and validate the local catalog once per process (per file). */
 export function loadLocalCatalog(file: string): Promise<SnapshotCatalog> {
-	if (localInflight) return localInflight;
-	localInflight = readLocalCatalog(file).catch((error) => {
-		localInflight = null;
+	const resolved = expandPath(file);
+	if (localInflight && localInflightFile === resolved) return localInflight;
+	localInflightFile = resolved;
+	localInflight = readLocalCatalog(resolved).catch((error) => {
+		if (localInflightFile === resolved) {
+			localInflight = null;
+			localInflightFile = null;
+		}
 		throw error;
 	});
 	return localInflight;
+}
+
+/** Clear the cached local catalog so the next load re-reads the file. */
+export function resetLocalCatalogCache(): void {
+	localInflight = null;
+	localInflightFile = null;
 }
 
 /** The catalog the active mode reads from, for enrichment outside `community`. */
@@ -214,6 +233,7 @@ export function buildCatalogEnvelope(
 export function resetCatalogSource(): void {
 	configured = {};
 	localInflight = null;
+	localInflightFile = null;
 }
 
 /**

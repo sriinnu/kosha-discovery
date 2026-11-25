@@ -8,8 +8,9 @@
 
 import { readFile } from "fs/promises";
 import { homedir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import { assertCatalogReady, configureCatalogSource } from "./catalog-source.js";
+import { applyDueChanges } from "./discovery/cited-prices.js";
 import type {
 	DiscoveryBindingHintsV1,
 	DiscoveryBindingQuery,
@@ -17,10 +18,13 @@ import type {
 	DiscoveryDeltaV1,
 	DiscoverySnapshotV1,
 } from "./discovery-contract.js";
+import { resolveManifestPath } from "./manifest-store.js";
 import { isMakerRoute } from "./newest.js";
 import { normalizeModelId } from "./normalize.js";
 import { sanitizeModelPricing } from "./price-trust.js";
+import { type PricingAnomaly, readAnomalies } from "./pricing-anomalies.js";
 import { getProviderConfig, normalizeProviderId } from "./provider-catalog.js";
+import { getRegistryIndex, toLooseLookupKey } from "./registry-index.js";
 import {
 	registryBuildSnapshot,
 	registryClassifyError,
@@ -133,6 +137,11 @@ export class ModelRegistry {
 	/** Accept the price quarantine is holding for one model (see `kosha registry accept`). */
 	acceptHeldPrice(providerId: string, modelId: string): Promise<AcceptHeldPriceResult> {
 		return acceptHeldPrice(this.state, providerId, modelId);
+	}
+
+	/** Read recorded pricing-diff anomalies from `<manifestDir>/anomalies.json`. */
+	pricingAnomalies(): Promise<PricingAnomaly[]> {
+		return readAnomalies(dirname(resolveManifestPath(this.state)));
 	}
 
 	/** Compatibility accessor retained for existing tests and debug hooks. */
@@ -295,32 +304,55 @@ export class ModelRegistry {
 
 	/** Resolve a model by canonical ID or configured alias. */
 	model(idOrAlias: string): ModelCard | undefined {
+		const index = getRegistryIndex(this.state);
 		const resolvedId = this.aliasResolver.resolve(idOrAlias);
-		const models = registryModels(this.state);
 
 		// 1) Exact canonical/alias-resolved ID. Several providers can serve the
 		//    same id; the maker's own route wins, since that's the price it sets.
-		const exact = models.filter((model) => model.id === resolvedId);
-		if (exact.length > 0) return exact.find(isMakerRoute) ?? exact[0];
+		const exact = index.byExactId.get(resolvedId);
+		if (exact && exact.length > 0) return exact.find(isMakerRoute) ?? exact[0];
 
-		// 1b) `provider/model`, when the whole string isn't itself an id
-		//     (OpenRouter's ids carry a slash).
-		const slash = idOrAlias.indexOf("/");
+		// 1b) `provider/model` (or `provider/alias`, e.g. `"anthropic/opus"`), when
+		//     the whole string isn't itself a reseller model ID (OpenRouter's carry `/`).
+		const slashSource = resolvedId.indexOf("/") > 0 ? resolvedId : idOrAlias;
+		const slash = slashSource.indexOf("/");
 		if (slash > 0) {
-			const providerId = normalizeProviderId(idOrAlias.slice(0, slash)) ?? idOrAlias.slice(0, slash);
-			const modelId = idOrAlias.slice(slash + 1);
-			const routed = this.providerMap.get(providerId)?.models.find((model) => model.id === modelId);
-			if (routed) return routed;
+			const prefix = slashSource.slice(0, slash);
+			const providerId = normalizeProviderId(prefix) ?? prefix;
+			const providerEntry = index.byProvider.get(providerId);
+			if (providerEntry) {
+				const rawSuffix = slashSource.slice(slash + 1);
+				const resolvedSuffix = this.aliasResolver.resolve(rawSuffix);
+				const rawScoped = providerEntry.byId.get(rawSuffix);
+				if (rawScoped) return rawScoped;
+				const exactScoped = providerEntry.byId.get(resolvedSuffix);
+				if (exactScoped) return exactScoped;
+				const normScopedTarget = normalizeModelId(resolvedSuffix).toLowerCase();
+				const normScoped = providerEntry.models.find(
+					(m) => normalizeModelId(m.id).toLowerCase() === normScopedTarget,
+				);
+				if (normScoped) return normScoped;
+				const looseScopedTarget = toLooseLookupKey(normScopedTarget);
+				return providerEntry.models.find(
+					(m) => toLooseLookupKey(normalizeModelId(m.id).toLowerCase()) === looseScopedTarget,
+				);
+			}
 		}
 
 		// 2) Normalized ID fallback (prefix/date/tag-insensitive).
 		const targetNormalized = normalizeModelId(resolvedId).toLowerCase();
-		const normalizedMatch = models.find((model) => normalizeModelId(model.id).toLowerCase() === targetNormalized);
-		if (normalizedMatch) return normalizedMatch;
+		const normalizedMatches = index.byNormalizedLower.get(targetNormalized);
+		if (normalizedMatches && normalizedMatches.length > 0) {
+			return normalizedMatches.find(isMakerRoute) ?? normalizedMatches[0];
+		}
 
 		// 3) Loose fallback for punctuation variants (dot/hyphen/underscore).
 		const targetLoose = toLooseLookupKey(targetNormalized);
-		return models.find((model) => toLooseLookupKey(normalizeModelId(model.id).toLowerCase()) === targetLoose);
+		const looseMatches = index.byLooseKey.get(targetLoose);
+		if (looseMatches && looseMatches.length > 0) {
+			return looseMatches.find(isMakerRoute) ?? looseMatches[0];
+		}
+		return undefined;
 	}
 
 	/**
@@ -500,8 +532,12 @@ export class ModelRegistry {
 		const registry = new ModelRegistry({ aliases: data.aliases });
 		for (const provider of data.providers) {
 			// Serialized registries come from disk or another process: drop rates
-			// no catalog can mean (negative, NaN) before anything ranks on them.
-			registry.providerMap.set(provider.id, { ...provider, models: provider.models.map(sanitizeModelPricing) });
+			// no catalog can mean (negative, NaN) and fold any due dated price
+			// changes before anything ranks or budgets on them.
+			registry.providerMap.set(provider.id, {
+				...provider,
+				models: applyDueChanges(provider.models).map(sanitizeModelPricing),
+			});
 		}
 		registry.discoveredAt = data.discoveredAt;
 		registry.currentCursor = registryMakeCursor(registry.state);
@@ -552,7 +588,7 @@ export class ModelRegistry {
 				loadRegistryFromCache(this.state, providerIds, async (providerId) =>
 					credentialStamp(await resolveProviderCredential(this.state, resolvers, providerId)),
 				),
-			saveToCache: () => saveRegistryToCache(this.state),
+			saveToCache: (scopedProviders) => saveRegistryToCache(this.state, scopedProviders),
 			snapshotForDelta: () => registrySnapshotForDelta(this.state),
 			recordDiscoveryMutation: (previousSnapshot) => registryRecordDiscoveryMutation(this.state, previousSnapshot),
 			recordObservation: (providerId, entry) => registryRecordObservation(this.state, providerId, entry),
@@ -597,10 +633,6 @@ export class ModelRegistry {
 			return null;
 		}
 	}
-}
-
-function toLooseLookupKey(value: string): string {
-	return value.replace(/[._-]+/g, "");
 }
 
 /** Valid provider-observation error classes (mirrors ProviderObservation). */

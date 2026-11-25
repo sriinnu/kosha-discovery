@@ -6,13 +6,15 @@
  * @module
  */
 
-import { assertCleanPayload } from "../security.js";
-import type { CredentialResult, ModelCard, ProviderDiscoverer } from "../types.js";
+import { assertCleanPayload, redactSecrets } from "../security.js";
+import type { CredentialResult, ModelCard, ModelPricing, ProviderDiscoverer } from "../types.js";
+import { isPlanBilled } from "./free-tier.js";
 import { evidenceFrom, type PriceEvidence } from "./price-evidence.js";
 import { getPublicSeed } from "./public-seed.js";
 
 /** Safety cap for paginated model listing. */
 export const MAX_MODELS_PER_PROVIDER = 10_000;
+const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 
 /**
  * Default User-Agent sent on every discovery request. Some provider APIs
@@ -22,12 +24,25 @@ export const MAX_MODELS_PER_PROVIDER = 10_000;
  */
 export const KOSHA_USER_AGENT = "kosha-discovery (+https://github.com/sriinnu/kosha-discovery)";
 
-/** Common API-key patterns to redact from error messages. */
-const API_KEY_PATTERN = /\b(sk-[A-Za-z0-9_-]{8,}|key-[A-Za-z0-9_-]{8,}|Bearer\s+[A-Za-z0-9._-]{20,})\b/gi;
+/** Common API-key patterns to redact from error messages (in addition to security.redactSecrets). */
+const API_KEY_PATTERN =
+	/\b((?:sk|xai|nvapi|pplx)-[A-Za-z0-9_-]{8,}|(?:gsk|key)-[A-Za-z0-9_-]{8,}|AIza[A-Za-z0-9_-]{20,}|Bearer\s+[A-Za-z0-9._-]{20,})\b/gi;
+
+/** Thrown on non-retryable client or transport errors so the retry loop fails immediately. */
+class NonRetryableHttpError extends Error {}
+
+function isNonRetryableNetworkError(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	const code = (error as NodeJS.ErrnoException).code ?? (error.cause as NodeJS.ErrnoException | undefined)?.code;
+	if (code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "ERR_INVALID_URL") {
+		return true;
+	}
+	return /\b(ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ERR_INVALID_URL)\b/i.test(error.message);
+}
 
 /** Sanitize a response body before including it in an error message. */
 function sanitizeErrorBody(raw: string, maxLen = 200): string {
-	const redacted = raw.replace(API_KEY_PATTERN, "[REDACTED]");
+	const redacted = redactSecrets(raw).replace(API_KEY_PATTERN, "[REDACTED]");
 	if (redacted.length <= maxLen) return redacted;
 	return `${redacted.slice(0, maxLen)}…[truncated]`;
 }
@@ -93,32 +108,44 @@ export abstract class BaseDiscoverer implements ProviderDiscoverer {
 				const response = await fetch(url, {
 					headers: requestHeaders,
 					signal: controller.signal,
+					redirect: "error",
 				});
 
 				if (!response.ok) {
 					const body = await response.text().catch(() => "");
 					const safeBody = body ? sanitizeErrorBody(body) : "";
-					const err = new Error(
-						`${this.providerName} API error: ${response.status} ${response.statusText}${safeBody ? ` — ${safeBody}` : ""}`,
-					);
+					const message = `${this.providerName} API error: ${response.status} ${response.statusText}${safeBody ? ` — ${safeBody}` : ""}`;
 
-					// 4xx client errors are not transient — fail immediately
+					// 4xx client errors are not transient — fail immediately without backoff.
 					if (response.status >= 400 && response.status < 500) {
-						throw err;
+						throw new NonRetryableHttpError(message);
 					}
 
 					// 5xx server errors are retryable
-					lastError = err;
+					lastError = new Error(message);
 				} else {
-					const data = (await response.json()) as T;
+					const contentLen = response.headers.get("content-length");
+					if (contentLen && Number(contentLen) > MAX_RESPONSE_BYTES) {
+						throw new NonRetryableHttpError(`${this.providerName} API response exceeds ${MAX_RESPONSE_BYTES} bytes`);
+					}
+					const text = await response.text();
+					if (Buffer.byteLength(text, "utf8") > MAX_RESPONSE_BYTES) {
+						throw new NonRetryableHttpError(`${this.providerName} API response exceeds ${MAX_RESPONSE_BYTES} bytes`);
+					}
+					const data = JSON.parse(text) as T;
 					assertCleanPayload(data, `${this.providerName} API`);
 					return data;
 				}
 			} catch (error: unknown) {
+				if (error instanceof NonRetryableHttpError) {
+					throw new Error(error.message);
+				}
+				if (isNonRetryableNetworkError(error)) {
+					throw error;
+				}
 				if (error instanceof DOMException && error.name === "AbortError") {
 					lastError = new Error(`${this.providerName} API request timed out after ${timeoutMs}ms`);
 				} else if (error instanceof Error) {
-					// 4xx errors rethrown above will have already propagated
 					lastError = error;
 				} else {
 					lastError = new Error(String(error));
@@ -189,25 +216,37 @@ export abstract class BaseDiscoverer implements ProviderDiscoverer {
 				const seed = seedById.get(api.id);
 				if (!seed) return api;
 				// A provider's model list says a model exists, rarely whether it
-				// is on its way out or when it shipped; the catalog knows both.
+				// is on its way out or when it shipped; fill lifecycle and limits
+				// from the catalog without overwriting non-zero API values.
 				const dated: ModelCard = {
 					...api,
 					status: api.status ?? seed.status,
 					releaseDate: api.releaseDate ?? seed.releaseDate,
+					deprecationDate: api.deprecationDate ?? seed.deprecationDate,
+					replacedBy: api.replacedBy ?? seed.replacedBy,
+					contextWindow: api.contextWindow > 0 ? api.contextWindow : seed.contextWindow,
+					maxOutputTokens: api.maxOutputTokens > 0 ? api.maxOutputTokens : seed.maxOutputTokens,
+					maxInputTokens: api.maxInputTokens ?? seed.maxInputTokens,
+					dimensions: api.dimensions ?? seed.dimensions,
 				};
 				const apiHasPricing = !!api.pricing || !!api.originPricing;
 				if (apiHasPricing) {
+					const coalescedPricing =
+						!isPlanBilled(dated) && dated.pricing && seed.pricing
+							? coalesceSeedPricing(dated.pricing, seed.pricing)
+							: dated.pricing;
+					const withCoalesced = coalescedPricing ? { ...dated, pricing: coalescedPricing } : dated;
 					// The provider's own price is the third witness.
 					const live = evidenceFrom(api, "provider-api");
 					const catalogs = seed.priceEvidence ?? [
 						evidenceFrom(seed, seed.catalogSource === "litellm" ? "litellm" : "models.dev"),
 					];
 					const evidence = [live, ...catalogs].filter((entry): entry is PriceEvidence => entry !== null);
-					return live && evidence.length > 1 ? { ...dated, priceEvidence: evidence } : dated;
+					return live && evidence.length > 1 ? { ...withCoalesced, priceEvidence: evidence } : withCoalesced;
 				}
 				return {
 					...dated,
-					pricing: seed.pricing,
+					pricing: isPlanBilled(dated) ? undefined : seed.pricing,
 					originPricing: seed.originPricing,
 					...(seed.priceEvidence ? { priceEvidence: seed.priceEvidence } : {}),
 				};
@@ -238,4 +277,45 @@ export abstract class BaseDiscoverer implements ProviderDiscoverer {
 			...partial,
 		};
 	}
+}
+
+function coalesceSeedPricing(primary: ModelPricing, seed: ModelPricing): ModelPricing {
+	const merged: ModelPricing = { ...primary };
+	const optionalFields = [
+		"reasoningInputPerMillion",
+		"reasoningOutputPerMillion",
+		"cacheReadPerMillion",
+		"cacheWritePerMillion",
+		"cacheWrite1hPerMillion",
+		"cacheStoragePerMillionPerHour",
+		"batchInputPerMillion",
+		"batchOutputPerMillion",
+		"longContextInputPerMillion",
+		"longContextOutputPerMillion",
+		"longContextThresholdTokens",
+		"imageInputPerImage",
+		"imageOutputPerImage",
+		"audioInputPerMillion",
+		"audioOutputPerMillion",
+		"audioInputPerSecond",
+		"audioOutputPerSecond",
+		"videoInputPerSecond",
+		"videoOutputPerSecond",
+		"videoInputPerMillion",
+		"inputPerMillionCharacters",
+		"outputPerMillionCharacters",
+		"citation",
+	] as const;
+	for (const key of optionalFields) {
+		if (merged[key] === undefined && seed[key] !== undefined) {
+			(merged as unknown as Record<string, unknown>)[key] = seed[key];
+		}
+	}
+	if (!merged.cacheWrites?.length && seed.cacheWrites?.length) {
+		merged.cacheWrites = seed.cacheWrites;
+	}
+	if (!merged.bands?.length && seed.bands?.length) {
+		merged.bands = seed.bands;
+	}
+	return merged;
 }

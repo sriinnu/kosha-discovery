@@ -169,7 +169,7 @@ describe("CohereDiscoverer", () => {
 		expect(embedMultilingual!.capabilities).toEqual(["embedding"]);
 	});
 
-	it("should classify rerank models with embedding mode and caps", async () => {
+	it("should classify rerank models with rerank mode and caps", async () => {
 		mockFetch({
 			"https://api.cohere.com/compatibility/v1/models": {
 				status: 200,
@@ -180,8 +180,8 @@ describe("CohereDiscoverer", () => {
 		const cards = await discoverer.discover(validCredential);
 
 		const rerank = cards.find((c) => c.id === "rerank-english-v3.0");
-		expect(rerank!.mode).toBe("embedding");
-		expect(rerank!.capabilities).toEqual(["embedding"]);
+		expect(rerank!.mode).toBe("rerank");
+		expect(rerank!.capabilities).toEqual(["rerank"]);
 	});
 
 	it("should throw on API error (401 unauthorized)", async () => {

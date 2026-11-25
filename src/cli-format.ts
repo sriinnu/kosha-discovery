@@ -97,7 +97,10 @@ export function formatContextWindow(tokens: number): string {
 export function formatPrice(price: number | undefined): string {
 	if (price === undefined || price === null) return "\u2014";
 	if (price === 0) return "free";
-	return `$${price.toFixed(2)}`;
+	const [whole, frac = ""] = Number(price.toPrecision(6)).toFixed(6).split(".");
+	let digits = frac;
+	while (digits.length > 2 && digits.endsWith("0")) digits = digits.slice(0, -1);
+	return `$${whole}.${digits}`;
 }
 
 /** Pricing shape accepted by tier/discount helpers (avoids importing the full type). */
