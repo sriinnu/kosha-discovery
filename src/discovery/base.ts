@@ -242,12 +242,22 @@ export abstract class BaseDiscoverer implements ProviderDiscoverer {
 						evidenceFrom(seed, seed.catalogSource === "litellm" ? "litellm" : "models.dev"),
 					];
 					const evidence = [live, ...catalogs].filter((entry): entry is PriceEvidence => entry !== null);
-					return live && evidence.length > 1 ? { ...withCoalesced, priceEvidence: evidence } : withCoalesced;
+					const withEvidence = live && evidence.length > 1 ? { ...withCoalesced, priceEvidence: evidence } : withCoalesced;
+					return {
+						...withEvidence,
+						pricingSource: api.pricingSource ?? "provider-live",
+					};
 				}
 				return {
 					...dated,
 					pricing: isPlanBilled(dated) ? undefined : seed.pricing,
 					originPricing: seed.originPricing,
+					...(seed.pricing
+						? {
+								pricingSource:
+									seed.pricingSource ?? (seed.catalogSource === "litellm" ? "litellm" : "static-seed"),
+							}
+						: {}),
 					...(seed.priceEvidence ? { priceEvidence: seed.priceEvidence } : {}),
 				};
 			});

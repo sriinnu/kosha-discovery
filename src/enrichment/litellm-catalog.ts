@@ -139,7 +139,7 @@ async function fetchAndValidate(): Promise<Record<string, LiteLLMModelEntry>> {
 
 	let response: Response;
 	try {
-		response = await fetch(LITELLM_CATALOG_URL, { signal: controller.signal });
+		response = await fetch(LITELLM_CATALOG_URL, { signal: controller.signal, redirect: "error" });
 	} finally {
 		clearTimeout(timer);
 	}

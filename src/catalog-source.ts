@@ -17,6 +17,7 @@
  * @module
  */
 
+import { createHash } from "node:crypto";
 import { open } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
@@ -107,8 +108,13 @@ export function catalogCacheKey(
 	key: string,
 	configOverride?: Pick<KoshaConfig, "catalogSource" | "catalogFile">,
 ): string {
-	const { mode } = resolveCatalogSource(configOverride);
-	return mode === "community" ? key : `${mode}_${key}`;
+	const { mode, file } = resolveCatalogSource(configOverride);
+	if (mode === "community") return key;
+	if (mode === "local" && file) {
+		const digest = createHash("sha256").update(resolve(file)).digest("hex").slice(0, 8);
+		return `local_${digest}_${key}`;
+	}
+	return `${mode}_${key}`;
 }
 
 /** Seed cards for one provider from the local catalog file. */

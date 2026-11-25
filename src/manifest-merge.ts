@@ -478,19 +478,26 @@ export function keepReportedSecondaryRates<T extends PricedSides>(
 	return pricing ? { ...fresh, pricing } : fresh;
 }
 
-/** True if a billed rate fell to zero (input or output) or to under 1% of the
- *  rate it replaces (any field). */
+/** True if a billed rate (or origin reference rate when proxy pricing is absent)
+ *  fell to zero (input or output) or to under 1% of the rate it replaces. */
 function billedRateCollapsed(previous: PricedSides, fresh: PricedSides): boolean {
-	const a = previous.pricing as Rates;
-	const b = fresh.pricing as Rates;
-	if (!a || !b) return false;
-	return QUARANTINE_FIELDS.some((field) => {
-		const prev = a[field];
-		const next = b[field];
-		if (typeof prev !== "number" || typeof next !== "number" || prev <= 0) return false;
-		if (next === 0) return HEADLINE_FIELDS.has(field);
-		return next < prev * PRICING_COLLAPSE_RATIO;
-	});
+	const checkSide = (side: "pricing" | "originPricing"): boolean => {
+		const a = previous[side] as Rates;
+		const b = fresh[side] as Rates;
+		if (!a || !b) return false;
+		return QUARANTINE_FIELDS.some((field) => {
+			const prev = a[field];
+			const next = b[field];
+			if (typeof prev !== "number" || typeof next !== "number" || prev <= 0) return false;
+			if (next === 0) return HEADLINE_FIELDS.has(field);
+			return next < prev * PRICING_COLLAPSE_RATIO;
+		});
+	};
+	if (checkSide("pricing")) return true;
+	const freshPricing = fresh.pricing as Rates;
+	const hasUsableProxy =
+		freshPricing && freshPricing.inputPerMillion !== undefined && freshPricing.outputPerMillion !== undefined;
+	return !hasUsableProxy && checkSide("originPricing");
 }
 
 function liveAnchor(row: object, now: number): PriceAnchor | null {

@@ -349,11 +349,13 @@ function resolveProxyCandidates(
 			)
 			.map((r) => r.model);
 		// A catalog-only $0 would otherwise top every price ranking; the real
-		// bill would be whatever the provider charges. Try those routes last.
-		const ordered = dedupeModels([...exec, ...fwd]);
-		const trusted = ordered.filter((m) => !isUnverifiedZeroPrice(m));
-		const unverified = ordered.filter((m) => !trusted.includes(m));
-		return [...trusted, ...unverified];
+		// bill would be whatever the provider charges. Try those routes last,
+		// while keeping credentialed routes (`exec`) strictly ahead of `fwd`.
+		const splitTrust = (list: ModelCard[]): ModelCard[] => [
+			...list.filter((m) => !isUnverifiedZeroPrice(m)),
+			...list.filter((m) => isUnverifiedZeroPrice(m)),
+		];
+		return dedupeModels([...splitTrust(exec), ...splitTrust(fwd)]);
 	}
 
 	// For a specific model ID or alias, prefer the canonical card but fall back
@@ -888,6 +890,76 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			else reservedByTenant.delete(tenant);
 		};
 	};
+	const reserveWithBudgetCheck = async (
+		ctx: Context,
+		hold: SpendHold,
+		routeEstimate: number,
+		budget: number | null,
+		tenantBudget: number | null,
+		tenant: string | null,
+	): Promise<{ overCap?: "global" | "tenant"; errorResponse?: Response }> => {
+		if (budget === null && tenantBudget === null) {
+			hold.release = reserve(routeEstimate, tenant);
+			return {};
+		}
+		return runWithBudgetLock(async () => {
+			if (!(await ledgerCaughtUp())) {
+				return {
+					errorResponse: ctx.json(
+						{
+							error: "budget enforcement unavailable — spend could not be written to the ledger",
+							budgetUsd: budget ?? tenantBudget,
+						},
+						503,
+					),
+				};
+			}
+			let spentNow = 0;
+			let tenantSpentNow = 0;
+			try {
+				const now = Date.now();
+				if (budget !== null) spentNow = await readSpendForMonth(now);
+				if (tenantBudget !== null) tenantSpentNow = await readSpendForMonth(now, tenant);
+			} catch (err) {
+				console.error("kosha: ledger read failed:", err instanceof Error ? err.message : String(err));
+				return {
+					errorResponse: ctx.json(
+						{
+							error: "budget enforcement unavailable — ledger could not be read",
+							budgetUsd: budget ?? tenantBudget,
+						},
+						503,
+					),
+				};
+			}
+			const tenantReserved = tenant ? (reservedByTenant.get(tenant) ?? 0) : 0;
+			const overGlobal = budget !== null && spentNow + reservedUsd + routeEstimate > budget;
+			const overTenant = tenantBudget !== null && tenantSpentNow + tenantReserved + routeEstimate > tenantBudget;
+			if (overGlobal || overTenant) {
+				return { overCap: overGlobal ? ("global" as const) : ("tenant" as const) };
+			}
+			hold.release = reserve(routeEstimate, tenant);
+			return {};
+		});
+	};
+	const recordTerminalOutcome = (
+		provider: string,
+		status: number,
+		latencyMs: number,
+		ok: boolean,
+		planRefusedSharedKey = false,
+	): void => {
+		if (ok) {
+			registry.recordProxyOutcome(provider, { ok: true, status, latencyMs });
+			bumpProxyMetric(provider, true, latencyMs);
+			return;
+		}
+		if (status >= 500 || status === 429 || ((status === 401 || status === 403) && !planRefusedSharedKey)) {
+			const errorType = status === 429 ? "throttled" : status >= 500 ? "transport" : "auth_error";
+			registry.recordProxyOutcome(provider, { ok: false, status, latencyMs, errorType });
+			bumpProxyMetric(provider, false, latencyMs);
+		}
+	};
 
 	// OpenAI-compatible model list — returns all models the proxy can forward.
 	// Required for SDK compatibility: OpenAI clients call this before chat requests.
@@ -1125,28 +1197,12 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			// whose own estimate would cross it is refused here, per route, so a
 			// cheaper route can still take it.
 			const routeEstimate = effectivePlanBilled ? 0 : (estimateRequestCost(model, body)?.estimatedUsd ?? 0);
-			if (budget !== null || tenantBudget !== null) {
-				const decision = await runWithBudgetLock(async () => {
-					const now = Date.now();
-					if (budget !== null) spent = await readSpendForMonth(now);
-					if (tenantBudget !== null) tenantSpent = await readSpendForMonth(now, tenant);
-					const tenantReserved = tenant ? (reservedByTenant.get(tenant) ?? 0) : 0;
-					const overGlobal = budget !== null && spent + reservedUsd + routeEstimate > budget;
-					const overTenant = tenantBudget !== null && tenantSpent + tenantReserved + routeEstimate > tenantBudget;
-					if (overGlobal || overTenant) {
-						return overGlobal ? ("global" as const) : ("tenant" as const);
-					}
-					hold.release = reserve(routeEstimate, tenant);
-					return null;
-				});
-				if (decision !== null) {
-					attemptChain.push(`${model.provider}:over-budget`);
-					overBudgetCap ??= decision;
-					continue;
-				}
-			} else {
-				// Held until this request's ledger row lands; a failover swaps it at the loop top.
-				hold.release = reserve(routeEstimate, tenant);
+			const gateRes = await reserveWithBudgetCheck(ctx, hold, routeEstimate, budget, tenantBudget, tenant);
+			if (gateRes.errorResponse) return gateRes.errorResponse;
+			if (gateRes.overCap) {
+				attemptChain.push(`${model.provider}:over-budget`);
+				overBudgetCap ??= gateRes.overCap;
+				continue;
 			}
 			const usesAnthropicWire = model.provider === "anthropic" || descriptor?.wire === "anthropic";
 			const upstreamHeaders: Record<string, string> = { "content-type": "application/json" };
@@ -1309,21 +1365,10 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			attemptChain.push(`${model.provider}:${upstream.status}`);
 			// Feed the real inference outcome into the health tracker so
 			// kosha:reliable/fastest/balanced rank on actual proxy traffic, not
-			// just discovery-ping latency. A 4xx is the caller's fault and not a
-			// provider-health signal, so we neither credit nor penalize it.
+			// just discovery-ping latency. Caller-side 400/404/422 leave health
+			// unchanged, while 5xx, 429, and non-shared 401/403 count as failures.
 			const attemptLatencyMs = Date.now() - attemptStart;
-			if (upstream.ok) {
-				registry.recordProxyOutcome(model.provider, { ok: true, status: upstream.status, latencyMs: attemptLatencyMs });
-				bumpProxyMetric(model.provider, true, attemptLatencyMs);
-			} else if (upstream.status >= 500) {
-				registry.recordProxyOutcome(model.provider, {
-					ok: false,
-					status: upstream.status,
-					latencyMs: attemptLatencyMs,
-					errorType: "transport",
-				});
-				bumpProxyMetric(model.provider, false, attemptLatencyMs);
-			}
+			recordTerminalOutcome(model.provider, upstream.status, attemptLatencyMs, upstream.ok, planRefusedSharedKey);
 
 			// Pre-flight cost estimate: (input tokens × inputRate + expected
 			// output × outputRate), reflected on the response so the caller can
@@ -1437,10 +1482,13 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 					}
 					releaseTimer();
 					const aErr = extractAnthropicError(raw);
-					return new Response(JSON.stringify({ error: { ...aErr, code: String(upstream.status) } }), {
-						status: upstream.status,
-						headers: responseHeaders,
-					});
+					return new Response(
+						JSON.stringify({ error: { ...aErr, message: redactSecrets(aErr.message), code: String(upstream.status) } }),
+						{
+							status: upstream.status,
+							headers: responseHeaders,
+						},
+					);
 				}
 				if (wantsStream) {
 					if (!upstream.body) {
@@ -1489,10 +1537,15 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			// ── Native OpenAI-compatible passthrough ───────────────────────
 			const contentType = upstream.headers.get("content-type") ?? "";
 			if (contentType) responseHeaders.set("content-type", headerSafe(contentType, 200));
-			if (!upstream.ok || !upstream.body) {
+			if (!upstream.ok) {
 				releaseTimer();
-				if (upstream.ok) recordSpend(null);
-				return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
+				const errText = await upstream.text().catch(() => "");
+				return new Response(redactSecrets(errText), { status: upstream.status, headers: responseHeaders });
+			}
+			if (!upstream.body) {
+				releaseTimer();
+				recordSpend(null);
+				return new Response(null, { status: upstream.status, headers: responseHeaders });
 			}
 			if (contentType.includes("text/event-stream")) {
 				// Bytes pass through untouched; we only watch for a trailing
@@ -1714,7 +1767,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 		const safeRequested = headerSafe(requested, 200);
 		const gate = await checkBudgetPrecheck(ctx);
 		if (gate instanceof Response) return gate;
-		let { budget, tenantBudget, tenant, spent, tenantSpent } = gate;
+		const { budget, tenantBudget, tenant } = gate;
 		const resolver = await resolveCredentials();
 		const MAX_FETCHES = 3;
 		const UPSTREAM_TIMEOUT_MS = 30_000;
@@ -1765,25 +1818,12 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 				continue;
 			}
 			const routeEstimate = effectivePlanBilled ? 0 : (estimate?.estimatedUsd ?? 0);
-			if (budget !== null || tenantBudget !== null) {
-				const decision = await runWithBudgetLock(async () => {
-					const now = Date.now();
-					if (budget !== null) spent = await readSpendForMonth(now);
-					if (tenantBudget !== null) tenantSpent = await readSpendForMonth(now, tenant);
-					const tenantReserved = tenant ? (reservedByTenant.get(tenant) ?? 0) : 0;
-					const overGlobal = budget !== null && spent + reservedUsd + routeEstimate > budget;
-					const overTenant = tenantBudget !== null && tenantSpent + tenantReserved + routeEstimate > tenantBudget;
-					if (overGlobal || overTenant) return overGlobal ? ("global" as const) : ("tenant" as const);
-					hold.release = reserve(routeEstimate, tenant);
-					return null;
-				});
-				if (decision !== null) {
-					attemptChain.push(`${model.provider}:over-budget`);
-					overBudgetCap ??= decision;
-					continue;
-				}
-			} else {
-				hold.release = reserve(routeEstimate, tenant);
+			const gateRes = await reserveWithBudgetCheck(ctx, hold, routeEstimate, budget, tenantBudget, tenant);
+			if (gateRes.errorResponse) return gateRes.errorResponse;
+			if (gateRes.overCap) {
+				attemptChain.push(`${model.provider}:over-budget`);
+				overBudgetCap ??= gateRes.overCap;
+				continue;
 			}
 			fetchAttempts += 1;
 			const attemptStart = Date.now();
@@ -1835,18 +1875,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			}
 			attemptChain.push(`${model.provider}:${upstream.status}`);
 			const latencyMs = Date.now() - attemptStart;
-			if (upstream.ok) {
-				registry.recordProxyOutcome(model.provider, { ok: true, status: upstream.status, latencyMs });
-				bumpProxyMetric(model.provider, true, latencyMs);
-			} else if (upstream.status >= 500 || upstream.status === 429) {
-				registry.recordProxyOutcome(model.provider, {
-					ok: false,
-					status: upstream.status,
-					latencyMs,
-					errorType: upstream.status === 429 ? "throttled" : "transport",
-				});
-				bumpProxyMetric(model.provider, false, latencyMs);
-			}
+			recordTerminalOutcome(model.provider, upstream.status, latencyMs, upstream.ok);
 			const responseHeaders = new Headers({
 				"x-kosha-model": headerSafe(model.id, 200),
 				"x-kosha-provider": headerSafe(model.provider, 100),
@@ -1895,7 +1924,10 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 						: { usageSource: "estimate" as const }),
 				});
 			}
-			return new Response(text, { status: upstream.status, headers: responseHeaders });
+			return new Response(upstream.ok ? text : redactSecrets(text), {
+				status: upstream.status,
+				headers: responseHeaders,
+			});
 		}
 		if (!sawCredentialedRoute && lastNoCred) {
 			return ctx.json({ error: `no credential found for '${lastNoCred.provider}'`, attemptChain }, 401);
@@ -1924,7 +1956,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 		const safeRequested = headerSafe(requested, 200);
 		const gate = await checkBudgetPrecheck(ctx);
 		if (gate instanceof Response) return gate;
-		let { budget, tenantBudget, tenant, spent, tenantSpent } = gate;
+		const { budget, tenantBudget, tenant } = gate;
 		const resolver = await resolveCredentials();
 		const MAX_FETCHES = 3;
 		const UPSTREAM_TIMEOUT_MS = 30_000;
@@ -1975,25 +2007,12 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 				continue;
 			}
 			const routeEstimate = effectivePlanBilled ? 0 : (estimate?.estimatedUsd ?? 0);
-			if (budget !== null || tenantBudget !== null) {
-				const decision = await runWithBudgetLock(async () => {
-					const now = Date.now();
-					if (budget !== null) spent = await readSpendForMonth(now);
-					if (tenantBudget !== null) tenantSpent = await readSpendForMonth(now, tenant);
-					const tenantReserved = tenant ? (reservedByTenant.get(tenant) ?? 0) : 0;
-					const overGlobal = budget !== null && spent + reservedUsd + routeEstimate > budget;
-					const overTenant = tenantBudget !== null && tenantSpent + tenantReserved + routeEstimate > tenantBudget;
-					if (overGlobal || overTenant) return overGlobal ? ("global" as const) : ("tenant" as const);
-					hold.release = reserve(routeEstimate, tenant);
-					return null;
-				});
-				if (decision !== null) {
-					attemptChain.push(`${model.provider}:over-budget`);
-					overBudgetCap ??= decision;
-					continue;
-				}
-			} else {
-				hold.release = reserve(routeEstimate, tenant);
+			const gateRes = await reserveWithBudgetCheck(ctx, hold, routeEstimate, budget, tenantBudget, tenant);
+			if (gateRes.errorResponse) return gateRes.errorResponse;
+			if (gateRes.overCap) {
+				attemptChain.push(`${model.provider}:over-budget`);
+				overBudgetCap ??= gateRes.overCap;
+				continue;
 			}
 			const targetUrl = new URL(safeUrl.toString());
 			targetUrl.pathname = descriptor?.anthropicMessagesPath ?? "/v1/messages";
@@ -2065,18 +2084,7 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 			}
 			attemptChain.push(`${model.provider}:${upstream.status}`);
 			const latencyMs = Date.now() - attemptStart;
-			if (upstream.ok) {
-				registry.recordProxyOutcome(model.provider, { ok: true, status: upstream.status, latencyMs });
-				bumpProxyMetric(model.provider, true, latencyMs);
-			} else if (upstream.status >= 500 || upstream.status === 429) {
-				registry.recordProxyOutcome(model.provider, {
-					ok: false,
-					status: upstream.status,
-					latencyMs,
-					errorType: upstream.status === 429 ? "throttled" : "transport",
-				});
-				bumpProxyMetric(model.provider, false, latencyMs);
-			}
+			recordTerminalOutcome(model.provider, upstream.status, latencyMs, upstream.ok, planRefusedSharedKey);
 			const responseHeaders = new Headers({
 				"x-kosha-model": headerSafe(model.id, 200),
 				"x-kosha-provider": headerSafe(model.provider, 100),
@@ -2150,7 +2158,10 @@ export function registerProxyRoutes(app: Hono, registry: ModelRegistry, shutdown
 				}
 			}
 			recordRow(actual, "request");
-			return new Response(text, { status: upstream.status, headers: responseHeaders });
+			return new Response(upstream.ok ? text : redactSecrets(text), {
+				status: upstream.status,
+				headers: responseHeaders,
+			});
 		}
 		if (!sawCredentialedRoute && lastNoCred) {
 			return ctx.json({ error: `no credential found for '${lastNoCred.provider}'`, attemptChain }, 401);

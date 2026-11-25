@@ -38,31 +38,38 @@ export class LiteLLMEnricher implements Enricher {
 	 * - Returns new ModelCard objects (immutable pattern).
 	 * - Models not found in litellm are returned unchanged.
 	 */
-	async enrich(models: ModelCard[]): Promise<ModelCard[]> {
+	async enrich(models: ModelCard[], options?: { refreshExisting?: boolean }): Promise<ModelCard[]> {
 		await this.load();
-		return models.map((model) => applyFreeTierFlag(this.enrichOne(model)));
+		return models.map((model) => applyFreeTierFlag(this.enrichOne(model, options)));
 	}
 
 	// ---------------------------------------------------------------------------
 	// Private
 	// ---------------------------------------------------------------------------
 
-	private enrichOne(model: ModelCard): ModelCard {
+	private enrichOne(model: ModelCard, options?: { refreshExisting?: boolean }): ModelCard {
 		const entry = this.lookupModel(model);
-		if (!entry) return { ...model };
+		const originNorm = model.originProvider
+			? (normalizeProviderId(model.originProvider) ?? model.originProvider)
+			: undefined;
+		const servingNorm = normalizeProviderId(model.provider) ?? model.provider;
+		const isProxyRoute = Boolean(originNorm && originNorm !== servingNorm);
+		const pricingEntry = isProxyRoute ? this.lookupServingModel(model) : entry;
+		if (!entry && !pricingEntry) return { ...model };
 
 		const enriched: ModelCard = { ...model };
 
-		// Pricing — fill in base pricing when missing, AND top up cache rates
-		// even when base pricing already exists. The discoverer (e.g. OpenRouter)
-		// often provides input/output rates but skips cache_read/cache_write,
-		// while litellm has them — so I merge per-field rather than all-or-nothing.
-		const entryPricing = this.extractPricing(entry);
-		// A plan-billed route has no per-token price; the same model's rate
-		// elsewhere is still useful, as originPricing below.
+		// Pricing — fill in base pricing when missing, refresh aggregator rates on
+		// explicit `kosha enrich`, and top up secondary cache/media rates without
+		// copying an origin maker's price onto a reseller/proxy route.
+		const entryPricing = pricingEntry ? this.extractPricing(pricingEntry) : undefined;
 		if (entryPricing && !isPlanBilled(enriched)) {
 			if (!enriched.pricing) {
 				enriched.pricing = entryPricing;
+				enriched.pricingSource ??= "litellm";
+			} else if (options?.refreshExisting && enriched.pricingSource !== "provider-live") {
+				enriched.pricing = { ...enriched.pricing, ...entryPricing };
+				enriched.pricingSource = "litellm";
 			} else {
 				const mergedPricing = { ...enriched.pricing };
 				for (const key of [
@@ -99,10 +106,6 @@ export class LiteLLMEnricher implements Enricher {
 
 		// Preserve proxy-route pricing while surfacing direct-origin reference pricing
 		// sourced ONLY from origin-provider entries (never a reseller's proxy row).
-		const originNorm = enriched.originProvider
-			? (normalizeProviderId(enriched.originProvider) ?? enriched.originProvider)
-			: undefined;
-		const servingNorm = normalizeProviderId(enriched.provider) ?? enriched.provider;
 		if (originNorm && originNorm !== servingNorm && !enriched.originPricing) {
 			const originEntry = this.lookupOriginModel(enriched);
 			const originPricing = originEntry ? this.extractPricing(originEntry) : undefined;
@@ -110,6 +113,8 @@ export class LiteLLMEnricher implements Enricher {
 				enriched.originPricing = originPricing;
 			}
 		}
+
+		if (!entry) return enriched;
 
 		// Context window — only when unset (0)
 		if (enriched.contextWindow === 0 && entry.max_input_tokens) {
@@ -147,32 +152,22 @@ export class LiteLLMEnricher implements Enricher {
 			}
 		}
 
-		// Capabilities — add missing ones from litellm flags
+		// Capabilities — add missing ones from litellm flags to both capabilities and rawCapabilities
 		enriched.capabilities = [...enriched.capabilities];
-		if (entry.supports_vision && !enriched.capabilities.includes("vision")) {
-			enriched.capabilities.push("vision");
-		}
-		if (entry.supports_function_calling && !enriched.capabilities.includes("function_calling")) {
-			enriched.capabilities.push("function_calling");
-		}
-		if (entry.supports_prompt_caching && !enriched.capabilities.includes("prompt_caching")) {
-			enriched.capabilities.push("prompt_caching");
-		}
-		if (entry.supports_audio_input && !enriched.capabilities.includes("audio_input")) {
-			enriched.capabilities.push("audio_input");
-		}
-		if (entry.supports_audio_output && !enriched.capabilities.includes("audio_output")) {
-			enriched.capabilities.push("audio_output");
-		}
-		if (entry.supports_video_input && !enriched.capabilities.includes("video_input")) {
-			enriched.capabilities.push("video_input");
-		}
-		if (entry.supports_reasoning && !enriched.capabilities.includes("reasoning")) {
-			enriched.capabilities.push("reasoning");
-		}
-		if (entry.supports_response_schema && !enriched.capabilities.includes("structured_output")) {
-			enriched.capabilities.push("structured_output");
-		}
+		const rawCaps = [...(enriched.rawCapabilities ?? enriched.capabilities)];
+		const addCapability = (flag: string): void => {
+			if (!enriched.capabilities.includes(flag)) enriched.capabilities.push(flag);
+			if (!rawCaps.includes(flag)) rawCaps.push(flag);
+		};
+		if (entry.supports_vision) addCapability("vision");
+		if (entry.supports_function_calling) addCapability("function_calling");
+		if (entry.supports_prompt_caching) addCapability("prompt_caching");
+		if (entry.supports_audio_input) addCapability("audio_input");
+		if (entry.supports_audio_output) addCapability("audio_output");
+		if (entry.supports_video_input) addCapability("video_input");
+		if (entry.supports_reasoning) addCapability("reasoning");
+		if (entry.supports_response_schema) addCapability("structured_output");
+		enriched.rawCapabilities = rawCaps;
 
 		// Tokenizer family — only fill when missing. Prefer a local-runtime value
 		// when the discoverer already supplied one; fall back to heuristic inference
@@ -298,6 +293,36 @@ export class LiteLLMEnricher implements Enricher {
 	 * Look up the direct-origin entry for a proxy/reseller model so a reseller's
 	 * own `{provider}/{id}` proxy price is never copied into `originPricing`.
 	 */
+	private lookupServingModel(model: ModelCard): LiteLLMModelEntry | undefined {
+		if (!this.data) return undefined;
+		const { id, provider } = model;
+		const lower = id.toLowerCase();
+		const servingNorm = (normalizeProviderId(provider) ?? provider).toLowerCase();
+		const providerLower = provider.toLowerCase();
+
+		for (const candidate of [`${provider}/${id}`, `${provider}/${lower}`, `${servingNorm}/${id}`, `${servingNorm}/${lower}`]) {
+			if (this.data[candidate]) return this.data[candidate];
+		}
+
+		for (const bareCandidate of [id, lower]) {
+			const row = this.data[bareCandidate];
+			if (!row) continue;
+			const rp = row.litellm_provider?.toLowerCase();
+			if (
+				rp &&
+				(rp === providerLower ||
+					rp === servingNorm ||
+					rp.startsWith(`${providerLower}-`) ||
+					rp.startsWith(`${providerLower}_`) ||
+					rp.startsWith(`${servingNorm}-`) ||
+					rp.startsWith(`${servingNorm}_`))
+			) {
+				return row;
+			}
+		}
+		return undefined;
+	}
+
 	private lookupOriginModel(model: ModelCard): LiteLLMModelEntry | undefined {
 		if (!this.data || !model.originProvider) return undefined;
 		const origin = normalizeProviderId(model.originProvider) ?? model.originProvider;

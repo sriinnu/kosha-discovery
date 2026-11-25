@@ -79,8 +79,16 @@ export function changeLines(pricing: ModelPricing): string[] {
 				`${formatPrice(r.inputPerMillion ?? pricing.inputPerMillion)} / ${formatPrice(r.outputPerMillion ?? pricing.outputPerMillion)} in/out`,
 			);
 		if (r.cacheReadPerMillion !== undefined) parts.push(`${formatPrice(r.cacheReadPerMillion)} read`);
+		if (r.cacheWritePerMillion !== undefined) parts.push(`${formatPrice(r.cacheWritePerMillion)} write`);
+		if (r.cacheWrite1hPerMillion !== undefined) parts.push(`1h ${formatPrice(r.cacheWrite1hPerMillion)} write`);
 		if (r.cacheStoragePerMillionPerHour !== undefined)
 			parts.push(`storage ${formatPrice(r.cacheStoragePerMillionPerHour)}/hour`);
+		if (r.batchInputPerMillion !== undefined || r.batchOutputPerMillion !== undefined) {
+			parts.push(
+				`batch ${formatPrice(r.batchInputPerMillion)} / ${formatPrice(r.batchOutputPerMillion)}`,
+			);
+		}
+		if (r.bands?.length) parts.push(`${r.bands.length} band(s)`);
 		return `from ${change.effectiveAt.slice(0, 10)}: ${parts.join(", ")}`;
 	});
 }

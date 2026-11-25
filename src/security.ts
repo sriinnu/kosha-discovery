@@ -156,7 +156,7 @@ const CREDENTIAL_PATTERNS = [
 	/\bgsk_[A-Za-z0-9_-]{20,}/,         // Groq keys
 	/\bxai-[A-Za-z0-9_-]{20,}/,         // xAI keys
 	/\bnvapi-[A-Za-z0-9_-]{20,}/,       // NVIDIA NIM keys
-	/\bpplx-[A-Za-z0-9_-]{20,}/,        // Perplexity keys
+	/\bpplx-[A-Za-z0-9]{32,}/,          // Perplexity keys (48 alnum chars; hyphens excluded so pplx-decider-flash-latest passes)
 	/\bAKIA[A-Z0-9]{16}/,               // AWS access key IDs
 	/\bghp_[A-Za-z0-9]{36,}/,           // GitHub personal access tokens
 	/\bgho_[A-Za-z0-9]{36,}/,           // GitHub OAuth tokens

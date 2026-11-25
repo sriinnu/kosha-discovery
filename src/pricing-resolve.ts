@@ -187,29 +187,51 @@ export function effectiveBands(pricing: ModelPricing): PricingBand[] {
  */
 export function resolvePricing(pricing: ModelPricing, options: ResolveOptions = {}): ResolvedPricing {
 	const at = timeOf(options.at);
-	let current = pricingForSchedule(pricingAsOf(pricing, at), at);
-	if (options.serviceTier && current.serviceTiers?.[options.serviceTier]) {
-		const tier = current.serviceTiers[options.serviceTier];
-		current = {
-			...current,
+	const baseStandard = pricingForSchedule(pricingAsOf(pricing, at), at);
+	const tier =
+		options.serviceTier && baseStandard.serviceTiers?.[options.serviceTier]
+			? baseStandard.serviceTiers[options.serviceTier]
+			: undefined;
+
+	const band = bandFor(effectiveBands(baseStandard), options.promptTokens);
+	if (!band) {
+		if (!tier) return { ...baseStandard, band: null };
+		return {
+			...baseStandard,
 			inputPerMillion: tier.inputPerMillion,
 			outputPerMillion: tier.outputPerMillion,
 			...(tier.cacheReadPerMillion !== undefined ? { cacheReadPerMillion: tier.cacheReadPerMillion } : {}),
+			band: null,
 		};
 	}
-	const band = bandFor(effectiveBands(current), options.promptTokens);
-	if (!band) return { ...current, band: null };
-	const scale = current.inputPerMillion > 0 ? band.inputPerMillion / current.inputPerMillion : 1;
+
+	const scale =
+		baseStandard.inputPerMillion > 0
+			? band.inputPerMillion / baseStandard.inputPerMillion
+			: baseStandard.outputPerMillion > 0
+				? band.outputPerMillion / baseStandard.outputPerMillion
+				: 1;
 	const scaleRate = (rate: number | undefined) => (typeof rate === "number" ? rate * scale : undefined);
+	const tierInput =
+		tier && baseStandard.inputPerMillion > 0
+			? band.inputPerMillion * (tier.inputPerMillion / baseStandard.inputPerMillion)
+			: (tier?.inputPerMillion ?? band.inputPerMillion);
+	const tierOutput =
+		tier && baseStandard.outputPerMillion > 0
+			? band.outputPerMillion * (tier.outputPerMillion / baseStandard.outputPerMillion)
+			: (tier?.outputPerMillion ?? band.outputPerMillion);
+
 	const writes: CacheWriteTier[] | undefined =
-		band.cacheWrites ?? current.cacheWrites?.map((tier) => ({ ...tier, perMillion: tier.perMillion * scale }));
+		band.cacheWrites ?? baseStandard.cacheWrites?.map((t) => ({ ...t, perMillion: t.perMillion * scale }));
 	const resolved: ResolvedPricing = {
-		...current,
-		inputPerMillion: band.inputPerMillion,
-		outputPerMillion: band.outputPerMillion,
+		...baseStandard,
+		inputPerMillion: tierInput,
+		outputPerMillion: tierOutput,
 		band,
 	};
-	const read = band.cacheReadPerMillion ?? scaleRate(current.cacheReadPerMillion);
+	const read = tier?.cacheReadPerMillion !== undefined
+		? tier.cacheReadPerMillion * scale
+		: (band.cacheReadPerMillion ?? scaleRate(baseStandard.cacheReadPerMillion));
 	if (read !== undefined) resolved.cacheReadPerMillion = read;
 	if (writes) {
 		resolved.cacheWrites = writes;
@@ -219,9 +241,9 @@ export function resolvePricing(pricing: ModelPricing, options: ResolveOptions = 
 		if (synced.cacheWrite1hPerMillion !== undefined) resolved.cacheWrite1hPerMillion = synced.cacheWrite1hPerMillion;
 		else delete resolved.cacheWrite1hPerMillion;
 	} else {
-		const write = scaleRate(current.cacheWritePerMillion);
+		const write = scaleRate(baseStandard.cacheWritePerMillion);
 		if (write !== undefined) resolved.cacheWritePerMillion = write;
-		const write1h = scaleRate(current.cacheWrite1hPerMillion);
+		const write1h = scaleRate(baseStandard.cacheWrite1hPerMillion);
 		if (write1h !== undefined) resolved.cacheWrite1hPerMillion = write1h;
 	}
 	return resolved;

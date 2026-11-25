@@ -31,7 +31,7 @@ import { createRequire } from "node:module";
 import { computeContextStrategy } from "./context-strategy.js";
 import { isMainModule } from "./entry.js";
 import { newestModels } from "./newest.js";
-import { resolvePricing } from "./pricing-resolve.js";
+import { ONE_HOUR_TTL_SECONDS, resolvePricing, writeRateFor } from "./pricing-resolve.js";
 import { getProviderCacheBehavior, normalizeProviderId } from "./provider-catalog.js";
 import { ModelRegistry } from "./registry.js";
 import { parseRouteStrategy, ROUTE_STRATEGIES } from "./registry-routing.js";
@@ -277,8 +277,13 @@ export const TOOLS = [
 				model: { type: "string", description: "Model ID or alias" },
 				input_tokens: { type: "number", description: "Uncached input token count" },
 				output_tokens: { type: "number", description: "Output token count (default 0)" },
+				reasoning_tokens: { type: "number", description: "Reasoning output token count (default 0)" },
 				cache_read_tokens: { type: "number", description: "Cached input tokens read (default 0)" },
 				cache_write_tokens: { type: "number", description: "Cached input tokens written (default 0)" },
+				cache_write_1h_tokens: {
+					type: "number",
+					description: "Subset of cache_write_tokens billed at the 1-hour write rate (default 0)",
+				},
 				service_tier: { type: "string", description: "Optional service tier (e.g. flex, priority)" },
 			},
 			required: ["model", "input_tokens"],
@@ -387,12 +392,20 @@ function clampLimit(value: unknown, fallback: number): number {
 		: fallback;
 }
 
+let refreshInFlight: Promise<void> | null = null;
+
 async function getRegistry(): Promise<ModelRegistry> {
 	if (registryInstance) {
-		const ttl = registryInstance.toJSON().providers.length > 0 ? 86_400_000 : 0;
-		const discoveredAt = registryInstance.toJSON().discoveredAt;
-		if (discoveredAt > 0 && ttl > 0 && Date.now() - discoveredAt > ttl) {
-			void registryInstance.refresh().catch(() => {});
+		const snap = registryInstance.toJSON();
+		const ttl = snap.providers.length > 0 ? 86_400_000 : 0;
+		const discoveredAt = snap.discoveredAt;
+		if (discoveredAt > 0 && ttl > 0 && Date.now() - discoveredAt > ttl && !refreshInFlight) {
+			refreshInFlight = registryInstance
+				.refresh()
+				.catch(() => {})
+				.finally(() => {
+					refreshInFlight = null;
+				});
 		}
 		return registryInstance;
 	}
@@ -403,6 +416,13 @@ async function getRegistry(): Promise<ModelRegistry> {
 		});
 	}
 	return registryReady;
+}
+
+function optionalStringArg(value: unknown, field: string): string | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== "string") throw new ToolInputError(`${field} must be a string when provided`);
+	const trimmed = value.trim();
+	return trimmed.length > 0 ? trimmed : undefined;
 }
 
 /** Production dependencies: the discover-on-first-use registry. */
@@ -425,9 +445,9 @@ export async function callTool(
 	switch (name) {
 		case "kosha_query_models": {
 			const models = reg.models({
-				provider: args.provider as string | undefined,
-				mode: args.mode as ModelMode | undefined,
-				capability: args.capability as string | undefined,
+				provider: optionalStringArg(args.provider, "provider"),
+				mode: optionalStringArg(args.mode, "mode") as ModelMode | undefined,
+				capability: optionalStringArg(args.capability, "capability"),
 			});
 			const limit = clampLimit(args.limit, 20);
 			return models.slice(0, limit).map((m) => ({
@@ -467,8 +487,8 @@ export async function callTool(
 			const includeUncallable = args.include_uncallable === true;
 			const query = {
 				mode: "chat" as const,
-				capability: args.capability as string | undefined,
-				provider: args.provider as string | undefined,
+				capability: optionalStringArg(args.capability, "capability"),
+				provider: optionalStringArg(args.provider, "provider"),
 				minContextWindow: minContext,
 			};
 			// An agent acts on row one, so by default every row is one it can call.
@@ -530,8 +550,8 @@ export async function callTool(
 			const ranked = reg.rankedRoutes(
 				{
 					mode: "chat",
-					capability: args.capability as string | undefined,
-					provider: args.provider as string | undefined,
+					capability: optionalStringArg(args.capability, "capability"),
+					provider: optionalStringArg(args.provider, "provider"),
 					minContextWindow: minContext,
 					limit,
 					callableOnly: !includeUncallable,
@@ -575,10 +595,15 @@ export async function callTool(
 			const model = reg.model(args.model);
 			if (!model) return { error: `model '${args.model}' not found` };
 			const provider = reg.provider(model.provider);
+			const priceWarnings = (model.rawCapabilities ?? []).filter(
+				(c) =>
+					c === "pricing_quarantined" || c === "pricing_sources_disagree" || c === "pricing_single_source",
+			);
 			return {
 				...model,
 				baseUrl: provider?.baseUrl,
 				authenticated: provider?.authenticated ?? false,
+				...(priceWarnings.length > 0 ? { priceWarnings } : {}),
 			};
 		}
 
@@ -634,8 +659,8 @@ export async function callTool(
 		}
 
 		case "kosha_context_strategy": {
-			const modelId = args.model as string | undefined;
-			if (!modelId) return { error: "model is required" };
+			const modelId = optionalStringArg(args.model, "model");
+			if (!modelId) throw new ToolInputError("model must be a non-empty string");
 			const currentTokens = typeof args.current_tokens === "number" ? args.current_tokens : undefined;
 			if (currentTokens === undefined || currentTokens < 0) {
 				return { error: "current_tokens must be a non-negative number" };
@@ -713,8 +738,13 @@ export async function callTool(
 			};
 			const inputTokens = readNonNeg(args.input_tokens, "input_tokens", undefined);
 			const outputTokens = readNonNeg(args.output_tokens, "output_tokens", 0);
+			const reasoningTokens = readNonNeg(args.reasoning_tokens, "reasoning_tokens", 0);
 			const cacheReadTokens = readNonNeg(args.cache_read_tokens, "cache_read_tokens", 0);
 			const cacheWriteTokens = readNonNeg(args.cache_write_tokens, "cache_write_tokens", 0);
+			const cacheWrite1hTokens = Math.min(
+				cacheWriteTokens,
+				readNonNeg(args.cache_write_1h_tokens, "cache_write_1h_tokens", 0),
+			);
 			const serviceTier =
 				typeof args.service_tier === "string" && args.service_tier.trim().length > 0
 					? args.service_tier.trim()
@@ -726,14 +756,18 @@ export async function callTool(
 			});
 			const inputUsd = (inputTokens * resolved.inputPerMillion) / 1_000_000;
 			const outputUsd = (outputTokens * resolved.outputPerMillion) / 1_000_000;
+			const reasoningRate = resolved.reasoningOutputPerMillion ?? resolved.outputPerMillion;
+			const reasoningUsd = (reasoningTokens * reasoningRate) / 1_000_000;
 			const listedRead = resolved.cacheReadPerMillion;
 			const cacheReadRate =
 				typeof listedRead === "number" && (listedRead > 0 || resolved.inputPerMillion === 0)
 					? listedRead
 					: resolved.inputPerMillion;
-			const cacheWriteRate = resolved.cacheWritePerMillion ?? resolved.inputPerMillion;
+			const shortWriteRate = resolved.cacheWritePerMillion ?? resolved.inputPerMillion;
+			const hourWriteRate = writeRateFor(resolved, ONE_HOUR_TTL_SECONDS) ?? shortWriteRate;
 			const cacheReadUsd = (cacheReadTokens * cacheReadRate) / 1_000_000;
-			const cacheWriteUsd = (cacheWriteTokens * cacheWriteRate) / 1_000_000;
+			const cacheWriteUsd =
+				((cacheWriteTokens - cacheWrite1hTokens) * shortWriteRate + cacheWrite1hTokens * hourWriteRate) / 1_000_000;
 			return {
 				model: model.id,
 				provider: model.provider,
@@ -744,9 +778,10 @@ export async function callTool(
 					: null,
 				inputUsd,
 				outputUsd,
+				reasoningUsd,
 				cacheReadUsd,
 				cacheWriteUsd,
-				totalUsd: inputUsd + outputUsd + cacheReadUsd + cacheWriteUsd,
+				totalUsd: inputUsd + outputUsd + reasoningUsd + cacheReadUsd + cacheWriteUsd,
 			};
 		}
 
